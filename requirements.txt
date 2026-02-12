@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-docx
+pandas
+openpyxl
+chromadb
+requests
+python-multipart
+chardet
+pillow
+pyyaml

@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-docx
+pandas
+openpyxl
+chromadb
+sentence-transformers
+requests
+

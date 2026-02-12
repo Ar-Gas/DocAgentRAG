@@ -8,11 +8,11 @@ echo "=================================="
 
 # 定义目录路径
 PROJECT_ROOT=$(pwd)
-FRONTEND_DIR="$PROJECT_ROOT/../frontend"
-BACKEND_DIR="$PROJECT_ROOT/../backend"
-DOC_DIR="$PROJECT_ROOT/../doc"
-MODEL_DIR="$PROJECT_ROOT/../model"
-STATIC_DIR="$PROJECT_ROOT/../static"
+FRONTEND_DIR="$PROJECT_ROOT/frontend"
+BACkEND_DIR="$PROJECT_ROOT/backend"
+DOC_DIR="$PROJECT_ROOT/doc"
+MODEL_DIR="$PROJECT_ROOT/model"
+STATIC_DIR="$PROJECT_ROOT/static"
 
 # 创建必要的目录
 echo "创建必要的目录..."
