@@ -1,7 +1,10 @@
 from fastapi import APIRouter, HTTPException, Query
+import time
 from utils.retriever import search_documents
 
 router = APIRouter()
+
+
 
 @router.get("/search")
 async def search(query: str = Query(..., description="搜索关键词"), limit: int = Query(10, description="返回结果数量限制")):
@@ -9,15 +12,14 @@ async def search(query: str = Query(..., description="搜索关键词"), limit: 
     搜索文档
     """
     try:
-        import time
         start_time = time.time()
-        
+
         # 调用搜索函数
         results = search_documents(query, limit)
-        
+
         # 计算搜索耗时
         search_time = time.time() - start_time
-        
+
         return {
             "status": "success",
             "query": query,

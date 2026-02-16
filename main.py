@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import logging
+import socket
+from routes import document, classification, retrieval
 
 # 配置日志
 logging.basicConfig(
@@ -32,13 +34,12 @@ os.makedirs("doc", exist_ok=True)
 os.makedirs("data", exist_ok=True)
 os.makedirs("models", exist_ok=True)
 
+
+
 # 健康检查接口
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-
-# 导入路由
-from routes import document, classification, retrieval
 
 app.include_router(document.router, prefix="/api/document", tags=["document"])
 app.include_router(classification.router, prefix="/api/classification", tags=["classification"])
@@ -46,7 +47,6 @@ app.include_router(retrieval.router, prefix="/api/retrieval", tags=["retrieval"]
 
 if __name__ == "__main__":
     # 获取局域网IP
-    import socket
     def get_local_ip():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -55,11 +55,11 @@ if __name__ == "__main__":
         finally:
             s.close()
         return ip
-    
+
     local_ip = get_local_ip()
     logger.info(f"Starting server on http://{local_ip}:8000")
     logger.info(f"API documentation available at http://{local_ip}:8000/docs")
-    
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",

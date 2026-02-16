@@ -7,6 +7,8 @@ from utils.storage import save_document_info, get_document_info
 
 router = APIRouter()
 
+
+
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     """
@@ -17,11 +19,11 @@ async def upload_document(file: UploadFile = File(...)):
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         filename = f"{os.path.splitext(file.filename)[0]}_{timestamp}{os.path.splitext(file.filename)[1]}"
         filepath = os.path.join("doc", filename)
-        
+
         # 保存文件
         with open(filepath, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
+
         # 提取文档信息
         doc_info = {
             "id": filename,
@@ -30,14 +32,14 @@ async def upload_document(file: UploadFile = File(...)):
             "upload_time": datetime.now().isoformat(),
             "file_type": os.path.splitext(file.filename)[1].lower()
         }
-        
+
         # 处理文档内容
         content = process_document(filepath)
         doc_info["content"] = content
-        
+
         # 保存文档信息到JSON
         save_document_info(doc_info)
-        
+
         return {
             "status": "success",
             "document_id": filename,
@@ -46,6 +48,8 @@ async def upload_document(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文档上传失败: {str(e)}")
+
+
 
 @router.get("/info/{document_id}")
 async def get_document(document_id: str):

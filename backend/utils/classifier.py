@@ -1,6 +1,6 @@
-import requests
-import json
 import os
+
+
 
 # 模拟AI模型分类（实际项目中替换为真实模型调用）
 def classify_with_llm(content):
@@ -8,11 +8,11 @@ def classify_with_llm(content):
         # 这里应该调用从modelscope.cn下载的模型
         # 由于是演示，这里使用简单的分类逻辑
         # 实际项目中需要替换为真实的模型API调用
-        
+
         # 基于内容关键词的简单分类
         categories = []
         content_lower = content.lower()
-        
+
         if any(keyword in content_lower for keyword in ['报告', '分析', '总结']):
             categories.append('报告文档')
         if any(keyword in content_lower for keyword in ['合同', '协议', '条款']):
@@ -23,14 +23,16 @@ def classify_with_llm(content):
             categories.append('数据文档')
         if any(keyword in content_lower for keyword in ['会议', '纪要', '讨论']):
             categories.append('会议文档')
-        
+
         if not categories:
             categories.append('其他文档')
-        
+
         return categories
     except Exception as e:
         print(f"AI分类失败: {str(e)}")
         return ['其他文档']
+
+
 
 # RAG增强分类
 def rag_enhanced_classification(doc_info):
@@ -38,13 +40,13 @@ def rag_enhanced_classification(doc_info):
         # 提取文档内容
         content = doc_info.get('content', '')
         filename = doc_info.get('filename', '')
-        
+
         # 组合信息
         combined_info = f"文件名: {filename}\n内容: {content}"
-        
+
         # 使用LLM进行分类
         categories = classify_with_llm(combined_info)
-        
+
         # 生成分类目录
         classification_result = {
             "categories": categories,
@@ -59,7 +61,7 @@ def rag_enhanced_classification(doc_info):
                 f"{category}/{filename}" for category in categories
             ]
         }
-        
+
         return classification_result
     except Exception as e:
         print(f"RAG增强分类失败: {str(e)}")
@@ -73,6 +75,8 @@ def rag_enhanced_classification(doc_info):
             "suggested_folders": ["其他文档/{}".format(doc_info.get('filename', ''))]
         }
 
+
+
 # OCR处理（模拟）
 def process_ocr(filepath):
     try:
@@ -83,25 +87,27 @@ def process_ocr(filepath):
         print(f"OCR处理失败: {str(e)}")
         return ""
 
+
+
 # 完整的文档分类流水线
 def classify_document(doc_info):
     try:
         # 1. 提取文档内容
         content = doc_info.get('content', '')
-        
+
         # 2. OCR处理（如果需要）
         filepath = doc_info.get('path', '')
         if filepath and os.path.exists(filepath):
             ocr_content = process_ocr(filepath)
             if ocr_content:
                 content += f"\n\nOCR提取内容: {ocr_content}"
-        
+
         # 3. 更新文档信息
         doc_info['content'] = content
-        
+
         # 4. RAG增强分类
         classification_result = rag_enhanced_classification(doc_info)
-        
+
         # 5. 生成最终分类目录
         final_result = {
             "document_id": doc_info.get('id', ''),
@@ -113,7 +119,7 @@ def classify_document(doc_info):
                 "更新文档元数据"
             ]
         }
-        
+
         return final_result
     except Exception as e:
         print(f"文档分类失败: {str(e)}")

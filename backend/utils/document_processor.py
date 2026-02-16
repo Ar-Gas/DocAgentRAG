@@ -1,10 +1,11 @@
 import os
 import docx
 import pandas as pd
-import email
 from email import policy
 from email.parser import BytesParser
 import chardet
+
+
 
 # PDF文档处理（使用MinerU）
 def process_pdf(filepath):
@@ -13,11 +14,13 @@ def process_pdf(filepath):
         # 由于MinerU可能需要安装和配置，这里先使用占位实现
         # 实际使用时需要替换为真实的MinerU调用
         with open(filepath, 'rb') as f:
-            content = f.read()
+            f.read()
         # 简单的文本提取逻辑（实际项目中替换为MinerU）
         return "PDF文档内容（使用MinerU提取）"
     except Exception as e:
         return f"PDF处理失败: {str(e)}"
+
+
 
 # Word文档处理
 def process_word(filepath):
@@ -31,6 +34,8 @@ def process_word(filepath):
         return '\n'.join(content)
     except Exception as e:
         return f"Word处理失败: {str(e)}"
+
+
 
 # Excel文档处理
 def process_excel(filepath):
@@ -48,12 +53,14 @@ def process_excel(filepath):
     except Exception as e:
         return f"Excel处理失败: {str(e)}"
 
+
+
 # 邮件处理
 def process_email(filepath):
     try:
         with open(filepath, 'rb') as f:
             msg = BytesParser(policy=policy.default).parse(f)
-        
+
         content = []
         # 提取发件人
         if msg['From']:
@@ -67,7 +74,7 @@ def process_email(filepath):
         # 提取发送时间
         if msg['Date']:
             content.append(f"发送时间: {msg['Date']}")
-        
+
         # 提取邮件正文
         content.append("\n邮件正文:")
         if msg.is_multipart():
@@ -76,23 +83,25 @@ def process_email(filepath):
                     try:
                         body = part.get_content()
                         content.append(body)
-                    except:
+                    except Exception:
                         pass
         else:
             try:
                 body = msg.get_content()
                 content.append(body)
-            except:
+            except Exception:
                 pass
-        
+
         return '\n'.join(content)
     except Exception as e:
         return f"邮件处理失败: {str(e)}"
 
+
+
 # 统一文档处理接口
 def process_document(filepath):
     ext = os.path.splitext(filepath)[1].lower()
-    
+
     if ext == '.pdf':
         return process_pdf(filepath)
     elif ext == '.docx':
