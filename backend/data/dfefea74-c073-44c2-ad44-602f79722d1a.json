@@ -1,0 +1,9 @@
+{
+  "id": "dfefea74-c073-44c2-ad44-602f79722d1a",
+  "filename": "sample.xlsx",
+  "filepath": "/root/autodl-tmp/DocAgentRAG/backend/test/test_date/sample.xlsx",
+  "file_type": ".xlsx",
+  "preview_content": "Excel处理失败: Excel file format cannot be determined, you must specify an engine manually.",
+  "full_content_length": 87,
+  "created_at": 1771267821.2881947
+}

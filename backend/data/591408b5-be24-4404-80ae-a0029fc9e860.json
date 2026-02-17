@@ -1,0 +1,9 @@
+{
+  "id": "591408b5-be24-4404-80ae-a0029fc9e860",
+  "filename": "sample.pdf",
+  "filepath": "/root/autodl-tmp/DocAgentRAG/backend/test/test_date/sample.pdf",
+  "file_type": ".pdf",
+  "preview_content": "PDF文档内容（使用MinerU提取）",
+  "full_content_length": 19,
+  "created_at": 1771267791.6289713
+}

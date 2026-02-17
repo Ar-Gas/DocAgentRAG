@@ -1,0 +1,9 @@
+{
+  "id": "77a2faf0-7234-44bb-8862-4042e21518c9",
+  "filename": "sample.docx",
+  "filepath": "/root/autodl-tmp/DocAgentRAG/backend/test/test_date/sample.docx",
+  "file_type": ".docx",
+  "preview_content": "Word处理失败: Package not found at '/root/autodl-tmp/DocAgentRAG/backend/test/test_date/sample.docx'",
+  "full_content_length": 96,
+  "created_at": 1771267792.7809398
+}
