@@ -1,21 +1,33 @@
 import json
 import os
 import uuid
+from datetime import datetime
 from chromadb import PersistentClient
 from chromadb.utils import embedding_functions
-from modelscope.hub.snapshot_download import snapshot_download
 from .document_processor import process_document, process_pdf, process_word, process_excel, process_email
 
+# 获取项目根目录
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DOC_DIR = os.path.join(BASE_DIR, "doc")
+CHROMA_DB_PATH = os.path.join(BASE_DIR, "chromadb")
 
+# 确保必要的目录存在
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(DOC_DIR, exist_ok=True)
+os.makedirs(CHROMA_DB_PATH, exist_ok=True)
+
+# 全局Chroma客户端实例
+_chroma_client = None
 
 # 保存文档信息到JSON
 def save_document_info(doc_info):
     try:
         # 确保data目录存在
-        os.makedirs("data", exist_ok=True)
+        os.makedirs(DATA_DIR, exist_ok=True)
 
         # 生成文件路径
-        filepath = os.path.join("data", f"{doc_info['id']}.json")
+        filepath = os.path.join(DATA_DIR, f"{doc_info['id']}.json")
 
         # 保存数据
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -26,12 +38,10 @@ def save_document_info(doc_info):
         print(f"保存文档信息失败: {str(e)}")
         return False
 
-
-
 # 获取文档信息
 def get_document_info(document_id):
     try:
-        filepath = os.path.join("data", f"{document_id}.json")
+        filepath = os.path.join(DATA_DIR, f"{document_id}.json")
 
         if not os.path.exists(filepath):
             return None
@@ -44,12 +54,10 @@ def get_document_info(document_id):
         print(f"获取文档信息失败: {str(e)}")
         return None
 
-
-
 # 保存分类结果
 def save_classification_result(document_id, classification_result):
     try:
-        filepath = os.path.join("data", f"{document_id}.json")
+        filepath = os.path.join(DATA_DIR, f"{document_id}.json")
 
         if not os.path.exists(filepath):
             return False
@@ -60,6 +68,7 @@ def save_classification_result(document_id, classification_result):
 
         # 添加分类结果
         doc_info['classification_result'] = classification_result
+        doc_info['classification_time'] = datetime.now().isoformat()
 
         # 保存更新后的数据
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -69,8 +78,6 @@ def save_classification_result(document_id, classification_result):
     except Exception as e:
         print(f"保存分类结果失败: {str(e)}")
         return False
-
-
 
 # 获取分类结果
 def get_classification_result(document_id):
@@ -84,64 +91,61 @@ def get_classification_result(document_id):
         print(f"获取分类结果失败: {str(e)}")
         return None
 
-
-
 # 获取所有文档信息
 def get_all_documents():
     try:
         documents = []
-        data_dir = "data"
 
-        if not os.path.exists(data_dir):
+        if not os.path.exists(DATA_DIR):
             return documents
 
-        for filename in os.listdir(data_dir):
+        for filename in os.listdir(DATA_DIR):
             if filename.endswith('.json'):
-                filepath = os.path.join(data_dir, filename)
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    doc_info = json.load(f)
-                    documents.append(doc_info)
+                filepath = os.path.join(DATA_DIR, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        doc_info = json.load(f)
+                        documents.append(doc_info)
+                except Exception as e:
+                    print(f"读取文档{filename}失败: {str(e)}")
+                    continue
 
         return documents
     except Exception as e:
         print(f"获取所有文档失败: {str(e)}")
         return []
 
-
-
+# 初始化Chroma客户端
 def init_chroma_client():
     """
-    初始化Chroma客户端（适配魔门社区模型，解决下载慢问题）
+    初始化Chroma客户端（使用本地模型，无需下载）
     """
+    global _chroma_client
+    if _chroma_client is not None:
+        return _chroma_client
+
     try:
-        # 1. 从魔门社区下载模型到本地（国内速度快）
-        # 模型名和Hugging Face一致，缓存目录自定义，避免重复下载
-        model_dir = snapshot_download(
-            'sentence-transformers/all-MiniLM-L6-v2',  # 魔门社区的模型名
-            cache_dir='/root/.cache/modelscope',        # 模型缓存目录
-            revision='master'
-        )
+        # 使用本地模型路径（已下载好的模型）
+        model_dir = '/root/autodl-tmp/DocAgentRAG/backend/models/all-MiniLM-L6-v2'
         
-        # 2. 使用本地模型初始化嵌入函数（无外网下载）
+        # 使用本地模型初始化嵌入函数
         ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=model_dir,  # 直接用本地模型路径，而非在线下载
-            # 可选：指定本地缓存，进一步加速
+            model_name=model_dir,  # 直接用本地模型路径
             model_kwargs={'device': 'cpu'},  # 若有GPU可改为 'cuda'
             encode_kwargs={'normalize_embeddings': True}
         )
         
         # 3. 初始化Chroma客户端
-        client = PersistentClient(path="./chroma_db")
+        client = PersistentClient(path=CHROMA_DB_PATH)
         # 验证：创建集合时绑定本地嵌入函数
         client.get_or_create_collection(name="documents", embedding_function=ef)
         
-        print(f"Chroma客户端初始化成功，使用本地模型：{model_dir}")
+        print(f"Chroma客户端初始化成功，使用本地模型：/root/autodl-tmp/DocAgentRAG/backend/models/all-MiniLM-L6-v2")
+        _chroma_client = client
         return client
     except Exception as e:
         print(f"初始化Chroma客户端失败: {str(e)}")
         return None
-
-
 
 # 保存文档摘要信息用于分类
 def save_document_summary_for_classification(filepath):
@@ -181,7 +185,8 @@ def save_document_summary_for_classification(filepath):
             'file_type': ext,
             'preview_content': preview_content,
             'full_content_length': len(content),
-            'created_at': os.path.getmtime(filepath)
+            'created_at': os.path.getmtime(filepath),
+            'created_at_iso': datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat()
         }
         
         # 保存到JSON文件
@@ -192,8 +197,6 @@ def save_document_summary_for_classification(filepath):
     except Exception as e:
         print(f"保存文档摘要失败: {str(e)}")
         return None, None
-
-
 
 # 保存文档完整数据到Chroma用于检索
 def save_document_to_chroma(filepath, document_id=None):
@@ -268,8 +271,6 @@ def save_document_to_chroma(filepath, document_id=None):
         print(f"保存文档到Chroma失败: {str(e)}")
         return False
 
-
-
 # 从Chroma检索文档
 def retrieve_from_chroma(query, n_results=5):
     """
@@ -293,4 +294,65 @@ def retrieve_from_chroma(query, n_results=5):
         return results
     except Exception as e:
         print(f"从Chroma检索失败: {str(e)}")
+        return []
+
+# 删除文档
+def delete_document(document_id):
+    """
+    删除文档及其相关信息
+    """
+    try:
+        # 删除JSON文件
+        json_file = os.path.join(DATA_DIR, f"{document_id}.json")
+        if os.path.exists(json_file):
+            os.remove(json_file)
+
+        # 从Chroma中删除相关文档
+        client = init_chroma_client()
+        if client:
+            collection = client.get_or_create_collection(name="documents")
+            # 获取所有相关的chunk ID
+            results = collection.get(where={"document_id": document_id})
+            if results and results.get("ids"):
+                collection.delete(ids=results["ids"])
+
+        return True
+    except Exception as e:
+        print(f"删除文档失败: {str(e)}")
+        return False
+
+# 更新文档信息
+def update_document_info(document_id, updated_info):
+    """
+    更新文档信息
+    """
+    try:
+        doc_info = get_document_info(document_id)
+        if not doc_info:
+            return False
+
+        # 更新信息
+        doc_info.update(updated_info)
+        doc_info['updated_at'] = datetime.now().isoformat()
+
+        # 保存更新后的数据
+        return save_document_info(doc_info)
+    except Exception as e:
+        print(f"更新文档信息失败: {str(e)}")
+        return False
+
+# 根据分类结果获取文档
+def get_documents_by_classification(classification):
+    """
+    根据分类结果获取文档
+    """
+    try:
+        all_docs = get_all_documents()
+        filtered_docs = []
+        for doc in all_docs:
+            if doc.get('classification_result') == classification:
+                filtered_docs.append(doc)
+        return filtered_docs
+    except Exception as e:
+        print(f"根据分类获取文档失败: {str(e)}")
         return []

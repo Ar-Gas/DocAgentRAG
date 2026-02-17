@@ -6,4 +6,9 @@ openpyxl
 chromadb
 sentence-transformers
 requests
+PyPDF2
+chardet
+scikit-learn
+pytesseract
+Pillow
 

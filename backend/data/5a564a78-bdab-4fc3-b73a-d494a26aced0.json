@@ -1,0 +1,10 @@
+{
+  "id": "5a564a78-bdab-4fc3-b73a-d494a26aced0",
+  "filename": "sample.pdf",
+  "filepath": "/root/autodl-tmp/DocAgentRAG/backend/test/test_date/sample.pdf",
+  "file_type": ".pdf",
+  "preview_content": "Form  W-4\n2026Employee’s Withholding Certificate\nDepartment of the Treasury  \nInternal Revenue Service Complete Form W-4 so that your employer can withhold the correct federal income tax from your pay. \nGive Form W-4 to your employer. \nYour withholding is subject to review by the IRS.OMB No. 1545-0074\nStep 1: \nEnter \nPersonal \nInformation(a)   First name and middle initial Last name\nAddress \nCity or town, state, and ZIP code(b)   Social security number\nDoes your name match the \nname on your social security \ncard? If not, to ensure you get \ncredit for your earnings, \ncontact SSA at 800-772-1213 \nor go to www.ssa.gov.\n(c) Single or Married filing separately\nMarried filing jointly or Qualifying surviving spouse\nHead of household (Check only if you’re unmarried and pay more than half the costs of keeping up a home for yourself and a qualifying individual.)\nCaution: To claim certain credits or deductions on your tax return, you (and/or your spouse if married filing jointly) are required to ",
+  "full_content_length": 25498,
+  "created_at": 1771344296.5597389,
+  "created_at_iso": "2026-02-18T00:04:56.559739"
+}

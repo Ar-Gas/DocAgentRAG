@@ -7,16 +7,17 @@ import chardet
 
 
 
-# PDF文档处理（使用MinerU）
+# PDF文档处理（使用PyPDF2）
 def process_pdf(filepath):
     try:
-        # 这里集成MinerU工具
-        # 由于MinerU可能需要安装和配置，这里先使用占位实现
-        # 实际使用时需要替换为真实的MinerU调用
-        with open(filepath, 'rb') as f:
-            f.read()
-        # 简单的文本提取逻辑（实际项目中替换为MinerU）
-        return "PDF文档内容（使用MinerU提取）"
+        from PyPDF2 import PdfReader
+        reader = PdfReader(filepath)
+        content = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                content.append(text.strip())
+        return '\n'.join(content)
     except Exception as e:
         return f"PDF处理失败: {str(e)}"
 
