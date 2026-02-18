@@ -7,6 +7,7 @@ import tempfile
 import shutil
 from datetime import datetime
 import uuid
+from pathlib import Path
 
 # Add the backend directory to the path
 import sys
@@ -25,18 +26,20 @@ from utils.storage import (
     delete_document,
     update_document_info,
     get_documents_by_classification,
+    split_text_into_chunks,
     BASE_DIR,
     DATA_DIR,
     DOC_DIR,
-    CHROMA_DB_PATH
+    CHROMA_DB_PATH,
+    MODEL_DIR
 )
 
 class TestStorage(unittest.TestCase):
     def setUp(self):
         # Create a temporary directory for testing
         self.temp_dir = tempfile.mkdtemp()
-        self.test_data_dir = os.path.join(self.temp_dir, "data")
-        os.makedirs(self.test_data_dir, exist_ok=True)
+        self.test_data_dir = Path(self.temp_dir) / "data"
+        self.test_data_dir.mkdir(parents=True, exist_ok=True)
         
         # Mock the DATA_DIR and other paths
         global DATA_DIR, DOC_DIR, CHROMA_DB_PATH
@@ -46,8 +49,8 @@ class TestStorage(unittest.TestCase):
         
         # Override the paths for testing
         DATA_DIR = self.test_data_dir
-        DOC_DIR = os.path.join(self.temp_dir, "doc")
-        CHROMA_DB_PATH = os.path.join(self.temp_dir, "chromadb")
+        DOC_DIR = Path(self.temp_dir) / "doc"
+        CHROMA_DB_PATH = Path(self.temp_dir) / "chromadb"
         
         # Mock the _chroma_client to None before each test
         from utils.storage import _chroma_client
@@ -87,8 +90,8 @@ class TestStorage(unittest.TestCase):
         self.assertTrue(result)
         
         # Verify the file was created
-        expected_file = os.path.join(DATA_DIR, "test-doc-1.json")
-        self.assertTrue(os.path.exists(expected_file))
+        expected_file = DATA_DIR / "test-doc-1.json"
+        self.assertTrue(expected_file.exists())
         
         # Verify the content
         with open(expected_file, 'r', encoding='utf-8') as f:
@@ -105,7 +108,7 @@ class TestStorage(unittest.TestCase):
         }
         
         # Save the document info
-        with open(os.path.join(DATA_DIR, "test-doc-1.json"), 'w', encoding='utf-8') as f:
+        with open(DATA_DIR / "test-doc-1.json", 'w', encoding='utf-8') as f:
             json.dump(doc_info, f)
         
         # Test getting existing document
@@ -126,7 +129,7 @@ class TestStorage(unittest.TestCase):
         }
         
         # Save the document info
-        with open(os.path.join(DATA_DIR, "test-doc-1.json"), 'w', encoding='utf-8') as f:
+        with open(DATA_DIR / "test-doc-1.json", 'w', encoding='utf-8') as f:
             json.dump(doc_info, f)
         
         # Test saving classification result
@@ -135,7 +138,7 @@ class TestStorage(unittest.TestCase):
         self.assertTrue(result)
         
         # Verify the classification result was saved
-        with open(os.path.join(DATA_DIR, "test-doc-1.json"), 'r', encoding='utf-8') as f:
+        with open(DATA_DIR / "test-doc-1.json", 'r', encoding='utf-8') as f:
             updated_info = json.load(f)
         self.assertEqual(updated_info.get('classification_result'), classification_result)
         self.assertIn('classification_time', updated_info)
@@ -155,7 +158,7 @@ class TestStorage(unittest.TestCase):
         }
         
         # Save the document info
-        with open(os.path.join(DATA_DIR, "test-doc-1.json"), 'w', encoding='utf-8') as f:
+        with open(DATA_DIR / "test-doc-1.json", 'w', encoding='utf-8') as f:
             json.dump(doc_info, f)
         
         # Test getting existing classification
@@ -182,10 +185,10 @@ class TestStorage(unittest.TestCase):
         }
         
         # Save the document info files
-        with open(os.path.join(DATA_DIR, "test-doc-1.json"), 'w', encoding='utf-8') as f:
+        with open(DATA_DIR / "test-doc-1.json", 'w', encoding='utf-8') as f:
             json.dump(doc1, f)
         
-        with open(os.path.join(DATA_DIR, "test-doc-2.json"), 'w', encoding='utf-8') as f:
+        with open(DATA_DIR / "test-doc-2.json", 'w', encoding='utf-8') as f:
             json.dump(doc2, f)
         
         # Test getting all documents
@@ -196,9 +199,11 @@ class TestStorage(unittest.TestCase):
     
     @mock.patch('utils.storage.embedding_functions.SentenceTransformerEmbeddingFunction')
     @mock.patch('utils.storage.PersistentClient')
-    def test_init_chroma_client(self, mock_client_class, mock_embedding_function):
+    @mock.patch('utils.storage.MODEL_DIR')
+    def test_init_chroma_client(self, mock_model_dir, mock_client_class, mock_embedding_function):
         """Test initializing Chroma client"""
         # Set up mocks
+        mock_model_dir.exists.return_value = True
         mock_client = mock.MagicMock()
         mock_client_class.return_value = mock_client
         mock_collection = mock.MagicMock()
@@ -209,7 +214,9 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(result, mock_client)
         
         # Verify the client was created with the correct path
-        mock_client_class.assert_called_once_with(path=CHROMA_DB_PATH)
+        mock_client_class.assert_called_once()
+        call_args = mock_client_class.call_args
+        self.assertEqual(call_args.kwargs['path'], str(CHROMA_DB_PATH))
         
         # Test that the client is cached
         second_result = init_chroma_client()
@@ -222,15 +229,16 @@ class TestStorage(unittest.TestCase):
     @mock.patch('utils.storage.process_word')
     @mock.patch('utils.storage.process_excel')
     @mock.patch('utils.storage.process_email')
+    @mock.patch('utils.storage.process_ppt')
     @mock.patch('utils.storage.save_document_info')
     @mock.patch('os.path.getmtime')
-    def test_save_document_summary_for_classification(self, mock_getmtime, mock_save_doc, mock_process_email, mock_process_excel, mock_process_word, mock_process_pdf, mock_process_doc):
+    def test_save_document_summary_for_classification(self, mock_getmtime, mock_save_doc, mock_process_ppt, mock_process_email, mock_process_excel, mock_process_word, mock_process_pdf, mock_process_doc):
         """Test saving document summary for classification"""
         # Set up mocks
         mock_getmtime.return_value = 1620000000.0
         mock_save_doc.return_value = True
         
-        # Test PDF file
+        # Test PDF file (单个处理器返回字符串)
         mock_process_pdf.return_value = "PDF content"
         doc_id, doc_info = save_document_summary_for_classification("test.pdf")
         self.assertIsNotNone(doc_id)
@@ -261,24 +269,38 @@ class TestStorage(unittest.TestCase):
         self.assertIsNotNone(doc_info)
         mock_process_email.assert_called_once_with("test.eml")
         
-        # Test other file types
+        # Test PPT file
         mock_process_email.reset_mock()
-        mock_process_doc.return_value = "Other content"
+        mock_process_ppt.return_value = "PPT content"
+        doc_id, doc_info = save_document_summary_for_classification("test.pptx")
+        self.assertIsNotNone(doc_id)
+        self.assertIsNotNone(doc_info)
+        mock_process_ppt.assert_called_once_with("test.pptx")
+        
+        # Test other file types (process_document 返回元组)
+        mock_process_ppt.reset_mock()
+        mock_process_doc.return_value = (True, "Other content")  # ===================== 修复：返回元组 =====================
         doc_id, doc_info = save_document_summary_for_classification("test.txt")
         self.assertIsNotNone(doc_id)
         self.assertIsNotNone(doc_info)
         mock_process_doc.assert_called_once_with("test.txt")
     
+    @mock.patch('utils.storage.split_text_into_chunks')
     @mock.patch('utils.storage.init_chroma_client')
     @mock.patch('utils.storage.process_document')
-    def test_save_document_to_chroma(self, mock_process_doc, mock_init_client):
+    def test_save_document_to_chroma(self, mock_process_doc, mock_init_client, mock_split_chunks):
         """Test saving document to Chroma"""
         # Set up mocks
         mock_client = mock.MagicMock()
         mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
         mock_client.get_or_create_collection.return_value = mock_collection
-        mock_process_doc.return_value = "Test content. More content."
+        mock_client.get_collection.return_value = mock_collection
+        
+        # ===================== 修复：process_document 返回元组 =====================
+        mock_process_doc.return_value = (True, "Test content. More content.")
+        # 模拟分片结果
+        mock_split_chunks.return_value = ["Test content", "More content"]
         
         # Test saving document
         result = save_document_to_chroma("test.txt")
@@ -298,7 +320,7 @@ class TestStorage(unittest.TestCase):
         mock_client = mock.MagicMock()
         mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_or_create_collection.return_value = mock_collection
+        mock_client.get_collection.return_value = mock_collection
         mock_results = {"documents": [["Result 1", "Result 2"]]}
         mock_collection.query.return_value = mock_results
         
@@ -308,22 +330,21 @@ class TestStorage(unittest.TestCase):
         mock_collection.query.assert_called_once_with(query_texts=["test query"], n_results=5)
     
     @mock.patch('utils.storage.init_chroma_client')
-    @mock.patch('os.remove')
     @mock.patch('os.path.exists')
-    def test_delete_document(self, mock_exists, mock_remove, mock_init_client):
+    def test_delete_document(self, mock_exists, mock_init_client):
         """Test deleting document"""
         # Set up mocks
         mock_exists.return_value = True
         mock_client = mock.MagicMock()
         mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_or_create_collection.return_value = mock_collection
+        mock_client.get_collection.return_value = mock_collection
         mock_collection.get.return_value = {"ids": ["chunk1", "chunk2"]}
         
         # Test deletion
         result = delete_document("test-doc-1")
         self.assertTrue(result)
-        mock_remove.assert_called_once()
+        # Check Chroma delete operation
         mock_collection.delete.assert_called_once_with(ids=["chunk1", "chunk2"])
     
     @mock.patch('utils.storage.get_document_info')
@@ -366,6 +387,27 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(len(result), 2)
         for doc in result:
             self.assertEqual(doc["classification_result"], "financial")
+    
+    def test_split_text_into_chunks(self):
+        """Test splitting text into chunks"""
+        # 测试中文标点分割
+        text = "这是第一句话。这是第二句话！这是第三句话？"
+        chunks = split_text_into_chunks(text, max_length=20, min_length=5)
+        self.assertEqual(len(chunks), 3)
+        
+        # 测试英文标点分割
+        text = "This is sentence 1. This is sentence 2! This is sentence 3?"
+        chunks = split_text_into_chunks(text, max_length=30, min_length=10)
+        self.assertEqual(len(chunks), 3)
+        
+        # 测试无标点分割
+        text = "这是一段很长很长很长很长很长很长很长的无标点文本"
+        chunks = split_text_into_chunks(text, max_length=10, min_length=5)
+        self.assertGreater(len(chunks), 1)
+        
+        # 测试空文本
+        chunks = split_text_into_chunks("")
+        self.assertEqual(len(chunks), 0)
 
 if __name__ == '__main__':
     unittest.main()

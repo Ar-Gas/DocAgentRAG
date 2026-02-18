@@ -1,0 +1,25 @@
+# Python dependencies for DocAgent frontend
+# These are optional dependencies for development, testing, and backend integration
+
+# HTTP client for API testing
+requests==2.32.3
+
+# Testing framework
+pytest==8.3.2
+pytest-cov==5.0.0
+
+# Environment variable management
+python-dotenv==1.0.0
+
+# Code quality tools
+flake8==7.1.1
+black==24.8.0
+
+# Optional: For generating mock data
+faker==24.4.0
+
+# Optional: For static analysis
+mypy==1.11.2
+
+# Optional: For documentation
+sphinx==7.3.7

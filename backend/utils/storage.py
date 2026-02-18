@@ -124,6 +124,34 @@ def get_all_documents():
         return []
 
 # 初始化Chroma客户端
+# 初始化Chroma客户端（终极兜底方案：使用默认嵌入函数）
+def init_chroma_client():
+    global _chroma_client
+    if _chroma_client is not None:
+        return _chroma_client
+    with _client_lock:
+        if _chroma_client is not None:
+            return _chroma_client
+        try:
+            # ===================== 终极兜底：使用默认嵌入函数，100%兼容 =====================
+            ef = embedding_functions.DefaultEmbeddingFunction()
+            
+            # 最简初始化
+            client = PersistentClient(path=str(CHROMA_DB_PATH))
+            
+            # 获取或创建集合
+            client.get_or_create_collection(name="documents", embedding_function=ef)
+            
+            logger.info("Chroma客户端初始化成功（使用默认嵌入函数）")
+            _chroma_client = client
+            return client
+        except NotFoundError as e:
+            logger.error(f"初始化失败：集合相关错误 - {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"初始化Chroma客户端失败: {str(e)}")
+            return None
+"""
 def init_chroma_client():
     global _chroma_client
     if _chroma_client is not None:
@@ -135,11 +163,14 @@ def init_chroma_client():
             if not MODEL_DIR.exists():
                 logger.error(f"初始化失败：本地模型路径不存在 {MODEL_DIR}")
                 return None
+            
+            # ===================== 修复：移除不支持的参数 =====================
+            # 简化嵌入函数初始化，只保留核心的 model_name
             ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=str(MODEL_DIR),
-                model_kwargs={'device': 'cpu', 'trust_remote_code': True},
-                encode_kwargs={'normalize_embeddings': True, 'batch_size': 8}
+                model_name=str(MODEL_DIR)
             )
+            # =================================================================
+            
             client = PersistentClient(
                 path=str(CHROMA_DB_PATH),
                 settings={"anonymized_telemetry": False}
@@ -154,7 +185,7 @@ def init_chroma_client():
         except Exception as e:
             logger.error(f"初始化Chroma客户端失败: {str(e)}")
             return None
-
+"""
 # 智能分片函数
 def split_text_into_chunks(text, max_length=MAX_CHUNK_LENGTH, min_length=MIN_CHUNK_LENGTH):
     if not text:
@@ -193,7 +224,6 @@ def save_document_summary_for_classification(filepath):
         filename = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
         
-        # ===================== 修复2：加上 PPT 映射 =====================
         content_handlers = {
             '.pdf': process_pdf,
             '.docx': process_word,
@@ -204,13 +234,22 @@ def save_document_summary_for_classification(filepath):
             '.ppt': process_ppt,
             '.pptx': process_ppt
         }
-        handler = content_handlers.get(ext, process_document)
-        content = handler(filepath)
         
-        # ===================== 修复3：优化错误判断（不依赖字符串）=====================
-        if not content or content.startswith("处理失败"):
-            logger.error(f"文档内容无效：{filepath}")
-            return None, None
+        # ===================== 修复：适配元组返回值 =====================
+        if ext in content_handlers:
+            # 单个处理器返回字符串
+            content = content_handlers[ext](filepath)
+            # 判断是否失败
+            if content.startswith("处理失败") or content.startswith("（扫描版PDF"):
+                logger.error(f"文档内容无效：{filepath}")
+                return None, None
+        else:
+            # process_document 返回元组
+            success, content = process_document(filepath)
+            if not success:
+                logger.error(f"文档内容无效：{filepath}")
+                return None, None
+        # =================================================================
         
         preview_content = content[:1000] if len(content) > 1000 else content
         doc_info = {
@@ -243,10 +282,12 @@ def save_document_to_chroma(filepath, document_id=None):
         filename = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
         
-        full_content = process_document(filepath)
-        if not full_content or full_content.startswith("处理失败"):
+        # ===================== 修复：适配元组返回值 =====================
+        success, full_content = process_document(filepath)
+        if not success:
             logger.error(f"文档内容无效：{filepath}")
             return False
+        # =================================================================
         
         chunks = split_text_into_chunks(full_content)
         if not chunks:
