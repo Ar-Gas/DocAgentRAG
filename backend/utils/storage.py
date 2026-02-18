@@ -1,183 +1,218 @@
 import json
 import os
 import uuid
+import threading
+import logging
 from datetime import datetime
+from pathlib import Path
 from chromadb import PersistentClient
 from chromadb.utils import embedding_functions
-from .document_processor import process_document, process_pdf, process_word, process_excel, process_email
+from chromadb.errors import NotFoundError
+# ===================== 修复1：导入 process_ppt =====================
+from .document_processor import (
+    process_document, process_pdf, process_word, 
+    process_excel, process_email, process_ppt
+)
 
-# 获取项目根目录
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DOC_DIR = os.path.join(BASE_DIR, "doc")
-CHROMA_DB_PATH = os.path.join(BASE_DIR, "chromadb")
+# ===================== 优化：配置日志（替代 print）=====================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# 确保必要的目录存在
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(DOC_DIR, exist_ok=True)
-os.makedirs(CHROMA_DB_PATH, exist_ok=True)
+# ===================== 配置项抽离 =====================
+BASE_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = BASE_DIR / "data"
+DOC_DIR = BASE_DIR / "doc"
+CHROMA_DB_PATH = BASE_DIR / "chromadb"
+MODEL_DIR = Path(os.getenv("MODEL_DIR", "/root/autodl-tmp/DocAgentRAG/backend/models/all-MiniLM-L6-v2"))
+MAX_CHUNK_LENGTH = 500
+MIN_CHUNK_LENGTH = 5
 
-# 全局Chroma客户端实例
+# 确保目录存在
+for dir_path in [DATA_DIR, DOC_DIR, CHROMA_DB_PATH]:
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+# ===================== 线程安全的单例客户端 =====================
 _chroma_client = None
+_client_lock = threading.Lock()
 
 # 保存文档信息到JSON
 def save_document_info(doc_info):
+    if not isinstance(doc_info, dict) or 'id' not in doc_info:
+        logger.error("保存文档信息失败：无效的文档信息（缺少ID）")
+        return False
     try:
-        # 确保data目录存在
-        os.makedirs(DATA_DIR, exist_ok=True)
-
-        # 生成文件路径
-        filepath = os.path.join(DATA_DIR, f"{doc_info['id']}.json")
-
-        # 保存数据
+        filepath = DATA_DIR / f"{doc_info['id']}.json"
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(doc_info, f, ensure_ascii=False, indent=2)
-
+        logger.info(f"文档信息保存成功：{doc_info['id']}")
         return True
     except Exception as e:
-        print(f"保存文档信息失败: {str(e)}")
+        logger.error(f"保存文档信息失败: {str(e)}")
         return False
 
 # 获取文档信息
 def get_document_info(document_id):
+    if not document_id or not isinstance(document_id, str):
+        logger.error("获取文档信息失败：文档ID为空或非法")
+        return None
     try:
-        filepath = os.path.join(DATA_DIR, f"{document_id}.json")
-
-        if not os.path.exists(filepath):
+        filepath = DATA_DIR / f"{document_id}.json"
+        if not filepath.exists():
             return None
-
         with open(filepath, 'r', encoding='utf-8') as f:
             doc_info = json.load(f)
-
         return doc_info
     except Exception as e:
-        print(f"获取文档信息失败: {str(e)}")
+        logger.error(f"获取文档信息失败: {str(e)}")
         return None
 
 # 保存分类结果
 def save_classification_result(document_id, classification_result):
+    if not document_id or not classification_result:
+        logger.error("保存分类结果失败：ID或分类结果为空")
+        return False
     try:
-        filepath = os.path.join(DATA_DIR, f"{document_id}.json")
-
-        if not os.path.exists(filepath):
+        filepath = DATA_DIR / f"{document_id}.json"
+        if not filepath.exists():
             return False
-
-        # 读取现有数据
         with open(filepath, 'r', encoding='utf-8') as f:
             doc_info = json.load(f)
-
-        # 添加分类结果
         doc_info['classification_result'] = classification_result
         doc_info['classification_time'] = datetime.now().isoformat()
-
-        # 保存更新后的数据
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(doc_info, f, ensure_ascii=False, indent=2)
-
+        logger.info(f"分类结果保存成功：{document_id}")
         return True
     except Exception as e:
-        print(f"保存分类结果失败: {str(e)}")
+        logger.error(f"保存分类结果失败: {str(e)}")
         return False
 
 # 获取分类结果
 def get_classification_result(document_id):
     try:
         doc_info = get_document_info(document_id)
-        if not doc_info:
-            return None
-
-        return doc_info.get('classification_result', None)
+        return doc_info.get('classification_result', None) if doc_info else None
     except Exception as e:
-        print(f"获取分类结果失败: {str(e)}")
+        logger.error(f"获取分类结果失败: {str(e)}")
         return None
 
 # 获取所有文档信息
 def get_all_documents():
     try:
         documents = []
-
-        if not os.path.exists(DATA_DIR):
+        if not DATA_DIR.exists():
             return documents
-
-        for filename in os.listdir(DATA_DIR):
-            if filename.endswith('.json'):
-                filepath = os.path.join(DATA_DIR, filename)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        doc_info = json.load(f)
-                        documents.append(doc_info)
-                except Exception as e:
-                    print(f"读取文档{filename}失败: {str(e)}")
-                    continue
-
+        json_files = sorted(
+            DATA_DIR.glob("*.json"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True
+        )
+        for filepath in json_files:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    doc_info = json.load(f)
+                    documents.append(doc_info)
+            except Exception as e:
+                logger.error(f"读取文档{filepath.name}失败: {str(e)}")
+                continue
         return documents
     except Exception as e:
-        print(f"获取所有文档失败: {str(e)}")
+        logger.error(f"获取所有文档失败: {str(e)}")
         return []
 
 # 初始化Chroma客户端
 def init_chroma_client():
-    """
-    初始化Chroma客户端（使用本地模型，无需下载）
-    """
     global _chroma_client
     if _chroma_client is not None:
         return _chroma_client
+    with _client_lock:
+        if _chroma_client is not None:
+            return _chroma_client
+        try:
+            if not MODEL_DIR.exists():
+                logger.error(f"初始化失败：本地模型路径不存在 {MODEL_DIR}")
+                return None
+            ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=str(MODEL_DIR),
+                model_kwargs={'device': 'cpu', 'trust_remote_code': True},
+                encode_kwargs={'normalize_embeddings': True, 'batch_size': 8}
+            )
+            client = PersistentClient(
+                path=str(CHROMA_DB_PATH),
+                settings={"anonymized_telemetry": False}
+            )
+            client.get_or_create_collection(name="documents", embedding_function=ef)
+            logger.info(f"Chroma客户端初始化成功，模型路径：{MODEL_DIR}")
+            _chroma_client = client
+            return client
+        except NotFoundError as e:
+            logger.error(f"初始化失败：集合相关错误 - {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"初始化Chroma客户端失败: {str(e)}")
+            return None
 
-    try:
-        # 使用本地模型路径（已下载好的模型）
-        model_dir = '/root/autodl-tmp/DocAgentRAG/backend/models/all-MiniLM-L6-v2'
-        
-        # 使用本地模型初始化嵌入函数
-        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=model_dir,  # 直接用本地模型路径
-            model_kwargs={'device': 'cpu'},  # 若有GPU可改为 'cuda'
-            encode_kwargs={'normalize_embeddings': True}
-        )
-        
-        # 3. 初始化Chroma客户端
-        client = PersistentClient(path=CHROMA_DB_PATH)
-        # 验证：创建集合时绑定本地嵌入函数
-        client.get_or_create_collection(name="documents", embedding_function=ef)
-        
-        print(f"Chroma客户端初始化成功，使用本地模型：/root/autodl-tmp/DocAgentRAG/backend/models/all-MiniLM-L6-v2")
-        _chroma_client = client
-        return client
-    except Exception as e:
-        print(f"初始化Chroma客户端失败: {str(e)}")
-        return None
+# 智能分片函数
+def split_text_into_chunks(text, max_length=MAX_CHUNK_LENGTH, min_length=MIN_CHUNK_LENGTH):
+    if not text:
+        return []
+    chunks = []
+    current_chunk = ""
+    separators = ['。', '！', '？', '. ', '! ', '? ', '; ', '；', '\n']
+    for sep in separators:
+        if sep in text:
+            sentences = text.split(sep)
+            for sentence in sentences:
+                sentence = sentence.strip() + sep
+                if len(current_chunk + sentence) <= max_length:
+                    current_chunk += sentence
+                else:
+                    if len(current_chunk) >= min_length:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sentence
+            break
+    else:
+        for i in range(0, len(text), max_length):
+            chunk = text[i:i+max_length].strip()
+            if len(chunk) >= min_length:
+                chunks.append(chunk)
+    if len(current_chunk) >= min_length:
+        chunks.append(current_chunk.strip())
+    return chunks
 
 # 保存文档摘要信息用于分类
 def save_document_summary_for_classification(filepath):
-    """
-    读取文件名和文件前几页，放入json中，按合适的格式存储用于以后调用分类模型
-    """
+    if not filepath or not os.path.exists(filepath):
+        logger.error(f"保存摘要失败：文件不存在 {filepath}")
+        return None, None
     try:
-        # 生成文档ID
         document_id = str(uuid.uuid4())
-        
-        # 获取文件名
         filename = os.path.basename(filepath)
-        
-        # 获取文件扩展名
         ext = os.path.splitext(filepath)[1].lower()
         
-        # 根据文件类型调用对应的处理函数
-        if ext == '.pdf':
-            content = process_pdf(filepath)
-        elif ext == '.docx':
-            content = process_word(filepath)
-        elif ext in ['.xlsx', '.xls']:
-            content = process_excel(filepath)
-        elif ext in ['.eml', '.msg']:
-            content = process_email(filepath)
-        else:
-            content = process_document(filepath)
+        # ===================== 修复2：加上 PPT 映射 =====================
+        content_handlers = {
+            '.pdf': process_pdf,
+            '.docx': process_word,
+            '.xlsx': process_excel,
+            '.xls': process_excel,
+            '.eml': process_email,
+            '.msg': process_email,
+            '.ppt': process_ppt,
+            '.pptx': process_ppt
+        }
+        handler = content_handlers.get(ext, process_document)
+        content = handler(filepath)
         
-        # 提取前几页内容（这里简化处理，取前1000个字符）
-        preview_content = content[:1000]
+        # ===================== 修复3：优化错误判断（不依赖字符串）=====================
+        if not content or content.startswith("处理失败"):
+            logger.error(f"文档内容无效：{filepath}")
+            return None, None
         
-        # 构建文档信息
+        preview_content = content[:1000] if len(content) > 1000 else content
         doc_info = {
             'id': document_id,
             'filename': filename,
@@ -188,171 +223,132 @@ def save_document_summary_for_classification(filepath):
             'created_at': os.path.getmtime(filepath),
             'created_at_iso': datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat()
         }
-        
-        # 保存到JSON文件
         if save_document_info(doc_info):
             return document_id, doc_info
-        else:
-            return None, None
+        return None, None
     except Exception as e:
-        print(f"保存文档摘要失败: {str(e)}")
+        logger.error(f"保存文档摘要失败: {str(e)}")
         return None, None
 
-# 保存文档完整数据到Chroma用于检索
+# 保存文档到Chroma
 def save_document_to_chroma(filepath, document_id=None):
-    """
-    把文件的数据完整存入chroma，可以分段分句子都行，但是每个分片都要和文件名和doc内部路径对应，用于检索
-    """
+    if not filepath or not os.path.exists(filepath):
+        logger.error(f"保存失败：文件不存在 {filepath}")
+        return False
     try:
-        # 初始化Chroma客户端（已适配魔门社区模型）
         client = init_chroma_client()
         if not client:
             return False
-        
-        # 如果没有提供document_id，生成一个新的
-        if not document_id:
-            document_id = str(uuid.uuid4())
-        
-        # 获取文件名
+        document_id = document_id or str(uuid.uuid4())
         filename = os.path.basename(filepath)
-        
-        # 获取文件扩展名
         ext = os.path.splitext(filepath)[1].lower()
         
-        # 处理文档获取完整内容
         full_content = process_document(filepath)
-        if not full_content:
-            print(f"文档内容为空：{filepath}")
+        if not full_content or full_content.startswith("处理失败"):
+            logger.error(f"文档内容无效：{filepath}")
             return False
         
-        # 分段处理（这里按句子分段，简化处理）
-        chunks = []
+        chunks = split_text_into_chunks(full_content)
+        if not chunks:
+            logger.error(f"无有效分片：{filepath}")
+            return False
+        
         metadatas = []
         ids = []
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{document_id}_chunk_{i}"
+            metadatas.append({
+                'document_id': document_id,
+                'filename': filename,
+                'filepath': filepath,
+                'file_type': ext,
+                'chunk_index': i,
+                'chunk_length': len(chunk),
+                'doc_internal_path': f"{filename}#chunk_{i}"
+            })
+            ids.append(chunk_id)
         
-        # 简单的句子分段（优化：避免空句子，处理中文句号）
-        sentences = full_content.split('. ')
-        # 兼容中文句号分割
-        if len(sentences) <= 1:
-            sentences = full_content.split('。')
-        
-        for i, sentence in enumerate(sentences):
-            sentence = sentence.strip()
-            if sentence and len(sentence) > 1:  # 过滤空/极短句子
-                chunk_id = f"{document_id}_chunk_{i}"
-                chunks.append(sentence)
-                metadatas.append({
-                    'document_id': document_id,
-                    'filename': filename,
-                    'filepath': filepath,
-                    'file_type': ext,
-                    'chunk_index': i,
-                    'doc_internal_path': f"{filename}#chunk_{i}"
-                })
-                ids.append(chunk_id)
-        
-        if not chunks:
-            print(f"文档无有效分片：{filepath}")
+        try:
+            collection = client.get_collection(name="documents")
+        except NotFoundError:
+            logger.error("集合不存在，请先初始化")
             return False
         
-        # 创建或获取集合（已绑定本地嵌入函数）
-        collection = client.get_or_create_collection(name="documents")
-        
-        # 添加文档到Chroma（无外网模型下载，速度极快）
-        collection.add(
-            documents=chunks,
-            metadatas=metadatas,
-            ids=ids
-        )
-        
-        print(f"文档保存成功：{filename}，共{len(chunks)}个分片")
+        collection.add(documents=chunks, metadatas=metadatas, ids=ids)
+        logger.info(f"文档保存成功：{filename}，共{len(chunks)}个分片")
         return True
     except Exception as e:
-        print(f"保存文档到Chroma失败: {str(e)}")
+        logger.error(f"保存文档到Chroma失败: {str(e)}")
         return False
 
 # 从Chroma检索文档
 def retrieve_from_chroma(query, n_results=5):
-    """
-    从Chroma检索相关文档
-    """
+    if not query or n_results <= 0:
+        logger.error("检索失败：查询为空或结果数非法")
+        return []
     try:
-        # 初始化Chroma客户端
         client = init_chroma_client()
         if not client:
             return []
-        
-        # 获取集合
-        collection = client.get_or_create_collection(name="documents")
-        
-        # 执行检索
-        results = collection.query(
-            query_texts=[query],
-            n_results=n_results
-        )
-        
+        try:
+            collection = client.get_collection(name="documents")
+        except NotFoundError:
+            logger.warning("集合不存在，无检索结果")
+            return []
+        results = collection.query(query_texts=[query], n_results=n_results)
         return results
     except Exception as e:
-        print(f"从Chroma检索失败: {str(e)}")
+        logger.error(f"从Chroma检索失败: {str(e)}")
         return []
 
 # 删除文档
 def delete_document(document_id):
-    """
-    删除文档及其相关信息
-    """
+    if not document_id:
+        logger.error("删除失败：文档ID为空")
+        return False
     try:
-        # 删除JSON文件
-        json_file = os.path.join(DATA_DIR, f"{document_id}.json")
-        if os.path.exists(json_file):
-            os.remove(json_file)
-
-        # 从Chroma中删除相关文档
+        json_file = DATA_DIR / f"{document_id}.json"
+        if json_file.exists():
+            json_file.unlink()
         client = init_chroma_client()
         if client:
-            collection = client.get_or_create_collection(name="documents")
-            # 获取所有相关的chunk ID
-            results = collection.get(where={"document_id": document_id})
-            if results and results.get("ids"):
-                collection.delete(ids=results["ids"])
-
+            try:
+                collection = client.get_collection(name="documents")
+                results = collection.get(where={"document_id": document_id})
+                if results and results.get("ids"):
+                    collection.delete(ids=results["ids"])
+            except NotFoundError:
+                pass
+        logger.info(f"文档{document_id}删除成功")
         return True
     except Exception as e:
-        print(f"删除文档失败: {str(e)}")
+        logger.error(f"删除文档失败: {str(e)}")
         return False
 
 # 更新文档信息
 def update_document_info(document_id, updated_info):
-    """
-    更新文档信息
-    """
+    if not document_id or not isinstance(updated_info, dict):
+        logger.error("更新失败：ID为空或更新信息非法")
+        return False
     try:
         doc_info = get_document_info(document_id)
         if not doc_info:
             return False
-
-        # 更新信息
         doc_info.update(updated_info)
         doc_info['updated_at'] = datetime.now().isoformat()
-
-        # 保存更新后的数据
         return save_document_info(doc_info)
     except Exception as e:
-        print(f"更新文档信息失败: {str(e)}")
+        logger.error(f"更新文档信息失败: {str(e)}")
         return False
 
 # 根据分类结果获取文档
 def get_documents_by_classification(classification):
-    """
-    根据分类结果获取文档
-    """
+    if not classification:
+        logger.error("分类过滤失败：分类标签为空")
+        return []
     try:
         all_docs = get_all_documents()
-        filtered_docs = []
-        for doc in all_docs:
-            if doc.get('classification_result') == classification:
-                filtered_docs.append(doc)
-        return filtered_docs
+        return [doc for doc in all_docs if doc.get('classification_result') == classification]
     except Exception as e:
-        print(f"根据分类获取文档失败: {str(e)}")
+        logger.error(f"根据分类获取文档失败: {str(e)}")
         return []
