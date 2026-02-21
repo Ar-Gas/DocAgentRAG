@@ -1,0 +1,12 @@
+{
+  "id": "23bfe07d-d92f-43d0-9462-1e615ff32892",
+  "filename": "sample.docx",
+  "filepath": "/home/zyq/DocAgentRAG/backend/doc/word/sample.docx",
+  "file_type": ".docx",
+  "preview_content": "Word处理失败: Package not found at '/home/zyq/DocAgentRAG/backend/doc/word/sample.docx'",
+  "full_content_length": 83,
+  "created_at": 1771695184.8419282,
+  "created_at_iso": "2026-02-22T01:33:04.841928",
+  "classification_result": "办公-其他",
+  "classification_time": "2026-02-22T03:10:26.937229"
+}

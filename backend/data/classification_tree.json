@@ -1,0 +1,800 @@
+{
+  "generated_at": "2026-02-22T03:11:10.376945",
+  "total_documents": 39,
+  "tree": {
+    "书籍-编程技术": {
+      "pdf": {
+        "2026年02月": [
+          {
+            "document_id": "ec1ef381-8bb8-4a2b-86d6-15328f3cc6fa",
+            "filename": "Rust编程：入门、实战与进阶.pdf",
+            "content_keywords": [
+              "2.2",
+              "2.1",
+              "2.3",
+              "3.2",
+              "类型",
+              "Rust",
+              "华章",
+              "2.4",
+              "2.5",
+              "3.1"
+            ],
+            "content_category": "书籍-编程技术",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771698823.5965848,
+            "created_at_iso": "2026-02-22T02:33:43.596585",
+            "classification_path": "书籍-编程技术/pdf/2026年02月"
+          },
+          {
+            "document_id": "900d0f28-f5b8-4ab1-a1d6-068c6b2fe5c0",
+            "filename": "modern-cpp-tutorial-zh-cn.pdf",
+            "content_keywords": [
+              "C++",
+              "4.0",
+              "changkun",
+              "6ee89",
+              "PDF",
+              "GitHub",
+              "https",
+              "creativecommons",
+              "licenses",
+              "1.1"
+            ],
+            "content_category": "书籍-编程技术",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771698678.4654424,
+            "created_at_iso": "2026-02-22T02:31:18.465442",
+            "classification_path": "书籍-编程技术/pdf/2026年02月"
+          },
+          {
+            "document_id": "8fd9e3e2-7bb1-4bc3-8921-a9ffbf901b28",
+            "filename": "操作系统导论.pdf",
+            "content_keywords": [
+              "本书",
+              "整本书",
+              "章节",
+              "操作系统",
+              "这些",
+              "了解",
+              "香肠",
+              "讨论",
+              "主题",
+              "理解"
+            ],
+            "content_category": "书籍-编程技术",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771697476.1103399,
+            "created_at_iso": "2026-02-22T02:11:16.110340",
+            "classification_path": "书籍-编程技术/pdf/2026年02月"
+          },
+          {
+            "document_id": "aaa7d409-8fb1-4011-974f-365f923ab1c0",
+            "filename": "NVIDIA_CUDA_Programming_Guide_1.1_chs.pdf",
+            "content_keywords": [
+              "CUDA",
+              "NVIDIA",
+              "编程",
+              "1.1",
+              "GPU",
+              "指南",
+              "多线程",
+              "协处理器",
+              "Version",
+              "Chapter1"
+            ],
+            "content_category": "书籍-编程技术",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771696034.8889964,
+            "created_at_iso": "2026-02-22T01:47:14.888996",
+            "classification_path": "书籍-编程技术/pdf/2026年02月"
+          },
+          {
+            "document_id": "5a564a78-bdab-4fc3-b73a-d494a26aced0",
+            "filename": "sample.pdf",
+            "content_keywords": [
+              "Form",
+              "filing",
+              "employer",
+              "security",
+              "Married",
+              "jointly",
+              "spouse",
+              "2026Employee",
+              "Withholding",
+              "Certificate"
+            ],
+            "content_category": "书籍-编程技术",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771344296.5597389,
+            "created_at_iso": "2026-02-18T00:04:56.559739",
+            "classification_path": "书籍-编程技术/pdf/2026年02月"
+          }
+        ]
+      }
+    },
+    "数据文档-Excel表格": {
+      "excel": {
+        "2026年02月": [
+          {
+            "document_id": "306bd501-d142-42a1-9509-0bf79e9a5943",
+            "filename": "sample.xlsx",
+            "content_keywords": [
+              "Excel",
+              "specify",
+              "engine",
+              "manually",
+              "失败",
+              "处理"
+            ],
+            "content_category": "数据文档-Excel表格",
+            "file_type": "excel",
+            "time_group": "2026年02月",
+            "timestamp": 1771344296.5917385,
+            "created_at_iso": "2026-02-18T00:04:56.591738",
+            "classification_path": "数据文档-Excel表格/excel/2026年02月"
+          },
+          {
+            "document_id": "8f30e182-0498-495c-b3e3-4ea4fa35f18f",
+            "filename": "sample.xlsx",
+            "content_keywords": [
+              "Excel",
+              "specify",
+              "engine",
+              "manually",
+              "失败",
+              "处理"
+            ],
+            "content_category": "数据文档-Excel表格",
+            "file_type": "excel",
+            "time_group": "2026年02月",
+            "timestamp": 1771267821.2881947,
+            "created_at_iso": null,
+            "classification_path": "数据文档-Excel表格/excel/2026年02月"
+          },
+          {
+            "document_id": "bb7a5b74-a40b-45cf-bf35-2913dc1289ca",
+            "filename": "sample.xlsx",
+            "content_keywords": [
+              "Excel",
+              "specify",
+              "engine",
+              "manually",
+              "失败",
+              "处理"
+            ],
+            "content_category": "数据文档-Excel表格",
+            "file_type": "excel",
+            "time_group": "2026年02月",
+            "timestamp": 1771267821.2881947,
+            "created_at_iso": null,
+            "classification_path": "数据文档-Excel表格/excel/2026年02月"
+          },
+          {
+            "document_id": "dfefea74-c073-44c2-ad44-602f79722d1a",
+            "filename": "sample.xlsx",
+            "content_keywords": [
+              "Excel",
+              "specify",
+              "engine",
+              "manually",
+              "失败",
+              "处理"
+            ],
+            "content_category": "数据文档-Excel表格",
+            "file_type": "excel",
+            "time_group": "2026年02月",
+            "timestamp": 1771267821.2881947,
+            "created_at_iso": null,
+            "classification_path": "数据文档-Excel表格/excel/2026年02月"
+          }
+        ]
+      }
+    },
+    "办公-邮件": {
+      "eml": {
+        "2026年02月": [
+          {
+            "document_id": "975d5e30-cf25-4b75-acc8-8d48076019ba",
+            "filename": "sample.eml",
+            "content_keywords": [
+              "meta",
+              "font",
+              "text",
+              "margin",
+              "line",
+              "size",
+              "Segoe",
+              "Emoji",
+              "1.5",
+              "title"
+            ],
+            "content_category": "办公-邮件",
+            "file_type": "eml",
+            "time_group": "2026年02月",
+            "timestamp": 1771344296.555739,
+            "created_at_iso": "2026-02-18T00:04:56.555739",
+            "classification_path": "办公-邮件/eml/2026年02月"
+          },
+          {
+            "document_id": "c6111be5-5c78-4edb-bea0-f0d2670d128d",
+            "filename": "sample.eml",
+            "content_keywords": [
+              "meta",
+              "font",
+              "text",
+              "margin",
+              "line",
+              "size",
+              "Segoe",
+              "Emoji",
+              "1.5",
+              "title"
+            ],
+            "content_category": "办公-邮件",
+            "file_type": "eml",
+            "time_group": "2026年02月",
+            "timestamp": 1771267834.0038846,
+            "created_at_iso": null,
+            "classification_path": "办公-邮件/eml/2026年02月"
+          },
+          {
+            "document_id": "ecce8b6a-dbfd-4351-b569-3daabd8ebb42",
+            "filename": "sample.eml",
+            "content_keywords": [
+              "meta",
+              "font",
+              "text",
+              "margin",
+              "line",
+              "size",
+              "Segoe",
+              "Emoji",
+              "1.5",
+              "title"
+            ],
+            "content_category": "办公-邮件",
+            "file_type": "eml",
+            "time_group": "2026年02月",
+            "timestamp": 1771267834.0038846,
+            "created_at_iso": null,
+            "classification_path": "办公-邮件/eml/2026年02月"
+          },
+          {
+            "document_id": "51e5f2a7-1481-4f4d-b5db-283fb9685e25",
+            "filename": "sample.eml",
+            "content_keywords": [
+              "meta",
+              "font",
+              "text",
+              "margin",
+              "line",
+              "size",
+              "Segoe",
+              "Emoji",
+              "1.5",
+              "title"
+            ],
+            "content_category": "办公-邮件",
+            "file_type": "eml",
+            "time_group": "2026年02月",
+            "timestamp": 1771267834.0038846,
+            "created_at_iso": null,
+            "classification_path": "办公-邮件/eml/2026年02月"
+          }
+        ]
+      }
+    },
+    "其他文档": {
+      "pdf": {
+        "2026年02月": [
+          {
+            "document_id": "b593fbed-433f-4364-8dc4-4848248a0289",
+            "filename": "sample.pdf",
+            "content_keywords": [],
+            "content_category": "其他文档",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771267791.6289713,
+            "created_at_iso": null,
+            "classification_path": "其他文档/pdf/2026年02月"
+          },
+          {
+            "document_id": "81a5578c-6f9e-4d67-bbbd-907b0720a3f1",
+            "filename": "sample.pdf",
+            "content_keywords": [],
+            "content_category": "其他文档",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771267791.6289713,
+            "created_at_iso": null,
+            "classification_path": "其他文档/pdf/2026年02月"
+          },
+          {
+            "document_id": "6fd7e708-9615-4696-b16f-3d4b7546f64a",
+            "filename": "sample.pdf",
+            "content_keywords": [],
+            "content_category": "其他文档",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771267791.6289713,
+            "created_at_iso": null,
+            "classification_path": "其他文档/pdf/2026年02月"
+          },
+          {
+            "document_id": "591408b5-be24-4404-80ae-a0029fc9e860",
+            "filename": "sample.pdf",
+            "content_keywords": [],
+            "content_category": "其他文档",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771267791.6289713,
+            "created_at_iso": null,
+            "classification_path": "其他文档/pdf/2026年02月"
+          },
+          {
+            "document_id": "13c547be-6a30-43e5-8643-9bd0130447f4",
+            "filename": "sample.pdf",
+            "content_keywords": [],
+            "content_category": "其他文档",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771267791.6289713,
+            "created_at_iso": null,
+            "classification_path": "其他文档/pdf/2026年02月"
+          }
+        ]
+      },
+      "other": {
+        "2026年02月": [
+          {
+            "document_id": "README_20260217021739.md",
+            "filename": "README.md",
+            "content_keywords": [],
+            "content_category": "其他文档",
+            "file_type": "other",
+            "time_group": "2026年02月",
+            "timestamp": 1771701070.3653953,
+            "created_at_iso": null,
+            "classification_path": "其他文档/other/2026年02月"
+          }
+        ]
+      }
+    },
+    "办公-其他": {
+      "word": {
+        "2026年02月": [
+          {
+            "document_id": "23bfe07d-d92f-43d0-9462-1e615ff32892",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "DocAgentRAG",
+              "backend",
+              "word",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771695184.8419282,
+            "created_at_iso": "2026-02-22T01:33:04.841928",
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "c2f44299-a3de-4d08-b0cf-4c77fab2fe17",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771344296.555739,
+            "created_at_iso": "2026-02-18T00:04:56.555739",
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "e27df52f-1e2a-40e5-ae18-bedd1445c739",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771344296.555739,
+            "created_at_iso": "2026-02-18T00:04:56.555739",
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "54e3d164-e497-404d-aeef-a4f16d5b5b64",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771344296.555739,
+            "created_at_iso": "2026-02-18T00:04:56.555739",
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "84d630c1-ae6b-41e9-a379-7fa64cdb890c",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771267792.7809398,
+            "created_at_iso": null,
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "d80cc2c4-5322-416c-8670-defbc5e47624",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771267792.7809398,
+            "created_at_iso": null,
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "eaf473ce-fe16-4227-a8fd-ffeb1cc75112",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771267792.7809398,
+            "created_at_iso": null,
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "8371f4c8-f96f-4dbc-aac8-2f5e4d7823cc",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771267792.7809398,
+            "created_at_iso": null,
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "2d6abd1f-5626-44b8-b86c-1b2f292c6df5",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771267792.7809398,
+            "created_at_iso": null,
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "431aba36-eec1-4854-a668-68be3a6ea5df",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771267792.7809398,
+            "created_at_iso": null,
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "77a2faf0-7234-44bb-8862-4042e21518c9",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771267792.7809398,
+            "created_at_iso": null,
+            "classification_path": "办公-其他/word/2026年02月"
+          },
+          {
+            "document_id": "192d66b9-f573-4773-b5ee-7e13f71660a9",
+            "filename": "sample.docx",
+            "content_keywords": [
+              "Word",
+              "autodl",
+              "DocAgentRAG",
+              "backend",
+              "date",
+              "sample",
+              "docx",
+              "失败",
+              "处理"
+            ],
+            "content_category": "办公-其他",
+            "file_type": "word",
+            "time_group": "2026年02月",
+            "timestamp": 1771267792.7809398,
+            "created_at_iso": null,
+            "classification_path": "办公-其他/word/2026年02月"
+          }
+        ]
+      }
+    },
+    "书籍-经济管理": {
+      "pdf": {
+        "2026年02月": [
+          {
+            "document_id": "7fe82353-91dd-4641-909e-1201c2c9d973",
+            "filename": "中国是部金融史-透过金融读懂中国三千年 (陈雨露  杨忠恕) (z-lib.org).pdf",
+            "content_keywords": [
+              "货币",
+              "融史",
+              "开元",
+              "五铢",
+              "忠恕",
+              "两晋",
+              "盐铁",
+              "铜钱",
+              "轮回",
+              "图书"
+            ],
+            "content_category": "书籍-经济管理",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771700083.2160013,
+            "created_at_iso": "2026-02-22T02:54:43.216001",
+            "classification_path": "书籍-经济管理/pdf/2026年02月"
+          }
+        ]
+      }
+    },
+    "学术论文-其他": {
+      "pdf": {
+        "2026年02月": [
+          {
+            "document_id": "85dc189d-d0c5-4a8c-b5a9-3ed7e8204a24",
+            "filename": "《当代中国社会分层》李强.pdf",
+            "content_keywords": [
+              "分层",
+              "社会",
+              "社会科学",
+              "中国",
+              "学院",
+              "结构",
+              "书店",
+              "李强",
+              "研究",
+              "教育部"
+            ],
+            "content_category": "学术论文-其他",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771700101.5348902,
+            "created_at_iso": "2026-02-22T02:55:01.534890",
+            "classification_path": "学术论文-其他/pdf/2026年02月"
+          },
+          {
+            "document_id": "45661ca8-b2ce-4d62-a3b7-31fdd47395f5",
+            "filename": "浪潮之巅完整版.pdf",
+            "content_keywords": [
+              "吴军",
+              "Google",
+              "之巅",
+              "博士",
+              "约翰霍普金斯",
+              "浪潮",
+              "计算机系",
+              "Tides",
+              "他于",
+              "韩文"
+            ],
+            "content_category": "学术论文-其他",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771700070.5260782,
+            "created_at_iso": "2026-02-22T02:54:30.526078",
+            "classification_path": "学术论文-其他/pdf/2026年02月"
+          }
+        ]
+      }
+    },
+    "办公-PPT演示": {
+      "ppt": {
+        "2026年02月": [
+          {
+            "document_id": "2bea9f70-dd62-46e7-8a60-9499f86650d8",
+            "filename": "sample.pptx",
+            "content_keywords": [
+              "meta",
+              "font",
+              "text",
+              "margin",
+              "line",
+              "size",
+              "Segoe",
+              "Emoji",
+              "1.5",
+              "title"
+            ],
+            "content_category": "办公-PPT演示",
+            "file_type": "ppt",
+            "time_group": "2026年02月",
+            "timestamp": 1771344296.5597389,
+            "created_at_iso": "2026-02-18T00:04:56.559739",
+            "classification_path": "办公-PPT演示/ppt/2026年02月"
+          },
+          {
+            "document_id": "aa7ddc73-e277-4ef2-800e-9d78bad4b8d0",
+            "filename": "sample.pptx",
+            "content_keywords": [
+              "meta",
+              "font",
+              "text",
+              "margin",
+              "line",
+              "size",
+              "Segoe",
+              "Emoji",
+              "1.5",
+              "title"
+            ],
+            "content_category": "办公-PPT演示",
+            "file_type": "ppt",
+            "time_group": "2026年02月",
+            "timestamp": 1771267823.0201516,
+            "created_at_iso": null,
+            "classification_path": "办公-PPT演示/ppt/2026年02月"
+          },
+          {
+            "document_id": "502ee5a6-91af-45dc-b42a-3c5d958d338a",
+            "filename": "sample.pptx",
+            "content_keywords": [
+              "meta",
+              "font",
+              "text",
+              "margin",
+              "line",
+              "size",
+              "Segoe",
+              "Emoji",
+              "1.5",
+              "title"
+            ],
+            "content_category": "办公-PPT演示",
+            "file_type": "ppt",
+            "time_group": "2026年02月",
+            "timestamp": 1771267823.0201516,
+            "created_at_iso": null,
+            "classification_path": "办公-PPT演示/ppt/2026年02月"
+          },
+          {
+            "document_id": "6ddc4fb1-6c86-4908-b37d-97738a8a23dc",
+            "filename": "sample.pptx",
+            "content_keywords": [
+              "meta",
+              "font",
+              "text",
+              "margin",
+              "line",
+              "size",
+              "Segoe",
+              "Emoji",
+              "1.5",
+              "title"
+            ],
+            "content_category": "办公-PPT演示",
+            "file_type": "ppt",
+            "time_group": "2026年02月",
+            "timestamp": 1771267823.0201516,
+            "created_at_iso": null,
+            "classification_path": "办公-PPT演示/ppt/2026年02月"
+          }
+        ]
+      }
+    }
+  },
+  "classification_method": "keyword"
+}

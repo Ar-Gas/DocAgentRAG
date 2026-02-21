@@ -9,18 +9,44 @@ from pathlib import Path
 from email import policy
 from email.parser import BytesParser
 
-# ===================== 规范：配置日志 =====================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+from config import MAX_FILE_SIZE, MAX_TEXT_LENGTH, PDF_PAGE_LIMIT, EXCEL_CHUNK_SIZE
+
 logger = logging.getLogger(__name__)
 
-# ===================== 配置：无卡模式适配 =====================
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 最大处理50MB文件
-MAX_TEXT_LENGTH = 500 * 1024        # 最大返回500KB文本（避免超长）
-PDF_PAGE_LIMIT = 100                  # PDF最多处理100页（防大文件）
-EXCEL_CHUNK_SIZE = 100                # Excel分块读取，每块100行
+# ===================== 工具：图片处理（OCR提取文字）=====================
+def process_image(filepath):
+    """
+    处理图片文件，使用OCR提取文字
+    :param filepath: 图片路径
+    :return: str
+    """
+    try:
+        from PIL import Image
+        import pytesseract
+        
+        logger.info(f"处理图片：{filepath}")
+        
+        # 打开图片
+        img = Image.open(filepath)
+        
+        # 尝试OCR识别
+        try:
+            text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+            if text and text.strip():
+                content = text.strip()
+                content = _truncate_text(content)
+                logger.info(f"图片OCR识别成功，提取文本长度：{len(content)}")
+                return content
+            else:
+                logger.warning(f"图片未识别到文字：{filepath}")
+                return "图片中未识别到文字"
+        except Exception as e:
+            logger.error(f"OCR识别失败: {str(e)}")
+            return f"图片OCR识别失败: {str(e)}"
+            
+    except Exception as e:
+        logger.error(f"图片处理失败: {str(e)}")
+        return f"图片处理失败: {str(e)}"
 
 # ===================== 工具：文件校验 =====================
 def _check_file_validity(filepath):
@@ -311,7 +337,13 @@ def process_document(filepath):
         '.ppt': process_ppt,
         '.pptx': process_ppt,
         '.eml': process_email,
-        '.msg': process_email
+        '.msg': process_email,
+        '.jpg': process_image,
+        '.jpeg': process_image,
+        '.png': process_image,
+        '.gif': process_image,
+        '.bmp': process_image,
+        '.webp': process_image
     }
     
     # 调用对应处理器

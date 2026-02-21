@@ -23,3 +23,13 @@ mypy==1.11.2
 
 # Optional: For documentation
 sphinx==7.3.7
+
+# 配置环境经验：
+# 1. 前端项目需要 Node.js 20.19.0 或更高版本
+# 2. 安装 Node.js 的推荐方法：
+#    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+#    sudo apt-get install -y nodejs
+# 3. 确保 npm 版本是最新的：npm install -g npm
+# 4. 前端项目需要配置 vite.config.js 文件，设置路径别名
+# 5. 如果遇到依赖解析错误，检查 vite.config.js 文件中的配置
+# 6. 前端服务默认运行在 http://localhost:5173/

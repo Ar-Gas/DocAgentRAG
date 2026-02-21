@@ -7,32 +7,18 @@ from datetime import datetime
 from pathlib import Path
 from chromadb import PersistentClient
 from chromadb.utils import embedding_functions
-from chromadb.errors import NotFoundError
-# ===================== 修复1：导入 process_ppt =====================
+from chromadb.errors import InvalidCollectionException
+
 from .document_processor import (
-    process_document, process_pdf, process_word, 
-    process_excel, process_email, process_ppt
+    process_document, process_pdf, process_word,
+    process_excel, process_email, process_ppt, process_image
+)
+from config import (
+    DATA_DIR, DOC_DIR, CHROMA_DB_PATH, MODEL_DIR,
+    MAX_CHUNK_LENGTH, MIN_CHUNK_LENGTH
 )
 
-# ===================== 优化：配置日志（替代 print）=====================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
-
-# ===================== 配置项抽离 =====================
-BASE_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DATA_DIR = BASE_DIR / "data"
-DOC_DIR = BASE_DIR / "doc"
-CHROMA_DB_PATH = BASE_DIR / "chromadb"
-MODEL_DIR = Path(os.getenv("MODEL_DIR", "/root/autodl-tmp/DocAgentRAG/backend/models/all-MiniLM-L6-v2"))
-MAX_CHUNK_LENGTH = 500
-MIN_CHUNK_LENGTH = 5
-
-# 确保目录存在
-for dir_path in [DATA_DIR, DOC_DIR, CHROMA_DB_PATH]:
-    dir_path.mkdir(parents=True, exist_ok=True)
 
 # ===================== 线程安全的单例客户端 =====================
 _chroma_client = None
@@ -124,7 +110,7 @@ def get_all_documents():
         return []
 
 # 初始化Chroma客户端
-# 初始化Chroma客户端（终极兜底方案：使用默认嵌入函数）
+# 使用支持中文的BGE嵌入模型
 def init_chroma_client():
     global _chroma_client
     if _chroma_client is not None:
@@ -133,59 +119,44 @@ def init_chroma_client():
         if _chroma_client is not None:
             return _chroma_client
         try:
-            # ===================== 终极兜底：使用默认嵌入函数，100%兼容 =====================
-            ef = embedding_functions.DefaultEmbeddingFunction()
-            
-            # 最简初始化
-            client = PersistentClient(path=str(CHROMA_DB_PATH))
-            
-            # 获取或创建集合
-            client.get_or_create_collection(name="documents", embedding_function=ef)
-            
-            logger.info("Chroma客户端初始化成功（使用默认嵌入函数）")
-            _chroma_client = client
-            return client
-        except NotFoundError as e:
-            logger.error(f"初始化失败：集合相关错误 - {str(e)}")
-            return None
-        except Exception as e:
-            logger.error(f"初始化Chroma客户端失败: {str(e)}")
-            return None
-"""
-def init_chroma_client():
-    global _chroma_client
-    if _chroma_client is not None:
-        return _chroma_client
-    with _client_lock:
-        if _chroma_client is not None:
-            return _chroma_client
-        try:
-            if not MODEL_DIR.exists():
-                logger.error(f"初始化失败：本地模型路径不存在 {MODEL_DIR}")
-                return None
-            
-            # ===================== 修复：移除不支持的参数 =====================
-            # 简化嵌入函数初始化，只保留核心的 model_name
+            # 使用支持中文的BGE模型
+            # 可选模型: bge-small-zh-v1.5 (轻量), bge-base-zh-v1.5 (平衡), bge-large-zh-v1.5 (高性能)
+            bge_model = os.getenv('BGE_MODEL', 'BAAI/bge-small-zh-v1.5')
+
+            logger.info(f"正在加载中文嵌入模型: {bge_model}")
             ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=str(MODEL_DIR)
+                model_name=bge_model
             )
-            # =================================================================
-            
-            client = PersistentClient(
-                path=str(CHROMA_DB_PATH),
-                settings={"anonymized_telemetry": False}
+
+            # 初始化持久化客户端
+            client = PersistentClient(path=str(CHROMA_DB_PATH))
+
+            # 获取或创建集合
+            collection = client.get_or_create_collection(
+                name="documents",
+                embedding_function=ef
             )
-            client.get_or_create_collection(name="documents", embedding_function=ef)
-            logger.info(f"Chroma客户端初始化成功，模型路径：{MODEL_DIR}")
+
+            logger.info(f"Chroma客户端初始化成功（使用中文嵌入模型: {bge_model}）")
             _chroma_client = client
             return client
-        except NotFoundError as e:
+        except InvalidCollectionException as e:
             logger.error(f"初始化失败：集合相关错误 - {str(e)}")
             return None
         except Exception as e:
             logger.error(f"初始化Chroma客户端失败: {str(e)}")
-            return None
-"""
+            # 兜底：使用默认嵌入函数
+            logger.warning("回退到默认嵌入函数...")
+            try:
+                ef = embedding_functions.DefaultEmbeddingFunction()
+                client = PersistentClient(path=str(CHROMA_DB_PATH))
+                client.get_or_create_collection(name="documents", embedding_function=ef)
+                logger.info("Chroma客户端初始化成功（使用默认嵌入函数）")
+                _chroma_client = client
+                return client
+            except Exception as fallback_error:
+                logger.error(f"兜底初始化也失败: {str(fallback_error)}")
+                return None
 # 智能分片函数
 def split_text_into_chunks(text, max_length=MAX_CHUNK_LENGTH, min_length=MIN_CHUNK_LENGTH):
     if not text:
@@ -232,7 +203,13 @@ def save_document_summary_for_classification(filepath):
             '.eml': process_email,
             '.msg': process_email,
             '.ppt': process_ppt,
-            '.pptx': process_ppt
+            '.pptx': process_ppt,
+            '.jpg': process_image,
+            '.jpeg': process_image,
+            '.png': process_image,
+            '.gif': process_image,
+            '.bmp': process_image,
+            '.webp': process_image
         }
         
         # ===================== 修复：适配元组返回值 =====================
@@ -263,11 +240,53 @@ def save_document_summary_for_classification(filepath):
             'created_at_iso': datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat()
         }
         if save_document_info(doc_info):
+            # 新增文档后，增量更新分类树
+            update_classification_tree_after_add(doc_info)
             return document_id, doc_info
         return None, None
     except Exception as e:
         logger.error(f"保存文档摘要失败: {str(e)}")
         return None, None
+
+# 新增文档后更新分类树
+def update_classification_tree_after_add(doc_info):
+    """新增文档后增量更新分类树"""
+    try:
+        from utils.multi_level_classifier import get_multi_level_classifier, build_and_save_classification_tree
+        
+        classifier = get_multi_level_classifier()
+        tree = classifier.load_classification_tree()
+        
+        if not tree or 'tree' not in tree:
+            build_and_save_classification_tree()
+            return
+        
+        # 对新文档进行分类
+        classification = classifier.classify_document(doc_info)
+        if not classification:
+            return
+        
+        content_cat = classification['content_category']
+        file_type = classification['file_type']
+        time_group = classification['time_group']
+        
+        # 确保树结构存在
+        if content_cat not in tree['tree']:
+            tree['tree'][content_cat] = {}
+        if file_type not in tree['tree'][content_cat]:
+            tree['tree'][content_cat][file_type] = {}
+        if time_group not in tree['tree'][content_cat][file_type]:
+            tree['tree'][content_cat][file_type][time_group] = []
+        
+        # 添加新文档
+        tree['tree'][content_cat][file_type][time_group].append(classification)
+        tree['total_documents'] = tree.get('total_documents', 0) + 1
+        tree['updated_at'] = datetime.now().isoformat()
+        
+        classifier.save_classification_tree(tree)
+        logger.info(f"分类树已更新（新增文档）: {doc_info.get('filename')}")
+    except Exception as e:
+        logger.error(f"新增文档后更新分类树失败: {str(e)}")
 
 # 保存文档到Chroma
 def save_document_to_chroma(filepath, document_id=None):
@@ -311,7 +330,7 @@ def save_document_to_chroma(filepath, document_id=None):
         
         try:
             collection = client.get_collection(name="documents")
-        except NotFoundError:
+        except InvalidCollectionException:
             logger.error("集合不存在，请先初始化")
             return False
         
@@ -333,7 +352,7 @@ def retrieve_from_chroma(query, n_results=5):
             return []
         try:
             collection = client.get_collection(name="documents")
-        except NotFoundError:
+        except InvalidCollectionException:
             logger.warning("集合不存在，无检索结果")
             return []
         results = collection.query(query_texts=[query], n_results=n_results)
@@ -358,13 +377,65 @@ def delete_document(document_id):
                 results = collection.get(where={"document_id": document_id})
                 if results and results.get("ids"):
                     collection.delete(ids=results["ids"])
-            except NotFoundError:
+            except InvalidCollectionException:
                 pass
+        
+        # 更新分类树：移除删除的文档
+        update_classification_tree_after_delete(document_id)
+        
         logger.info(f"文档{document_id}删除成功")
         return True
     except Exception as e:
         logger.error(f"删除文档失败: {str(e)}")
         return False
+
+# 删除文档后更新分类树
+def update_classification_tree_after_delete(document_id):
+    """删除文档后增量更新分类树"""
+    try:
+        from utils.multi_level_classifier import get_multi_level_classifier
+        
+        classifier = get_multi_level_classifier()
+        tree = classifier.load_classification_tree()
+        
+        if not tree or 'tree' not in tree:
+            return
+        
+        # 从树中移除该文档
+        tree_modified = False
+        for content_cat, types in list(tree['tree'].items()):
+            for file_type, times in list(types.items()):
+                for time_group, docs in list(times.items()):
+                    # 过滤掉被删除的文档
+                    original_count = len(docs)
+                    tree['tree'][content_cat][file_type][time_group] = [
+                        doc for doc in docs 
+                        if doc.get('document_id') != document_id
+                    ]
+                    new_count = len(tree['tree'][content_cat][file_type][time_group])
+                    
+                    if original_count != new_count:
+                        tree_modified = True
+                    
+                    # 如果该时间分组空了，移除
+                    if not tree['tree'][content_cat][file_type][time_group]:
+                        del tree['tree'][content_cat][file_type][time_group]
+                
+                # 如果该类型分组空了，移除
+                if not tree['tree'][content_cat][file_type]:
+                    del tree['tree'][content_cat][file_type]
+            
+            # 如果该内容分类空了，移除
+            if not tree['tree'][content_cat]:
+                del tree['tree'][content_cat]
+        
+        if tree_modified:
+            tree['total_documents'] = max(0, tree.get('total_documents', 0) - 1)
+            tree['updated_at'] = datetime.now().isoformat()
+            classifier.save_classification_tree(tree)
+            logger.info(f"分类树已更新（删除文档）: {document_id}")
+    except Exception as e:
+        logger.error(f"删除文档后更新分类树失败: {str(e)}")
 
 # 更新文档信息
 def update_document_info(document_id, updated_info):

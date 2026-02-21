@@ -136,12 +136,62 @@ npm run dev
 yarn dev
 ```
 
-前端服务默认运行在 `http://localhost:3000`
+前端服务默认运行在 `http://localhost:5173/`
 
 ### 4. 访问系统
 
-1. 打开浏览器，访问前端应用：`http://localhost:3000`
+1. 打开浏览器，访问前端应用：`http://localhost:5173/`
 2. 或直接访问后端 API 文档：`http://localhost:6008/docs`
+
+## 配置环境经验
+
+### 后端环境配置经验
+
+1. **Python 版本**：建议使用 Python 3.8 或更高版本
+2. **依赖安装**：
+   - 确保 pip 版本是最新的：`pip install --upgrade pip`
+   - 使用 `pip install -r requirements.txt` 安装依赖
+   - 可能会遇到依赖冲突，使用最新版本的 pip 可以解决大部分问题
+3. **系统依赖**：
+   - 必须安装 Tesseract OCR：`sudo apt install tesseract-ocr`（Ubuntu/Debian）
+   - 首次运行时，sentence-transformers 会自动下载预训练模型
+4. **常见问题**：
+   - ChromaDB 可能会遇到数据库初始化错误，这是正常现象，服务仍可正常运行
+   - 如果遇到导入错误，检查 ChromaDB 的错误类型，并使用正确的异常类名
+   - 对于大型模型，建议在有足够内存的环境中运行
+
+### 前端环境配置经验
+
+1. **Node.js 版本**：前端项目需要 Node.js 20.19.0 或更高版本
+2. **安装 Node.js**：
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+   sudo apt-get install -y nodejs
+   ```
+3. **依赖安装**：
+   - 进入前端目录：`cd frontend/docagent-frontend`
+   - 安装依赖：`npm install`
+   - 确保 npm 版本是最新的：`npm install -g npm`
+4. **配置文件**：
+   - 前端项目需要配置 vite.config.js 文件，设置路径别名
+   - 配置示例：
+     ```javascript
+     import { defineConfig } from 'vite'
+     import vue from '@vitejs/plugin-vue'
+     import path from 'path'
+     
+     export default defineConfig({
+       plugins: [vue()],
+       resolve: {
+         alias: {
+           '@': path.resolve(__dirname, './src')
+         }
+       }
+     })
+     ```
+5. **服务启动**：
+   - 前端服务默认运行在 `http://localhost:5173/`
+   - 后端服务默认运行在 `http://localhost:6008`
 
 ## API 文档
 

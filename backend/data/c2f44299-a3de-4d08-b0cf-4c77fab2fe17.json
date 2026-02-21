@@ -6,5 +6,7 @@
   "preview_content": "Word处理失败: Package not found at '/root/autodl-tmp/DocAgentRAG/backend/test/test_date/sample.docx'",
   "full_content_length": 96,
   "created_at": 1771344296.555739,
-  "created_at_iso": "2026-02-18T00:04:56.555739"
+  "created_at_iso": "2026-02-18T00:04:56.555739",
+  "classification_result": "数据文档",
+  "classification_time": "2026-02-22T01:32:52.010195"
 }

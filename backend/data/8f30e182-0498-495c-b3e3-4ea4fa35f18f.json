@@ -5,5 +5,7 @@
   "file_type": ".xlsx",
   "preview_content": "Excel处理失败: Excel file format cannot be determined, you must specify an engine manually.",
   "full_content_length": 87,
-  "created_at": 1771267821.2881947
+  "created_at": 1771267821.2881947,
+  "classification_result": "数据文档-Excel表格",
+  "classification_time": "2026-02-22T03:12:24.573715"
 }

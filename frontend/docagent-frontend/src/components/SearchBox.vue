@@ -50,7 +50,7 @@ const props = defineProps({
   }
 })
 // 向父组件发送事件
-const emit = defineEmits(['search-result', 'refresh-stats'])
+const emit = defineEmits(['search-result', 'refresh-stats', 'search-query'])
 
 // 响应式数据
 const searchQuery = ref('')
@@ -64,10 +64,10 @@ const handleSearch = async () => {
   }
   
   loading.value = true
+  emit('search-query', searchQuery.value)
   try {
     const res = await api.searchDocuments(searchQuery.value)
-    const results = res.data || res
-    // 把搜索结果传给父组件
+    const results = res.data?.results || []
     emit('search-result', results)
     if (results.length === 0) {
       ElMessage.info('未找到相关文档')

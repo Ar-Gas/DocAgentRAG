@@ -13,15 +13,23 @@
         <SearchBox 
           :stats="stats" 
           @search-result="handleSearchResult"
+          @search-query="handleSearchQuery"
           @refresh-stats="loadStats"
         />
       </div>
 
-      <!-- 分类面板 -->
-      <ClassificationPanel 
-        :document-list="documentList"
-        @classify-all-success="handleOperateSuccess"
-      />
+      <!-- 分类标签页 -->
+      <el-tabs v-model="activeTab" class="classification-tabs">
+        <el-tab-pane label="旧版分类" name="old">
+          <ClassificationPanel 
+            :document-list="documentList"
+            @classify-all-success="handleOperateSuccess"
+          />
+        </el-tab-pane>
+        <el-tab-pane label="多级分类" name="new">
+          <MultiLevelClassification />
+        </el-tab-pane>
+      </el-tabs>
 
       <!-- 文档列表 -->
       <FileList 
@@ -30,46 +38,37 @@
         @refresh="loadDocuments"
         @operate-success="handleOperateSuccess"
       />
-
-      <!-- 搜索结果展示区 -->
-      <div class="card results-card" v-if="searchResults.length > 0">
-        <div class="card-header">
-          <el-icon><Search /></el-icon>
-          <span>检索结果 ({{ searchResults.length }} 条)</span>
-          <el-button type="primary" link @click="searchResults = []">
-            关闭
-          </el-button>
-        </div>
-        <div class="result-list">
-          <div class="result-item" v-for="(item, index) in searchResults" :key="index">
-            <div class="result-header">
-              <span class="result-filename">{{ item.filename }}</span>
-              <el-tag :type="item.similarity > 0.8 ? 'success' : item.similarity > 0.6 ? 'warning' : 'info'">
-                相似度: {{ (item.similarity * 100).toFixed(0) }}%
-              </el-tag>
-            </div>
-            <div class="result-snippet">{{ item.content_snippet }}</div>
-          </div>
-        </div>
-      </div>
     </div>
+
+    <!-- 检索结果弹窗 -->
+    <SearchResultDialog
+      v-model="showSearchDialog"
+      :query="searchQuery"
+      :initial-results="searchResults"
+      @search-updated="handleSearchUpdated"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Search } from '@element-plus/icons-vue'
 // 导入所有组件
 import FileUpload from '@/components/FileUpload.vue'
 import SearchBox from '@/components/SearchBox.vue'
 import FileList from '@/components/FileList.vue'
 import ClassificationPanel from '@/components/ClassificationPanel.vue'
+import MultiLevelClassification from '@/components/MultiLevelClassification.vue'
+import SearchResultDialog from '@/components/SearchResultDialog.vue'
 // 导入API
 import { api } from '@/api'
+
+const activeTab = ref('new')
 
 // 响应式数据
 const documentList = ref([])
 const searchResults = ref([])
+const searchQuery = ref('')
+const showSearchDialog = ref(false)
 const stats = ref(null)
 const loading = ref(false)
 
@@ -78,7 +77,7 @@ const loadDocuments = async () => {
   loading.value = true
   try {
     const res = await api.getDocumentList()
-    documentList.value = res.data || res
+    documentList.value = res.data?.items || []
   } catch (error) {
     console.error('加载文档列表失败', error)
   } finally {
@@ -102,8 +101,21 @@ const handleUploadSuccess = () => {
   loadStats()
 }
 
-// 搜索结果回调
+// 搜索结果回调 - 打开弹窗
 const handleSearchResult = (results) => {
+  searchResults.value = results
+  if (results.length > 0) {
+    showSearchDialog.value = true
+  }
+}
+
+// 搜索查询回调
+const handleSearchQuery = (query) => {
+  searchQuery.value = query
+}
+
+// 搜索更新回调
+const handleSearchUpdated = (results) => {
   searchResults.value = results
 }
 
@@ -170,48 +182,6 @@ onMounted(() => {
   .el-icon {
     font-size: 24px;
     color: #409eff;
-  }
-}
-
-.results-card {
-  .card-header {
-    justify-content: space-between;
-  }
-  
-  .result-list {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-  
-  .result-item {
-    padding: 16px;
-    background-color: #f5f7fa;
-    border-radius: 8px;
-    border-left: 4px solid #409eff;
-    transition: all 0.3s ease;
-    
-    &:hover {
-      background-color: #ecf5ff;
-      transform: translateX(4px);
-    }
-    
-    .result-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-      
-      .result-filename {
-        font-weight: 600;
-        color: #303133;
-      }
-    }
-    
-    .result-snippet {
-      color: #606266;
-      line-height: 1.6;
-    }
   }
 }
 
