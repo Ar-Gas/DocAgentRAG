@@ -36,9 +36,10 @@
         </template>
       </el-table-column>
       <el-table-column prop="created_at_iso" label="上传时间" width="180" />
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="420" fixed="right">
         <template #default="{ row }">
           <el-button 
+            v-if="!row.classification_result"
             type="primary" 
             link 
             size="small" 
@@ -47,6 +48,38 @@
           >
             <el-icon><MagicStick /></el-icon>
             分类
+          </el-button>
+          <el-button 
+            v-else
+            type="warning" 
+            link 
+            size="small" 
+            @click="handleReclassify(row)" 
+            :loading="row.reclassifying"
+          >
+            <el-icon><RefreshRight /></el-icon>
+            重新分类
+          </el-button>
+          <el-button 
+            type="success" 
+            link 
+            size="small" 
+            @click="handleRechunk(row)" 
+            :loading="row.rechunking"
+          >
+            <el-icon><Refresh /></el-icon>
+            重新分片
+          </el-button>
+          <el-button 
+            v-if="row.classification_result"
+            type="info" 
+            link 
+            size="small" 
+            @click="handleClearClassification(row)" 
+            :loading="row.clearingClassification"
+          >
+            <el-icon><Close /></el-icon>
+            清除分类
           </el-button>
           <el-button 
             type="success" 
@@ -78,11 +111,10 @@
 <script setup>
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Document, Refresh, MagicStick, FolderAdd, Delete
+  Document, Refresh, MagicStick, FolderAdd, Delete, RefreshRight, Close
 } from '@element-plus/icons-vue'
 import { api } from '@/api'
 
-// 接收父组件传入的数据
 const props = defineProps({
   documentList: {
     type: Array,
@@ -93,15 +125,12 @@ const props = defineProps({
     default: false
   }
 })
-// 向父组件发送事件
 const emit = defineEmits(['refresh', 'operate-success'])
 
-// 刷新列表
 const handleRefresh = () => {
   emit('refresh')
 }
 
-// 单个文档分类
 const handleClassify = async (row) => {
   row.classifying = true
   try {
@@ -115,7 +144,44 @@ const handleClassify = async (row) => {
   }
 }
 
-// 创建分类目录并移动文件
+const handleReclassify = async (row) => {
+  row.reclassifying = true
+  try {
+    const response = await api.reclassifyDocument(row.id)
+    ElMessage.success(`文档重新分类成功！新分类：${response.data.new_classification || '未知'}`)
+    emit('operate-success')
+  } catch (error) {
+    console.error('重新分类失败：', error)
+  } finally {
+    row.reclassifying = false
+  }
+}
+
+const handleClearClassification = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要清除文档 "${row.filename}" 的分类结果吗？`,
+      '清除分类',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    row.clearingClassification = true
+    await api.clearClassificationResult(row.id)
+    ElMessage.success('分类结果已清除！')
+    emit('operate-success')
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('清除分类失败：', error)
+    }
+  } finally {
+    row.clearingClassification = false
+  }
+}
+
 const handleCreateFolder = async (row) => {
   row.creatingFolder = true
   try {
@@ -129,7 +195,6 @@ const handleCreateFolder = async (row) => {
   }
 }
 
-// 删除文档
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm(
@@ -152,6 +217,31 @@ const handleDelete = async (row) => {
     }
   } finally {
     row.deleting = false
+  }
+}
+
+const handleRechunk = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要对文档 "${row.filename}" 进行重新分片吗？`,
+      '重新分片确认',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    row.rechunking = true
+    await api.rechunkDocument(row.id)
+    ElMessage.success('文档重新分片成功！')
+    emit('operate-success')
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('重新分片失败：', error)
+    }
+  } finally {
+    row.rechunking = false
   }
 }
 </script>

@@ -31,6 +31,11 @@
       <div class="option-item">
         <span class="option-label">检索模式:</span>
         <el-radio-group v-model="searchMode" size="small" @change="handleModeChange">
+          <el-radio-button label="keyword">
+            <el-tooltip content="纯关键词精确匹配，适合精确查找" placement="top">
+              <span>🎯 精确检索</span>
+            </el-tooltip>
+          </el-radio-button>
           <el-radio-button label="smart">
             <el-tooltip content="LLM查询扩展 + 多查询检索 + LLM重排序" placement="top">
               <span>🧠 智能检索</span>
@@ -60,12 +65,36 @@
           style="width: 150px"
           @change="handleAlphaChange"
         />
+        <el-checkbox v-model="useHighlight" style="margin-left: 16px">关键词高亮</el-checkbox>
+      </div>
+
+      <div class="option-item" v-if="searchMode === 'keyword'">
+        <el-checkbox v-model="useHighlight">关键词高亮</el-checkbox>
       </div>
       
-      <div class="option-item" v-if="searchMode !== 'smart'">
-        <el-checkbox v-model="useRerank" @change="handleRerankChange">
+      <div class="option-item" v-if="searchMode === 'vector'">
+        <el-checkbox v-model="useRerank">
           启用重排序
         </el-checkbox>
+        <el-checkbox v-model="useHighlight" style="margin-left: 12px">关键词高亮</el-checkbox>
+      </div>
+    </div>
+
+    <div class="matched-keywords" v-if="matchedKeywords.length > 0 && useHighlight">
+      <div class="keywords-header">
+        <el-icon><Collection /></el-icon>
+        <span>匹配的关键词</span>
+      </div>
+      <div class="keyword-tags">
+        <el-tag 
+          v-for="(kw, idx) in matchedKeywords" 
+          :key="idx" 
+          type="danger"
+          size="small"
+          effect="dark"
+        >
+          {{ kw }}
+        </el-tag>
       </div>
     </div>
     
@@ -116,7 +145,11 @@
             </div>
             
             <div class="card-body">
-              <p class="content-snippet">{{ item.content_snippet }}</p>
+              <p 
+                class="content-snippet" 
+                :class="{ 'highlight-mode': useHighlight }"
+                v-html="item.content_snippet"
+              ></p>
             </div>
             
             <div class="card-footer">
@@ -225,8 +258,10 @@ const alphaValue = ref(50)
 const useRerank = ref(true)
 const useQueryExpansion = ref(true)
 const useLlmRerank = ref(true)
+const useHighlight = ref(true)
 const llmAvailable = ref(false)
 const expandedQueries = ref([])
+const matchedKeywords = ref([])
 const detailVisible = ref(false)
 const currentDetail = ref(null)
 
@@ -258,10 +293,18 @@ const performSearch = async () => {
   
   loading.value = true
   expandedQueries.value = []
+  matchedKeywords.value = []
   
   try {
     let res
-    if (searchMode.value === 'smart') {
+    if (searchMode.value === 'keyword') {
+      if (useHighlight.value) {
+        res = await api.searchWithHighlight(props.query, 'keyword', { limit: 10 })
+        matchedKeywords.value = res.data?.keywords || []
+      } else {
+        res = await api.keywordSearch(props.query, 10)
+      }
+    } else if (searchMode.value === 'smart') {
       res = await api.smartSearch(props.query, {
         limit: 10,
         useQueryExpansion: useQueryExpansion.value,
@@ -270,14 +313,28 @@ const performSearch = async () => {
       })
       expandedQueries.value = res.data?.meta?.expanded_queries || []
     } else if (searchMode.value === 'hybrid') {
-      res = await api.hybridSearch(
-        props.query,
-        10,
-        alphaValue.value / 100,
-        useRerank.value
-      )
+      if (useHighlight.value) {
+        res = await api.searchWithHighlight(props.query, 'hybrid', {
+          limit: 10,
+          alpha: alphaValue.value / 100,
+          useRerank: useRerank.value
+        })
+        matchedKeywords.value = res.data?.keywords || []
+      } else {
+        res = await api.hybridSearch(
+          props.query,
+          10,
+          alphaValue.value / 100,
+          useRerank.value
+        )
+      }
     } else {
-      res = await api.searchDocuments(props.query, 10)
+      if (useHighlight.value) {
+        res = await api.searchWithHighlight(props.query, 'vector', { limit: 10 })
+        matchedKeywords.value = res.data?.keywords || []
+      } else {
+        res = await api.searchDocuments(props.query, 10)
+      }
     }
     results.value = res.data?.results || []
     emit('search-updated', results.value)
@@ -521,6 +578,34 @@ const handleExport = () => {
   }
 }
 
+.matched-keywords {
+  background: linear-gradient(135deg, #fef0ef 0%, #fde2e2 100%);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border: 1px solid #fdaeb1;
+  
+  .keywords-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #c45656;
+    font-weight: 500;
+    
+    .el-icon {
+      color: #f56c6c;
+    }
+  }
+  
+  .keyword-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
 .results-container {
   max-height: 500px;
   overflow-y: auto;
@@ -672,6 +757,16 @@ const handleExport = () => {
       padding: 12px;
       border-radius: 8px;
       border-left: 3px solid #409eff;
+      
+      &.highlight-mode {
+        :deep(.highlight) {
+          background-color: #f56c6c;
+          color: white;
+          padding: 1px 4px;
+          border-radius: 3px;
+          font-weight: 600;
+        }
+      }
     }
   }
   

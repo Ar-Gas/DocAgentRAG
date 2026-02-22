@@ -4,6 +4,7 @@ from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
 import logging
 import os
+from pathlib import Path
 
 from config import API_PREFIX, DATA_DIR, DOC_DIR, CHROMA_DB_PATH, FILE_TYPE_DIRS
 from api import (
@@ -13,13 +14,94 @@ from api import (
     validation_exception_handler,
     generic_exception_handler
 )
-from utils.storage import init_chroma_client
+from utils.storage import init_chroma_client, get_chroma_collection, get_all_documents
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def check_and_rebuild_chunks():
+    """
+    检查系统中已有文档的分片完整性，如分片丢失则重新生成
+    """
+    logger.info("开始检查文档分片完整性...")
+    
+    try:
+        collection = get_chroma_collection()
+        if not collection:
+            logger.warning("无法获取Chroma集合，跳过分片检查")
+            return
+        
+        # 获取所有JSON中记录的文档
+        all_docs = get_all_documents()
+        if not all_docs:
+            logger.info("系统中没有文档记录")
+            return
+        
+        logger.info(f"系统中共有 {len(all_docs)} 个文档记录")
+        
+        # 获取Chroma中所有分片的document_id
+        chroma_docs = collection.get(include=["metadatas"])
+        
+        # 统计每个document_id的分片数量
+        chroma_doc_counts = {}
+        if chroma_docs and chroma_docs.get('metadatas'):
+            for metadata in chroma_docs['metadatas']:
+                if metadata:
+                    doc_id = metadata.get('document_id', '')
+                    if doc_id:
+                        chroma_doc_counts[doc_id] = chroma_doc_counts.get(doc_id, 0) + 1
+        
+        # 检查每个文档
+        rebuild_count = 0
+        missing_docs = []
+        
+        for doc in all_docs:
+            doc_id = doc.get('id')
+            filename = doc.get('filename', '未知文件')
+            
+            if not doc_id:
+                continue
+            
+            # 检查分片是否缺失
+            chroma_count = chroma_doc_counts.get(doc_id, 0)
+            
+            # 简单检查：如果Chroma中没有这个文档的任何分片，认为需要重建
+            if chroma_count == 0:
+                logger.warning(f"文档 {filename} (ID: {doc_id}) 在向量库中没有分片，需要重新生成")
+                missing_docs.append(doc)
+                rebuild_count += 1
+        
+        if missing_docs:
+            logger.info(f"发现 {len(missing_docs)} 个文档需要重新生成分片")
+            # 这里可以调用重新生成分片的函数
+            # 暂时只记录，实际重建可以通过其他API触发
+            for doc in missing_docs:
+                doc_id = doc.get('id')
+                filename = doc.get('filename', '未知')
+                filepath = doc.get('filepath', '')
+                
+                if filepath and Path(filepath).exists():
+                    logger.info(f"准备重新处理文档: {filename}")
+                    try:
+                        from utils.storage import save_document_to_chroma
+                        success = save_document_to_chroma(filepath, doc_id)
+                        if success:
+                            logger.info(f"文档重新处理成功: {filename}")
+                        else:
+                            logger.error(f"文档重新处理失败: {filename}")
+                    except Exception as e:
+                        logger.error(f"重新处理文档 {filename} 时出错: {str(e)}")
+                else:
+                    logger.warning(f"文档文件不存在，跳过: {filepath}")
+        
+        logger.info(f"分片完整性检查完成: 共检查 {len(all_docs)} 个文档, 需要重建 {rebuild_count} 个")
+        
+    except Exception as e:
+        logger.error(f"检查分片完整性时出错: {str(e)}", exc_info=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,6 +124,9 @@ async def lifespan(app: FastAPI):
         logger.info("Chroma 客户端初始化成功")
     else:
         logger.error("Chroma 客户端初始化失败，请检查模型路径")
+    
+    # 检查并重建缺失的文档分片
+    check_and_rebuild_chunks()
     
     logger.info("=" * 50)
     logger.info("系统启动完成！")

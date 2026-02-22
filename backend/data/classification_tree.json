@@ -222,28 +222,6 @@
             "classification_path": "办公-邮件/eml/2026年02月"
           },
           {
-            "document_id": "c6111be5-5c78-4edb-bea0-f0d2670d128d",
-            "filename": "sample.eml",
-            "content_keywords": [
-              "meta",
-              "font",
-              "text",
-              "margin",
-              "line",
-              "size",
-              "Segoe",
-              "Emoji",
-              "1.5",
-              "title"
-            ],
-            "content_category": "办公-邮件",
-            "file_type": "eml",
-            "time_group": "2026年02月",
-            "timestamp": 1771267834.0038846,
-            "created_at_iso": null,
-            "classification_path": "办公-邮件/eml/2026年02月"
-          },
-          {
             "document_id": "ecce8b6a-dbfd-4351-b569-3daabd8ebb42",
             "filename": "sample.eml",
             "content_keywords": [
@@ -293,17 +271,6 @@
     "其他文档": {
       "pdf": {
         "2026年02月": [
-          {
-            "document_id": "b593fbed-433f-4364-8dc4-4848248a0289",
-            "filename": "sample.pdf",
-            "content_keywords": [],
-            "content_category": "其他文档",
-            "file_type": "pdf",
-            "time_group": "2026年02月",
-            "timestamp": 1771267791.6289713,
-            "created_at_iso": null,
-            "classification_path": "其他文档/pdf/2026年02月"
-          },
           {
             "document_id": "81a5578c-6f9e-4d67-bbbd-907b0720a3f1",
             "filename": "sample.pdf",
@@ -794,7 +761,36 @@
           }
         ]
       }
+    },
+    "技术文档-编程开发": {
+      "pdf": {
+        "2026年02月": [
+          {
+            "document_id": "1e41636e-abe2-4631-9cdd-f3625ab04247",
+            "filename": "重构：改善既有代码的设计（第2版）（异步图书） (马丁·福勒(Martin Fowler) [马丁·福勒(Martin Fowler)]) (Z-Library).pdf",
+            "content_keywords": [
+              "重构",
+              "Data",
+              "过长",
+              "Long",
+              "函数",
+              "译者",
+              "进展",
+              "版权",
+              "阶段",
+              "代码"
+            ],
+            "content_category": "技术文档-编程开发",
+            "file_type": "pdf",
+            "time_group": "2026年02月",
+            "timestamp": 1771751520.4217584,
+            "created_at_iso": "2026-02-22T17:12:00.421758",
+            "classification_path": "技术文档-编程开发/pdf/2026年02月"
+          }
+        ]
+      }
     }
   },
-  "classification_method": "keyword"
+  "classification_method": "keyword",
+  "updated_at": "2026-02-22T17:12:10.716418"
 }

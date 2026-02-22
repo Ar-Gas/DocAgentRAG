@@ -7,7 +7,10 @@ from utils.storage import (
     get_document_info,
     save_classification_result,
     get_documents_by_classification,
-    get_all_documents
+    get_all_documents,
+    update_document_info,
+    update_classification_tree_after_reclassify,
+    re_chunk_document
 )
 from utils.classifier import classify_document, create_classification_directory
 from utils.multi_level_classifier import (
@@ -67,6 +70,82 @@ async def classify_single_document(request: ClassificationRequest):
         "suggested_folders": result_data.get('suggested_folders', [])
     }, message="文档分类完成")
 
+@router.post("/reclassify/{document_id}", summary="重新分类文档")
+async def reclassify_document(document_id: str):
+    """
+    对已分类的文档进行重新分类
+    会清除旧的分类结果并重新进行智能分类
+    """
+    doc_info = get_document_info(document_id)
+    if not doc_info:
+        raise BusinessException(code=1001, detail=f"文档ID: {document_id}")
+    
+    old_classification = doc_info.get('classification_result')
+    
+    classification_result = classify_document(doc_info)
+    if not classification_result:
+        raise BusinessException(code=1005, detail="文档分类处理失败")
+    
+    result_data = classification_result.get('classification_result', {})
+    categories = result_data.get('categories', [])
+    
+    if categories:
+        save_classification_result(
+            document_id,
+            categories[0]
+        )
+        update_classification_tree_after_reclassify(
+            document_id,
+            old_classification,
+            categories[0]
+        )
+    
+    logger.info(f"文档重新分类完成: {document_id} -> {categories}")
+    
+    return success(data={
+        "document_id": document_id,
+        "filename": doc_info.get('filename', ''),
+        "old_classification": old_classification,
+        "new_classification": categories[0] if categories else None,
+        "categories": categories,
+        "confidence": result_data.get('confidence', 0.0)
+    }, message="文档重新分类完成")
+
+@router.delete("/result/{document_id}", summary="清除文档分类结果")
+async def clear_classification_result(document_id: str):
+    """
+    清除文档的分类结果，使其变为未分类状态
+    同时更新分类树
+    """
+    doc_info = get_document_info(document_id)
+    if not doc_info:
+        raise BusinessException(code=1001, detail=f"文档ID: {document_id}")
+    
+    old_classification = doc_info.get('classification_result')
+    if not old_classification:
+        return success(data={
+            "document_id": document_id,
+            "message": "文档本身未分类，无需清除"
+        }, message="文档未分类")
+    
+    update_document_info(document_id, {
+        'classification_result': None,
+        'classification_time': None
+    })
+    
+    update_classification_tree_after_reclassify(
+        document_id,
+        old_classification,
+        None
+    )
+    
+    logger.info(f"文档分类结果已清除: {document_id}")
+    
+    return success(data={
+        "document_id": document_id,
+        "old_classification": old_classification
+    }, message="分类结果已清除")
+
 @router.get("/categories", summary="获取所有分类列表")
 async def get_all_categories():
     all_docs = get_all_documents()
@@ -114,6 +193,10 @@ async def create_document_folder(document_id: str):
     
     if not success_flag:
         raise BusinessException(code=1005, detail="分类目录创建失败")
+    
+    # 更新文档信息中的 filepath 为新路径
+    if target_path:
+        update_document_info(document_id, {'filepath': target_path})
     
     logger.info(f"分类目录创建成功: {document_id} -> {target_path}")
     
@@ -183,3 +266,118 @@ async def get_document_multi_level_classification(document_id: str):
     except Exception as e:
         logger.error(f"获取文档多级分类信息失败: {str(e)}")
         raise BusinessException(code=1005, detail=f"获取文档多级分类信息失败: {str(e)}")
+
+
+class CategoryBatchRequest(BaseModel):
+    category: str
+    use_refiner: bool = True
+
+
+@router.post("/category/batch-rechunk", summary="分类下所有文档批量重新分片")
+async def category_batch_rechunk(request: CategoryBatchRequest):
+    """对指定分类下的所有文档进行批量重新分片"""
+    docs = get_documents_by_classification(request.category)
+    if not docs:
+        return success(data={
+            "total": 0,
+            "success_count": 0,
+            "results": []
+        }, message="该分类下没有文档")
+    
+    results = []
+    for doc in docs:
+        try:
+            is_success = re_chunk_document(doc['id'], use_refiner=request.use_refiner)
+            results.append({
+                "document_id": doc['id'],
+                "filename": doc.get('filename', ''),
+                "success": is_success
+            })
+        except Exception as e:
+            logger.error(f"分类下文档重新分片失败 {doc['id']}: {str(e)}")
+            results.append({
+                "document_id": doc['id'],
+                "filename": doc.get('filename', ''),
+                "success": False,
+                "error": str(e)
+            })
+    
+    success_count = sum(1 for r in results if r['success'])
+    return success(data={
+        "category": request.category,
+        "total": len(results),
+        "success_count": success_count,
+        "results": results
+    }, message=f"分类下批量重新分片完成，成功 {success_count}/{len(results)}")
+
+
+@router.post("/category/batch-reclassify", summary="分类下所有文档批量重新分类")
+async def category_batch_reclassify(request: CategoryBatchRequest):
+    """对指定分类下的所有文档进行批量重新分类"""
+    docs = get_documents_by_classification(request.category)
+    if not docs:
+        return success(data={
+            "total": 0,
+            "success_count": 0,
+            "results": []
+        }, message="该分类下没有文档")
+    
+    results = []
+    for doc in docs:
+        try:
+            doc_info = get_document_info(doc['id'])
+            if not doc_info:
+                results.append({
+                    "document_id": doc['id'],
+                    "filename": doc.get('filename', ''),
+                    "success": False,
+                    "error": "文档不存在"
+                })
+                continue
+            
+            old_classification = doc_info.get('classification_result')
+            classification_result = classify_document(doc_info)
+            if not classification_result:
+                results.append({
+                    "document_id": doc['id'],
+                    "filename": doc.get('filename', ''),
+                    "success": False,
+                    "error": "分类失败"
+                })
+                continue
+            
+            result_data = classification_result.get('classification_result', {})
+            categories = result_data.get('categories', [])
+            new_classification = categories[0] if categories else None
+            
+            if new_classification:
+                save_classification_result(doc['id'], new_classification)
+                update_classification_tree_after_reclassify(
+                    doc['id'],
+                    old_classification,
+                    new_classification
+                )
+            
+            results.append({
+                "document_id": doc['id'],
+                "filename": doc.get('filename', ''),
+                "success": True,
+                "old_classification": old_classification,
+                "new_classification": new_classification
+            })
+        except Exception as e:
+            logger.error(f"分类下文档重新分类失败 {doc['id']}: {str(e)}")
+            results.append({
+                "document_id": doc['id'],
+                "filename": doc.get('filename', ''),
+                "success": False,
+                "error": str(e)
+            })
+    
+    success_count = sum(1 for r in results if r['success'])
+    return success(data={
+        "category": request.category,
+        "total": len(results),
+        "success_count": success_count,
+        "results": results
+    }, message=f"分类下批量重新分类完成，成功 {success_count}/{len(results)}")

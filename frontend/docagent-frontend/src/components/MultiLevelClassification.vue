@@ -70,20 +70,53 @@
                       v-for="doc in docs" 
                       :key="doc.document_id" 
                       class="document-item"
-                      @click="handleDocClick(doc)"
                     >
-                      <el-icon class="doc-icon"><Document /></el-icon>
-                      <span class="doc-name">{{ doc.filename }}</span>
-                      <div v-if="doc.content_keywords && doc.content_keywords.length > 0" class="keywords">
-                        <el-tag 
-                          v-for="(kw, idx) in doc.content_keywords.slice(0, 3)" 
-                          :key="idx" 
+                      <div class="doc-info" @click="handleDocClick(doc)">
+                        <el-icon class="doc-icon"><Document /></el-icon>
+                        <span class="doc-name">{{ doc.filename }}</span>
+                        <div v-if="doc.content_keywords && doc.content_keywords.length > 0" class="keywords">
+                          <el-tag 
+                            v-for="(kw, idx) in doc.content_keywords.slice(0, 3)" 
+                            :key="idx" 
+                            size="small" 
+                            type="info"
+                            class="keyword-tag"
+                          >
+                            {{ kw }}
+                          </el-tag>
+                        </div>
+                      </div>
+                      <div class="doc-actions">
+                        <el-button 
+                          type="warning" 
+                          link 
                           size="small" 
-                          type="info"
-                          class="keyword-tag"
+                          @click.stop="handleReclassify(doc)"
+                          :loading="doc.reclassifying"
+                          title="重新分类"
                         >
-                          {{ kw }}
-                        </el-tag>
+                          <el-icon><RefreshRight /></el-icon>
+                        </el-button>
+                        <el-button 
+                          type="info" 
+                          link 
+                          size="small" 
+                          @click.stop="handleClearClassification(doc)"
+                          :loading="doc.clearingClassification"
+                          title="清除分类"
+                        >
+                          <el-icon><Close /></el-icon>
+                        </el-button>
+                        <el-button 
+                          type="danger" 
+                          link 
+                          size="small" 
+                          @click.stop="handleDelete(doc)"
+                          :loading="doc.deleting"
+                          title="删除文档"
+                        >
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
                       </div>
                     </div>
                   </div>
@@ -141,8 +174,8 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { FolderOpened, Refresh, DocumentAdd, Folder, Files, Clock, Document, Search } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { FolderOpened, Refresh, DocumentAdd, Folder, Files, Clock, Document, Search, RefreshRight, Close, Delete } from '@element-plus/icons-vue'
 import { api } from '@/api'
 
 const loading = ref(false)
@@ -242,6 +275,80 @@ function handleSearch() {
 function handleDocClick(doc) {
   selectedDoc.value = doc
   drawerVisible.value = true
+}
+
+async function handleReclassify(doc) {
+  doc.reclassifying = true
+  try {
+    const response = await api.reclassifyDocument(doc.document_id)
+    ElMessage.success(`文档重新分类成功！新分类：${response.data.new_classification || '未知'}`)
+    await loadTree()
+  } catch (error) {
+    console.error('重新分类失败：', error)
+    ElMessage.error('重新分类失败')
+  } finally {
+    doc.reclassifying = false
+  }
+}
+
+async function handleClearClassification(doc) {
+  try {
+    await ElMessageBox.confirm(
+      `确定要清除文档 "${doc.filename}" 的分类结果吗？`,
+      '清除分类',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    doc.clearingClassification = true
+    await api.clearClassificationResult(doc.document_id)
+    ElMessage.success('分类结果已清除！')
+    await loadTree()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('清除分类失败：', error)
+      ElMessage.error('清除分类失败')
+    }
+  } finally {
+    doc.clearingClassification = false
+  }
+}
+
+async function handleDelete(doc) {
+  console.log('handleDelete called with doc:', doc)
+  console.log('doc.document_id:', doc.document_id, 'type:', typeof doc.document_id)
+  
+  if (!doc.document_id) {
+    ElMessage.error('文档ID无效，无法删除')
+    return
+  }
+  
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除文档 "${doc.filename}" 吗？删除后无法恢复！`,
+      '删除警告',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    doc.deleting = true
+    await api.deleteDocument(doc.document_id)
+    ElMessage.success('文档删除成功！')
+    await loadTree()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除失败：', error)
+      ElMessage.error('删除失败')
+    }
+  } finally {
+    doc.deleting = false
+  }
 }
 
 async function loadTree() {
@@ -445,40 +552,63 @@ onMounted(() => {
                 .document-item {
                   display: flex;
                   align-items: center;
-                  gap: 6px;
+                  justify-content: space-between;
                   padding: 8px 12px;
                   background: #f5f7fa;
                   border-radius: 4px;
-                  cursor: pointer;
                   transition: all 0.2s;
+                  min-width: 280px;
                   
                   &:hover {
                     background: #ecf5ff;
                     transform: translateY(-1px);
                   }
                   
-                  .doc-icon {
-                    font-size: 16px;
-                    color: #909399;
-                  }
-                  
-                  .doc-name {
-                    font-size: 13px;
-                    color: #606266;
-                    max-width: 200px;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    white-space: nowrap;
-                  }
-                  
-                  .keywords {
+                  .doc-info {
                     display: flex;
-                    gap: 4px;
-                    margin-left: 8px;
+                    align-items: center;
+                    gap: 6px;
+                    flex: 1;
+                    cursor: pointer;
+                    overflow: hidden;
                     
-                    .keyword-tag {
-                      margin: 0;
+                    .doc-icon {
+                      font-size: 16px;
+                      color: #909399;
+                      flex-shrink: 0;
                     }
+                    
+                    .doc-name {
+                      font-size: 13px;
+                      color: #606266;
+                      max-width: 150px;
+                      overflow: hidden;
+                      text-overflow: ellipsis;
+                      white-space: nowrap;
+                    }
+                    
+                    .keywords {
+                      display: flex;
+                      gap: 4px;
+                      margin-left: 8px;
+                      
+                      .keyword-tag {
+                        margin: 0;
+                      }
+                    }
+                  }
+                  
+                  .doc-actions {
+                    display: flex;
+                    align-items: center;
+                    gap: 2px;
+                    margin-left: 8px;
+                    opacity: 0;
+                    transition: opacity 0.2s;
+                  }
+                  
+                  &:hover .doc-actions {
+                    opacity: 1;
                   }
                 }
               }

@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 
 _llm_client = None
 
+try:
+    from config import OPENAI_API_KEY, OPENAI_BASE_URL
+except ImportError:
+    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+    OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+
 # 分类类别描述
 CATEGORY_DESCRIPTIONS = """
 分类体系包含以下类别：
@@ -118,11 +124,11 @@ def _get_llm_client():
         logger.warning("openai库未安装")
         return None
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+    api_key = OPENAI_API_KEY
+    base_url = OPENAI_BASE_URL
 
     if not api_key:
-        logger.warning("未配置 OPENAI_API_KEY 环境变量")
+        logger.warning("未配置 OPENAI_API_KEY")
         return None
 
     try:

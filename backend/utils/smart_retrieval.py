@@ -9,19 +9,42 @@
 import os
 import logging
 import asyncio
+import base64
+import requests
 from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
 
 logger = logging.getLogger(__name__)
 
 _llm_client = None
+_llm_provider = None
 
 def _get_llm_client():
-    """获取LLM客户端（兼容OpenAI API）"""
-    global _llm_client
+    """获取LLM客户端（支持豆包和OpenAI兼容接口）"""
+    global _llm_client, _llm_provider
     if _llm_client is not None:
         return _llm_client
 
+    # 优先使用豆包LLM
+    doubao_api_key = os.environ.get("DOUBAO_API_KEY", "")
+    doubao_llm_url = os.environ.get("DOUBAO_LLM_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+    doubao_model = os.environ.get("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115")
+    
+    if doubao_api_key:
+        try:
+            _llm_client = {
+                'provider': 'doubao',
+                'api_key': doubao_api_key,
+                'base_url': doubao_llm_url,
+                'model': doubao_model
+            }
+            _llm_provider = 'doubao'
+            logger.info(f"豆包LLM客户端初始化成功: {doubao_llm_url}, model={doubao_model}")
+            return _llm_client
+        except Exception as e:
+            logger.warning(f"豆包LLM初始化失败: {str(e)}")
+
+    # 回退到 OpenAI 兼容接口
     try:
         from openai import OpenAI
     except ImportError:
@@ -37,11 +60,68 @@ def _get_llm_client():
         return None
 
     try:
-        _llm_client = OpenAI(api_key=api_key, base_url=base_url)
-        logger.info(f"智能检索LLM客户端初始化成功: {base_url}, model={model}")
+        _llm_client = {
+            'provider': 'openai',
+            'client': OpenAI(api_key=api_key, base_url=base_url),
+            'model': model
+        }
+        _llm_provider = 'openai'
+        logger.info(f"OpenAI兼容LLM客户端初始化成功: {base_url}, model={model}")
         return _llm_client
     except Exception as e:
         logger.error(f"LLM客户端初始化失败: {str(e)}")
+        return None
+
+
+def _call_llm(prompt: str, max_tokens: int = 200, temperature: float = 0.7) -> Optional[str]:
+    """
+    统一的LLM调用接口
+    
+    :param prompt: 提示词
+    :param max_tokens: 最大token数
+    :param temperature: 温度参数
+    :return: LLM响应内容
+    """
+    client = _get_llm_client()
+    if client is None:
+        return None
+    
+    provider = client.get('provider', 'openai')
+    
+    try:
+        if provider == 'doubao':
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {client['api_key']}"
+            }
+            payload = {
+                "model": client['model'],
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": temperature
+            }
+            response = requests.post(
+                client['base_url'],
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content']
+            else:
+                logger.error(f"豆包LLM调用失败: {response.status_code} - {response.text}")
+                return None
+        else:
+            response = client['client'].chat.completions.create(
+                model=client['model'],
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            return response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"LLM调用失败: {str(e)}")
         return None
 
 
@@ -58,12 +138,9 @@ def expand_query_with_llm(query: str, num_expansions: int = 5) -> List[str]:
     :param num_expansions: 扩展查询数量
     :return: 扩展后的查询列表（包含原始查询）
     """
-    client = _get_llm_client()
-    if client is None:
+    if not is_llm_available():
         logger.warning("LLM不可用，返回原始查询")
         return [query]
-    
-    model = os.environ.get("LLM_MODEL", "deepseek-chat")
     
     prompt = f"""你是一个专业的信息检索助手。用户输入了一个查询词，请生成{num_expansions}个语义相似或相关的查询词，用于扩大检索范围。
 
@@ -79,14 +156,13 @@ def expand_query_with_llm(query: str, num_expansions: int = 5) -> List[str]:
 请生成{num_expansions}个扩展查询词："""
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
-            temperature=0.7
-        )
+        content = _call_llm(prompt, max_tokens=200, temperature=0.7)
         
-        content = response.choices[0].message.content.strip()
+        if content is None:
+            logger.warning("LLM调用失败，返回原始查询")
+            return [query]
+        
+        content = content.strip()
         expansions = [line.strip() for line in content.split('\n') if line.strip()]
         
         expansions = [q for q in expansions if len(q) > 1 and len(q) < 50]
@@ -215,12 +291,9 @@ def llm_rerank(query: str, results: List[Dict], top_k: int = 10) -> List[Dict]:
     if not results:
         return results
     
-    client = _get_llm_client()
-    if client is None:
+    if not is_llm_available():
         logger.warning("LLM不可用，使用原始排序")
         return results[:top_k]
-    
-    model = os.environ.get("LLM_MODEL", "deepseek-chat")
     
     if len(results) > 15:
         results = results[:15]
@@ -252,14 +325,13 @@ def llm_rerank(query: str, results: List[Dict], top_k: int = 10) -> List[Dict]:
 请开始评分："""
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
-            temperature=0.1
-        )
+        content = _call_llm(prompt, max_tokens=200, temperature=0.1)
         
-        content = response.choices[0].message.content.strip()
+        if content is None:
+            logger.warning("LLM重排序失败，使用原始排序")
+            return results[:top_k]
+        
+        content = content.strip()
         
         scores = {}
         for line in content.split('\n'):
@@ -349,3 +421,127 @@ def smart_retrieval(
     logger.info(f"智能检索完成: query='{query}', expansions={len(meta_info['expanded_queries'])}, results={len(results)}")
     
     return results, meta_info
+
+
+def smart_multimodal_retrieval(
+    query: str,
+    search_func,
+    limit: int = 10,
+    image_url: Optional[str] = None,
+    image_path: Optional[str] = None,
+    use_query_expansion: bool = True,
+    use_llm_rerank: bool = True,
+    expansion_method: str = 'llm'
+) -> Tuple[List[Dict], Dict[str, Any]]:
+    """
+    智能多模态检索：支持文本+图片联合查询
+    
+    :param query: 用户查询文本
+    :param search_func: 检索函数
+    :param limit: 返回结果数量
+    :param image_url: 图片URL（可选）
+    :param image_path: 图片本地路径（可选）
+    :param use_query_expansion: 是否使用查询扩展
+    :param use_llm_rerank: 是否使用LLM重排序
+    :param expansion_method: 扩展方法 ('llm' 或 'keyword')
+    :return: (检索结果, 检索元信息)
+    """
+    meta_info = {
+        'original_query': query,
+        'expanded_queries': [query],
+        'expansion_method': None,
+        'rerank_method': None,
+        'total_candidates': 0,
+        'has_image': bool(image_url or image_path)
+    }
+    
+    try:
+        from .retriever import multimodal_search, hybrid_multimodal_search
+        
+        if use_query_expansion and query:
+            if expansion_method == 'llm' and is_llm_available():
+                queries = expand_query_with_llm(query)
+                meta_info['expansion_method'] = 'llm'
+            else:
+                queries = expand_query_keywords(query)
+                meta_info['expansion_method'] = 'keyword'
+            
+            meta_info['expanded_queries'] = queries
+            
+            all_results = []
+            doc_scores = Counter()
+            doc_data = {}
+            
+            for i, q in enumerate(queries):
+                try:
+                    results = multimodal_search(
+                        query=q,
+                        image_url=image_url,
+                        image_path=image_path,
+                        limit=max(3, limit // 2)
+                    )
+                    
+                    for result in results:
+                        doc_id = result.get('document_id', '') + '_' + str(result.get('chunk_index', 0))
+                        
+                        weight = 1.0 / (i + 1)
+                        score = result.get('similarity', 0) * weight
+                        doc_scores[doc_id] += score
+                        
+                        if doc_id not in doc_data:
+                            doc_data[doc_id] = result
+                            doc_data[doc_id]['query_count'] = 1
+                            doc_data[doc_id]['matched_queries'] = [q]
+                        else:
+                            doc_data[doc_id]['query_count'] += 1
+                            doc_data[doc_id]['matched_queries'].append(q)
+                            
+                except Exception as e:
+                    logger.warning(f"多模态查询 '{q}' 检索失败: {str(e)}")
+            
+            ranked_docs = doc_scores.most_common()
+            
+            results = []
+            for doc_id, score in ranked_docs:
+                result = doc_data[doc_id]
+                result['merged_score'] = score
+                result['multi_query_hit'] = result['query_count'] > 1
+                results.append(result)
+        else:
+            results = multimodal_search(
+                query=query,
+                image_url=image_url,
+                image_path=image_path,
+                limit=limit * 2
+            )
+        
+        meta_info['total_candidates'] = len(results)
+        
+        if use_llm_rerank and is_llm_available() and results and query:
+            results = llm_rerank(query, results, top_k=limit)
+            meta_info['rerank_method'] = 'llm'
+        else:
+            results = results[:limit]
+        
+        for result in results:
+            result.pop('query_count', None)
+            result.pop('matched_queries', None)
+            result.pop('merged_score', None)
+        
+        logger.info(f"智能多模态检索完成: query='{query}', has_image={meta_info['has_image']}, results={len(results)}")
+        
+        return results, meta_info
+        
+    except ImportError:
+        logger.warning("retriever模块导入失败，回退到普通智能检索")
+        return smart_retrieval(
+            query=query,
+            search_func=search_func,
+            limit=limit,
+            use_query_expansion=use_query_expansion,
+            use_llm_rerank=use_llm_rerank,
+            expansion_method=expansion_method
+        )
+    except Exception as e:
+        logger.error(f"智能多模态检索失败: {str(e)}")
+        return [], meta_info

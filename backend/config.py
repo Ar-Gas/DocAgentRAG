@@ -9,11 +9,30 @@ DOC_DIR = BASE_DIR / "doc"
 CHROMA_DB_PATH = BASE_DIR / "chromadb"
 MODEL_DIR = Path(os.getenv("MODEL_DIR", BASE_DIR / "models" / "all-MiniLM-L6-v2"))
 
-MAX_FILE_SIZE = 50 * 1024 * 1024
-MAX_TEXT_LENGTH = 500 * 1024
+try:
+    from api_secrets import (
+        DOUBAO_API_KEY,
+        DOUBAO_EMBEDDING_API_URL,
+        DOUBAO_EMBEDDING_MODEL,
+        DOUBAO_LLM_API_URL,
+        DOUBAO_LLM_MODEL,
+        OPENAI_API_KEY,
+        OPENAI_BASE_URL
+    )
+except ImportError:
+    DOUBAO_API_KEY = os.getenv("DOUBAO_API_KEY", "")
+    DOUBAO_EMBEDDING_API_URL = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
+    DOUBAO_EMBEDDING_MODEL = "doubao-embedding-vision-250615"
+    DOUBAO_LLM_API_URL = os.getenv("DOUBAO_LLM_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+    DOUBAO_LLM_MODEL = os.getenv("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+
+MAX_FILE_SIZE = 500 * 1024 * 1024
+MAX_TEXT_LENGTH = 10 * 1024 * 1024
 MAX_CHUNK_LENGTH = 500
 MIN_CHUNK_LENGTH = 5
-PDF_PAGE_LIMIT = 100
+PDF_PAGE_LIMIT = 1000
 EXCEL_CHUNK_SIZE = 100
 
 ALLOWED_EXTENSIONS: Set[str] = {

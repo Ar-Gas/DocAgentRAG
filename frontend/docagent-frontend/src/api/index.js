@@ -49,6 +49,12 @@ export const api = {
   classifyDocument: (documentId) => {
     return request.post('/classification/classify', { document_id: documentId })
   },
+  reclassifyDocument: (documentId) => {
+    return request.post(`/classification/reclassify/${documentId}`)
+  },
+  clearClassificationResult: (documentId) => {
+    return request.delete(`/classification/result/${documentId}`)
+  },
   getCategories: () => {
     return request.get('/classification/categories')
   },
@@ -101,5 +107,48 @@ export const api = {
   },
   getStats: () => {
     return request.get('/retrieval/stats')
+  },
+  // 精确关键词检索（BM25）
+  keywordSearch: (query, limit = 10, fileTypes = null) => {
+    return request.post('/retrieval/keyword-search', {
+      query,
+      limit,
+      file_types: fileTypes
+    })
+  },
+  // 带关键词高亮的检索
+  searchWithHighlight: (query, searchType = 'hybrid', options = {}) => {
+    return request.post('/retrieval/search-with-highlight', {
+      query,
+      search_type: searchType,
+      limit: options.limit || 10,
+      alpha: options.alpha !== undefined ? options.alpha : 0.5,
+      use_rerank: options.useRerank || false,
+      file_types: options.fileTypes || null
+    })
+  },
+  // 获取支持的检索类型
+  getSearchTypes: () => {
+    return request.get('/retrieval/search-types')
+  },
+  // 文档重新分片
+  rechunkDocument: (documentId, useRefiner = true) => {
+    return request.post(`/documents/${documentId}/rechunk`, { use_refiner: useRefiner })
+  },
+  // 获取文档分片状态
+  getChunkStatus: (documentId) => {
+    return request.get(`/documents/${documentId}/chunk-status`)
+  },
+  // 批量重新分片
+  batchRechunk: (documentIds, useRefiner = true) => {
+    return request.post('/documents/batch/rechunk', { document_ids: documentIds, use_refiner: useRefiner })
+  },
+  // 分类下批量重新分片
+  categoryBatchRechunk: (category, useRefiner = true) => {
+    return request.post('/classification/category/batch-rechunk', { category, use_refiner: useRefiner })
+  },
+  // 分类下批量重新分类
+  categoryBatchReclassify: (category, useRefiner = true) => {
+    return request.post('/classification/category/batch-reclassify', { category, use_refiner: useRefiner })
   }
 }
