@@ -1,5 +1,7 @@
 # 办公文档智能分类与检索系统 (DocAgentRAG)
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Ar-Gas/DocAgentRAG)
+
 ## 项目概述
 
 DocAgentRAG 是一个基于 RAG (Retrieval-Augmented Generation) 技术的办公文档智能管理系统，旨在帮助用户高效管理、分类和检索各类办公文档。
