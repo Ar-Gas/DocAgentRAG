@@ -1,301 +1,368 @@
-# 办公文档智能分类与检索系统 (DocAgentRAG)
+# DocAgentRAG - 办公文档智能分类与检索系统
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Ar-Gas/DocAgentRAG)
 
-## 项目概述
-
-DocAgentRAG 是一个基于 RAG (Retrieval-Augmented Generation) 技术的办公文档智能管理系统，旨在帮助用户高效管理、分类和检索各类办公文档。
+基于 RAG (Retrieval-Augmented Generation) 技术的办公文档智能管理系统，提供文档上传、智能分类、语义检索、多模态搜索等功能。
 
 ## 核心功能
 
-- 📁 **文档管理**：支持上传、存储和管理多种格式的办公文档
-- 🤖 **智能分类**：自动识别文档类型并进行分类
-- 🔍 **向量检索**：基于语义相似度的文档检索
-- 📄 **OCR 支持**：对扫描版 PDF 进行文字识别
-- 📊 **数据分析**：文档统计和分析功能
-- 🌐 **前后端分离**：现代化的 Web 界面和 RESTful API
+- **文档管理**：支持上传和管理多种格式的办公文档
+- **智能分类**：自动识别文档类型并进行多级分类（内容 → 类型 → 时间）
+- **向量检索**：基于语义相似度的智能文档检索
+- **混合检索**：结合向量检索与 BM25 关键词精确匹配
+- **多模态检索**：支持文本+图片联合查询
+- **智能检索**：LLM 查询扩展 + 多查询融合 + 结果重排序
+- **OCR 支持**：扫描版 PDF 文字识别
+- **内容提炼**：噪音过滤、语义分段、层次结构构建
+
+## 支持的文档格式
+
+| 类型 | 扩展名 |
+|------|--------|
+| PDF | `.pdf` |
+| Word | `.docx`, `.doc` |
+| Excel | `.xlsx`, `.xls` |
+| PPT | `.pptx`, `.ppt` |
+| 邮件 | `.eml`, `.msg` |
+| 文本 | `.txt` |
+| 图片 | `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.webp` |
 
 ## 技术栈
 
 ### 后端
-- Python 3.8+
-- FastAPI
-- ChromaDB (向量数据库)
-- Sentence-Transformers (文本嵌入)
-- PyPDF2, python-docx, pandas (文档处理)
-- pytesseract, Pillow (OCR 功能)
-- scikit-learn (机器学习)
+- **框架**：FastAPI + Uvicorn
+- **向量数据库**：ChromaDB
+- **嵌入模型**：
+  - 豆包多模态嵌入 API（doubao-embedding-vision）
+  - 本地回退模型：BAAI/bge-small-zh-v1.5
+- **重排序模型**：bge-reranker-base
+- **文档处理**：PyPDF2, python-docx, openpyxl, python-pptx
+- **OCR**：pytesseract + Pillow
+- **分词**：jieba
 
 ### 前端
-- Vue 3
-- Vite
-- 现代化的前端框架和工具链
+- **框架**：Vue 3 + Vite
+- **UI 组件**：Element Plus
+- **路由**：Vue Router
+- **HTTP 客户端**：Axios
 
 ## 系统架构
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│                 │     │                 │     │                 │
-│   前端应用      │────▶│   后端 API      │────▶│   向量数据库    │
-│  (Vue 3)        │     │  (FastAPI)      │     │  (ChromaDB)     │
-│                 │◀────│                 │◀────│                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-          ▲                      ▲                      ▲
-          │                      │                      │
-          ▼                      ▼                      ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│                 │     │                 │     │                 │
-│  文件存储       │     │  文档处理       │     │  模型服务       │
-│  (本地文件系统)  │     │  (OCR, 解析)    │     │  (文本嵌入)     │
-│                 │     │                 │     │                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        前端应用 (Vue 3)                          │
+│                    http://localhost:3000                        │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     后端 API (FastAPI)                           │
+│                    http://localhost:6008                        │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
+│  │  文档管理   │ │  智能分类   │ │  检索服务   │               │
+│  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘               │
+│         │               │               │                       │
+│         ▼               ▼               ▼                       │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
+│  │ 文档处理器  │ │ 内容提炼器  │ │ 检索引擎    │               │
+│  │ (OCR/解析)  │ │ (去噪/分段) │ │ (向量/BM25) │               │
+│  └─────────────┘ └─────────────┘ └─────────────┘               │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    向量数据库 (ChromaDB)                         │
+│                    本地持久化存储                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## 目录结构
 
 ```
 DocAgentRAG/
-├── backend/            # 后端代码
-│   ├── api/            # API 路由和控制器
-│   ├── chromadb/       # ChromaDB 配置和管理
-│   ├── data/           # 数据存储目录
-│   ├── doc/            # 文档存储目录
-│   ├── models/         # 模型相关代码
-│   ├── test/           # 测试代码
-│   ├── utils/          # 工具函数
-│   ├── main.py         # 应用入口
-│   └── requirements.txt # 依赖项
-├── frontend/           # 前端代码
-│   └── docagent-frontend/ # 前端应用
-└── README.md           # 项目说明
+├── backend/                    # 后端代码
+│   ├── api/                    # API 路由
+│   │   ├── document.py        # 文档管理 API
+│   │   ├── retrieval.py       # 检索 API
+│   │   └── classification.py  # 分类 API
+│   ├── utils/                  # 工具模块
+│   │   ├── storage.py         # 向量存储与嵌入
+│   │   ├── retriever.py       # 检索引擎
+│   │   ├── smart_retrieval.py # 智能检索
+│   │   ├── document_processor.py  # 文档解析
+│   │   ├── content_refiner.py # 内容提炼引擎
+│   │   ├── classifier.py      # 文档分类器
+│   │   └── multi_level_classifier.py  # 多级分类
+│   ├── data/                   # 文档元数据 (JSON)
+│   ├── doc/                    # 文档存储目录
+│   ├── chromadb/              # 向量数据库
+│   ├── models/                 # 模型文件
+│   ├── main.py                 # 应用入口
+│   └── requirements.txt        # Python 依赖
+├── frontend/                   # 前端代码
+│   └── docagent-frontend/
+│       ├── src/               # 源代码
+│       │   ├── components/    # Vue 组件
+│       │   ├── views/         # 页面视图
+│       │   └── router/        # 路由配置
+│       ├── package.json       # NPM 依赖
+│       └── vite.config.js     # Vite 配置
+├── README.md                   # 项目说明
+└── SEARCH_ARCHITECTURE.md     # 检索架构文档
 ```
 
 ## 快速开始
 
-### 1. 环境准备
+### 环境要求
 
-#### 后端环境
+- Python 3.8+
+- Node.js 20+
+- Tesseract OCR（可选，用于扫描版 PDF）
 
-1. 确保安装了 Python 3.8 或更高版本
-2. 安装 Tesseract OCR（用于扫描版 PDF 的文字识别）
-
-   ```bash
-   # Ubuntu/Debian
-   sudo apt update
-   sudo apt install tesseract-ocr
-   
-   # CentOS/RHEL
-   sudo yum install tesseract
-   
-   # macOS
-   brew install tesseract
-   ```
-
-#### 前端环境
-
-1. 确保安装了 Node.js 16 或更高版本
-2. 安装 npm 或 yarn
-
-### 2. 安装依赖
-
-#### 后端依赖
+### 后端安装与启动
 
 ```bash
+# 安装依赖
 cd backend
 pip install -r requirements.txt
-```
 
-#### 前端依赖
+# 安装 Tesseract OCR (Ubuntu/Debian)
+sudo apt install tesseract-ocr
 
-```bash
-cd frontend/docagent-frontend
-npm install
-# 或
-yarn install
-```
-
-### 3. 启动服务
-
-#### 启动后端服务
-
-```bash
-cd backend
-# 开发模式
+# 启动开发服务器
 python main.py
 
-# 生产模式
+# 启动生产服务器
 DEV_MODE=false python main.py
 ```
 
-后端服务默认运行在 `http://localhost:6008`
+后端服务运行在 `http://localhost:6008`
 
-#### 启动前端服务
+### 前端安装与启动
 
 ```bash
+# 安装依赖
 cd frontend/docagent-frontend
+npm install
+
+# 启动开发服务器
 npm run dev
-# 或
-yarn dev
+
+# 构建生产版本
+npm run build
 ```
 
-前端服务默认运行在 `http://localhost:5173/`
+前端服务运行在 `http://localhost:3000`
 
-### 4. 访问系统
+## API 接口
 
-1. 打开浏览器，访问前端应用：`http://localhost:5173/`
-2. 或直接访问后端 API 文档：`http://localhost:6008/docs`
+### 文档管理
 
-## 配置环境经验
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| POST | `/api/documents/upload` | 上传文档 |
+| GET | `/api/documents/` | 获取文档列表（分页） |
+| GET | `/api/documents/{id}` | 获取文档详情 |
+| DELETE | `/api/documents/{id}` | 删除文档 |
+| GET | `/api/documents/{id}/refine` | 获取文档提炼结果 |
+| GET | `/api/documents/{id}/hierarchy` | 获取文档层次结构 |
+| GET | `/api/documents/{id}/key-info` | 获取文档关键信息 |
+| POST | `/api/documents/{id}/rechunk` | 重新分片文档 |
 
-### 后端环境配置经验
+### 检索服务
 
-1. **Python 版本**：建议使用 Python 3.8 或更高版本
-2. **依赖安装**：
-   - 确保 pip 版本是最新的：`pip install --upgrade pip`
-   - 使用 `pip install -r requirements.txt` 安装依赖
-   - 可能会遇到依赖冲突，使用最新版本的 pip 可以解决大部分问题
-3. **系统依赖**：
-   - 必须安装 Tesseract OCR：`sudo apt install tesseract-ocr`（Ubuntu/Debian）
-   - 首次运行时，sentence-transformers 会自动下载预训练模型
-4. **常见问题**：
-   - ChromaDB 可能会遇到数据库初始化错误，这是正常现象，服务仍可正常运行
-   - 如果遇到导入错误，检查 ChromaDB 的错误类型，并使用正确的异常类名
-   - 对于大型模型，建议在有足够内存的环境中运行
-
-### 前端环境配置经验
-
-1. **Node.js 版本**：前端项目需要 Node.js 20.19.0 或更高版本
-2. **安装 Node.js**：
-   ```bash
-   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-   sudo apt-get install -y nodejs
-   ```
-3. **依赖安装**：
-   - 进入前端目录：`cd frontend/docagent-frontend`
-   - 安装依赖：`npm install`
-   - 确保 npm 版本是最新的：`npm install -g npm`
-4. **配置文件**：
-   - 前端项目需要配置 vite.config.js 文件，设置路径别名
-   - 配置示例：
-     ```javascript
-     import { defineConfig } from 'vite'
-     import vue from '@vitejs/plugin-vue'
-     import path from 'path'
-     
-     export default defineConfig({
-       plugins: [vue()],
-       resolve: {
-         alias: {
-           '@': path.resolve(__dirname, './src')
-         }
-       }
-     })
-     ```
-5. **服务启动**：
-   - 前端服务默认运行在 `http://localhost:5173/`
-   - 后端服务默认运行在 `http://localhost:6008`
-
-## API 文档
-
-后端提供了完整的 RESTful API，可通过 Swagger UI 进行浏览和测试：
-
-- **API 文档地址**：`http://localhost:6008/docs`
-- **健康检查端点**：`http://localhost:6008/health`
-
-## 功能使用指南
-
-### 文档上传
-
-1. 在前端应用中点击 "上传文档" 按钮
-2. 选择要上传的文档文件
-3. 系统会自动处理文档并添加到数据库
-
-### 文档检索
-
-1. 在搜索框中输入关键词或问题
-2. 系统会基于语义相似度返回相关文档
-3. 点击文档查看详细内容
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| GET | `/api/retrieval/search` | 语义检索 |
+| POST | `/api/retrieval/hybrid-search` | 混合检索（向量+BM25） |
+| POST | `/api/retrieval/keyword-search` | 关键词检索（BM25） |
+| POST | `/api/retrieval/smart-search` | 智能检索（LLM 增强） |
+| POST | `/api/retrieval/multimodal-search` | 多模态检索 |
+| POST | `/api/retrieval/search-with-highlight` | 带高亮的检索 |
 
 ### 文档分类
 
-1. 上传文档后，系统会自动进行分类
-2. 可在 "分类管理" 页面查看和管理分类
-3. 支持手动调整文档分类
-
-### OCR 功能
-
-1. 上传扫描版 PDF 文档
-2. 系统会自动进行 OCR 处理
-3. 处理完成后可查看和搜索文档内容
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| POST | `/api/classification/classify` | 单文档分类 |
+| POST | `/api/classification/reclassify/{id}` | 重新分类 |
+| GET | `/api/classification/categories` | 获取所有分类 |
+| GET | `/api/classification/documents/{category}` | 获取分类下文档 |
+| POST | `/api/classification/multi-level/build` | 构建多级分类树 |
 
 ## 配置说明
 
-### 后端配置
+### 环境变量
 
-- **端口**：默认 6008，可在 `main.py` 中修改
-- **CORS**：默认允许所有来源，生产环境应修改为具体域名
-- **存储路径**：默认使用项目内的 `data` 和 `doc` 目录
+```bash
+# 嵌入模型配置
+BGE_MODEL=BAAI/bge-small-zh-v1.5    # 本地回退模型
 
-### 前端配置
+# 豆包 API 配置（推荐）
+DOUBAO_API_KEY=your_api_key
+DOUBAO_EMBEDDING_API_URL=https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal
+DOUBAO_EMBEDDING_MODEL=doubao-embedding-vision-250615
+DOUBAO_LLM_API_URL=https://ark.cn-beijing.volces.com/api/v3/chat/completions
+DOUBAO_LLM_MODEL=doubao-pro-32k-241115
 
-- **API 地址**：默认指向 `http://localhost:6008/api`
-- **端口**：默认 3000，可在 `vite.config.js` 中修改
+# OpenAI 兼容 API（可选）
+OPENAI_API_KEY=your_api_key
+OPENAI_BASE_URL=https://api.deepseek.com
 
-## 性能优化
+# 开发模式
+DEV_MODE=true
+```
 
-1. **模型缓存**：Sentence-Transformers 模型会被缓存，减少重复加载时间
-2. **批量处理**：支持批量上传和处理文档
-3. **异步操作**：使用 FastAPI 的异步特性提高并发处理能力
+### 系统配置
 
-## 故障排查
+在 `backend/config.py` 中可配置：
 
-### 常见问题
+- `MAX_FILE_SIZE`: 最大文件大小（默认 500MB）
+- `MAX_CHUNK_LENGTH`: 分片最大长度（默认 500 字符）
+- `MIN_CHUNK_LENGTH`: 分片最小长度（默认 5 字符）
+- `PDF_PAGE_LIMIT`: PDF 页数限制（默认 1000 页）
 
-1. **OCR 失败**：确保已正确安装 Tesseract OCR
-2. **模型加载失败**：检查网络连接，确保模型能够正常下载
-3. **数据库连接失败**：确保 ChromaDB 配置正确
+## 检索功能详解
 
-### 日志查看
+### 1. 语义检索 (Vector Search)
 
-后端日志会输出到控制台，包含详细的运行信息和错误提示。
+使用向量嵌入进行语义相似度匹配，适合查找语义相关的文档。
+
+```bash
+GET /api/retrieval/search?query=项目报告&limit=10
+```
+
+### 2. 关键词检索 (BM25)
+
+使用 BM25 算法进行精确关键词匹配，适合精确查找。
+
+```bash
+POST /api/retrieval/keyword-search
+{
+  "query": "财务报表",
+  "limit": 10
+}
+```
+
+### 3. 混合检索 (Hybrid Search)
+
+结合向量检索和 BM25，可调节权重。
+
+```bash
+POST /api/retrieval/hybrid-search
+{
+  "query": "项目报告",
+  "limit": 10,
+  "alpha": 0.5,
+  "use_rerank": true
+}
+```
+
+- `alpha`: 向量检索权重（0-1），1-alpha 为 BM25 权重
+
+### 4. 智能检索 (Smart Search)
+
+完整的 RAG 优化流程：查询扩展 → 多查询检索 → 结果融合 → LLM 重排序
+
+```bash
+POST /api/retrieval/smart-search
+{
+  "query": "项目报告",
+  "limit": 10,
+  "use_query_expansion": true,
+  "use_llm_rerank": true,
+  "expansion_method": "llm"
+}
+```
+
+### 5. 多模态检索
+
+支持文本+图片联合查询：
+
+```bash
+POST /api/retrieval/multimodal-search
+{
+  "query": "产品截图",
+  "image_url": "https://example.com/image.png",
+  "limit": 10
+}
+```
+
+## 内容提炼系统
+
+文档上传后自动进行内容提炼：
+
+1. **噪音过滤**：移除页眉页脚、空白行、重复段落
+2. **语义分段**：识别标题层级，智能分段
+3. **层次构建**：构建文档目录结构
+4. **分块优化**：基于语义的分块策略
 
 ## 部署建议
 
 ### 开发环境
 
-- 使用默认配置即可，开启 `DEV_MODE` 获得热重载功能
+```bash
+# 后端
+python main.py
+
+# 前端
+npm run dev
+```
 
 ### 生产环境
 
-1. 设置 `DEV_MODE=false` 关闭热重载
-2. 配置 CORS 为具体的前端域名
-3. 考虑使用容器化部署（Docker）
-4. 配置适当的服务器资源（内存、CPU）
+```bash
+# 后端
+DEV_MODE=false python main.py
 
-## 未来规划
+# 前端
+npm run build
+# 使用 nginx 或其他服务器托管 dist 目录
+```
 
-- [ ] 支持更多文档格式
-- [ ] 增加文档版本控制
-- [ ] 实现文档协作功能
-- [ ] 添加多语言支持
-- [ ] 优化模型性能和准确性
-- [ ] 增加用户认证和权限管理
+### Docker 部署（推荐）
 
-## 贡献指南
+```dockerfile
+# 示例 Dockerfile
+FROM python:3.10-slim
 
-欢迎提交 Issue 和 Pull Request 来改进这个项目！
+WORKDIR /app
+COPY backend/requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY backend/ .
+
+# 安装 Tesseract
+RUN apt-get update && apt-get install -y tesseract-ocr
+
+CMD ["python", "main.py"]
+```
+
+## 常见问题
+
+### Q: OCR 处理失败？
+
+确保已安装 Tesseract OCR：
+```bash
+# Ubuntu/Debian
+sudo apt install tesseract-ocr
+
+# macOS
+brew install tesseract
+```
+
+### Q: 模型加载失败？
+
+首次运行会自动下载嵌入模型，确保网络连接正常。如下载失败，可手动下载模型到 `backend/models/` 目录。
+
+### Q: ChromaDB 初始化错误？
+
+这是正常现象，服务仍可正常运行。如果问题持续，删除 `backend/chromadb/` 目录重新初始化。
 
 ## 许可证
 
-本项目采用 MIT 许可证。
+MIT License
 
-## 联系方式
+## 贡献
 
-如有问题或建议，请通过以下方式联系：
-
-- 项目地址：[DocAgentRAG](https://github.com/yourusername/DocAgentRAG)
-- 电子邮件：your.email@example.com
-
----
-
-**DocAgentRAG** - 让文档管理更智能、更高效！
+欢迎提交 Issue 和 Pull Request！
