@@ -1,9 +1,12 @@
 import os
 import sys
+from unittest.mock import Mock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import app.services.document_service as document_service_module  # noqa: E402
 import app.services.indexing_service as indexing_service_module  # noqa: E402
+from app.services.document_service import DocumentService  # noqa: E402
 from app.services.indexing_service import IndexingService  # noqa: E402
 
 
@@ -213,3 +216,20 @@ def test_index_document_restores_old_entries_when_add_fails_after_delete(monkeyp
     assert result["block_index_status"] == "failed"
     assert len(captured_updates) == 1
     assert captured_updates[0][1]["block_index_status"] == "failed"
+
+
+def test_rechunk_triggers_block_reindex_without_breaking_chunk_response(monkeypatch):
+    expected_chunk_status = {"exists": True, "document_id": "doc-1", "chunk_count": 3}
+    mock_indexing_service = Mock()
+
+    monkeypatch.setattr(document_service_module, "re_chunk_document", lambda document_id, use_refiner: True)
+    monkeypatch.setattr(document_service_module, "check_document_chunks", lambda document_id: expected_chunk_status)
+
+    service = DocumentService()
+    service.get_document = Mock(return_value={"id": "doc-1"})
+    service.indexing_service = mock_indexing_service
+
+    result = service.rechunk("doc-1", use_refiner=True)
+
+    mock_indexing_service.index_document.assert_called_once_with("doc-1", force=True)
+    assert result == expected_chunk_status
