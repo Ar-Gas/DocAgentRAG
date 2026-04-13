@@ -1,0 +1,469 @@
+# Router RAG Retrieval Redesign
+
+## Context
+
+The current retrieval stack is document-centric at the UI level but still chunk-centric in the backend. The existing pipeline is effectively:
+
+1. extract plain text
+2. chunk text
+3. run vector / BM25 / hybrid retrieval
+4. group chunk hits back into documents
+
+This is not sufficient for real office documents. It loses heading hierarchy, table structure, page context, and document semantics. It also makes the system poor at precise clause retrieval in Word/PDF documents, which is the user's top priority for the first implementation phase.
+
+The long-term target is not “one better retriever.” It is a routed retrieval system where the query type determines which retrieval path should answer it.
+
+## Goals
+
+1. Redesign retrieval around a routed architecture instead of a single chunk pipeline.
+2. Define a long-term Router RAG architecture that supports:
+   - Word/PDF clause retrieval
+   - Excel data QA through a dedicated execution path
+   - cross-document summarization / macro questions
+   - multimodal page understanding for complex PDF/PPT pages
+3. Define a first implementation phase that materially improves Word/PDF retrieval accuracy without requiring the full end-state stack.
+4. Preserve compatibility with the current FastAPI + frontend workspace during the first phase.
+
+## Non-Goals
+
+1. Fully implement Excel agentic QA in phase one.
+2. Fully implement graph-enhanced retrieval in phase one.
+3. Fully implement multimodal page QA in phase one.
+4. Replace the current frontend workspace interaction model in phase one.
+
+## Product Strategy
+
+The redesign should be treated as two layers:
+
+### Layer 1: End-State Router RAG
+
+The system becomes a retrieval router that chooses the correct retrieval path based on the query and the target evidence type.
+
+### Layer 2: Phase-One Block Retrieval
+
+The first delivery should focus on Word/PDF retrieval quality. It should replace the current naive chunk retrieval core with structure-aware block retrieval, hybrid recall, reranking, and document-level evidence aggregation.
+
+This means the first phase must be useful on its own, but also align with the long-term router architecture.
+
+## End-State Architecture
+
+The end-state system should be composed of five layers.
+
+### 1. Ingestion Layer
+
+Each document is parsed into typed structural units instead of anonymous fixed-size chunks.
+
+Examples:
+
+- Word/PDF:
+  - heading blocks
+  - paragraph blocks
+  - list blocks
+  - table blocks
+- Excel:
+  - workbook metadata
+  - worksheet metadata
+  - table region metadata
+  - header schemas
+- PPT/PDF visual pages:
+  - page image artifacts
+  - OCR / layout artifacts
+
+The ingestion layer is responsible for preserving logical structure and context.
+
+### 2. Index Layer
+
+The same source document should feed multiple index types rather than one shared chunk index.
+
+Recommended index families:
+
+- BM25 / inverted index for exact term and identifier matching
+- vector index for semantic recall
+- document summary index for macro retrieval
+- metadata index for filename / classification / date / parser fields
+- optional graph / entity index for cross-document relationship reasoning
+
+### 3. Retrieval Router
+
+The router decides which retrieval path to use.
+
+Examples:
+
+- clause lookup in Word/PDF -> hybrid block retrieval + reranker
+- Excel calculation / filtering question -> Excel execution path
+- corpus-level summary question -> document-summary / graph path
+- visual chart question -> multimodal page path
+
+The router is the system boundary that replaces the current “every question hits the same retriever” behavior.
+
+### 4. Evidence Composer
+
+The system should produce evidence cards rather than raw chunks.
+
+Each evidence card should describe:
+
+- document identity
+- block identity
+- block type
+- heading path
+- page number or table location
+- snippet
+- retrieval score
+- match reason
+
+### 5. Answer Layer
+
+The answering layer should consume ranked evidence cards instead of arbitrary top-K chunks.
+
+This layer can support:
+
+- direct retrieval response
+- extractive answer generation
+- citation-rich summaries
+- routed agent outputs
+
+## End-State Routes
+
+The long-term router should support at least these paths:
+
+### Route A: Structured Clause Retrieval
+
+For Word/PDF policy, contract, report, and narrative documents.
+
+Primary mechanism:
+
+- structured blocks
+- BM25 + vector hybrid recall
+- reranking
+- document evidence aggregation
+
+### Route B: Excel Data QA
+
+Excel should not be treated as ordinary retrieval text.
+
+Primary mechanism:
+
+- workbook / sheet structure parsing
+- dataframe or table execution path
+- optional text-to-Python or text-to-SQL orchestration
+
+### Route C: Cross-Document Macro Retrieval
+
+For questions like “summarize the strategy across 50 annual reports.”
+
+Primary mechanism:
+
+- document-level summaries
+- representative evidence cards
+- optional graph / topic / entity support
+
+### Route D: Multimodal Visual Retrieval
+
+For chart-heavy or layout-heavy PDF/PPT pages.
+
+Primary mechanism:
+
+- page image rendering
+- OCR / layout artifacts
+- multimodal model reasoning
+
+## Phase-One Scope
+
+Phase one should focus only on Route A: structured clause retrieval for Word/PDF.
+
+It should deliver:
+
+1. structure-aware block extraction for Word/PDF
+2. hybrid retrieval over blocks
+3. reranking over recalled blocks
+4. document-level evidence aggregation
+5. reader payloads based on structural blocks instead of coarse plain-text paragraphs
+
+It should not require Excel routing, graph indexing, or multimodal QA to be complete.
+
+## Phase-One Data Model
+
+Phase one should use `Block` as the core retrieval unit instead of the current naive chunk.
+
+Each block should include at minimum:
+
+- `block_id`
+- `document_id`
+- `file_type`
+- `block_type`
+- `text`
+- `heading_path`
+- `section_title`
+- `page_number`
+- `order_index`
+- `keywords`
+- `table_caption`
+- `source_parser`
+
+### Block Types
+
+Phase one should at least support:
+
+- `heading`
+- `paragraph`
+- `list`
+- `table`
+
+### Extraction Rules
+
+- Word and PDF should preserve heading hierarchy where possible.
+- Tables should remain intact as single logical blocks.
+- Page numbers should be retained when available.
+- If structural extraction fails, the system may fall back to paragraph-style blocks, but only as a fallback mode.
+
+## Phase-One Retrieval Pipeline
+
+The phase-one pipeline should be:
+
+1. parse query
+2. recall candidate blocks from BM25
+3. recall candidate blocks from vector search
+4. fuse and deduplicate candidates
+5. rerank block candidates
+6. aggregate top blocks into ranked documents
+7. emit structured evidence cards
+8. build reader anchor payloads
+
+This replaces the current behavior where the system retrieves plain chunks first and only later groups them into documents.
+
+## Scoring And Reranking
+
+Phase one should use three ranking stages.
+
+### Stage 1: Broad Recall
+
+Candidate generation should not attempt to be perfect.
+
+Recommended pattern:
+
+- BM25 top 40
+- vector top 40
+- deduplicate into roughly 50-70 candidates
+
+### Stage 2: Block Reranking
+
+Candidate blocks should then be reranked for actual relevance.
+
+Preferred mechanism:
+
+- cross-encoder reranker
+
+Fallbacks:
+
+- existing LLM rerank
+- rules-based score fusion
+
+Each block score should combine:
+
+- reranker score
+- BM25 score
+- vector score
+- exact phrase match boost
+- heading match boost
+- query coverage boost
+
+### Stage 3: Document Aggregation
+
+The primary ranking target returned to the workspace should still be the document.
+
+Document score should combine:
+
+- the best block score
+- secondary evidence coverage reward
+- diversity reward across heading paths
+- deduplication penalty for redundant evidence from the same local area
+
+This prevents one repetitive section from dominating the whole document ranking.
+
+## Evidence Card Design
+
+Each ranked document should return up to 3-5 evidence blocks, selected for diversity and usefulness.
+
+Each evidence block should expose:
+
+- `block_id`
+- `block_type`
+- `snippet`
+- `heading_path`
+- `page_number`
+- `score`
+- `match_reason`
+
+`match_reason` should explain why the block was surfaced, such as:
+
+- exact title match
+- heading + body match
+- clause-number match
+- semantic reranker match
+
+## Backend Design
+
+### New Or Refactored Responsibilities
+
+- `backend/utils/block_extractor.py`
+  - parse Word/PDF into structured blocks
+- `backend/app/services/indexing_service.py`
+  - orchestrate block indexing into vector + BM25 + metadata stores
+- `backend/utils/retriever.py`
+  - become a retrieval adapter layer instead of a monolithic chunk-oriented utility
+- `backend/app/services/retrieval_service.py`
+  - orchestrate route selection and phase-one hybrid block retrieval
+- `backend/app/services/document_service.py`
+  - build reader payloads from structural blocks
+
+### Phase-One Compatibility
+
+The first phase should preserve the existing API entry points where possible:
+
+- `POST /retrieval/workspace-search`
+- `GET /documents/{id}/reader`
+
+But the payloads should become structure-aware.
+
+## API Contract Changes
+
+### `POST /retrieval/workspace-search`
+
+Keep the route, but return structured evidence blocks rather than legacy chunk-shaped records.
+
+Each `documents[].evidence_blocks[]` should include:
+
+- `block_id`
+- `block_type`
+- `snippet`
+- `heading_path`
+- `page_number`
+- `score`
+- `match_reason`
+
+### `GET /documents/{id}/reader`
+
+Keep the route, but return structured reader blocks:
+
+- `block_id`
+- `block_index`
+- `block_type`
+- `heading_path`
+- `page_number`
+- `text`
+- `matches[]`
+
+This should allow the existing reader UI to become more informative without requiring a new page model in phase one.
+
+## Frontend Compatibility
+
+Phase one should preserve the current document workspace structure:
+
+- `SearchPage.vue`
+- `DocumentResultList.vue`
+- `DocumentReader.vue`
+
+The frontend changes should be additive:
+
+- show heading path in result evidence
+- show page number when available
+- show block type when useful
+- preserve existing document-first interaction model
+
+The first phase should not redesign the workspace layout.
+
+## Rollout Strategy
+
+Phase one should run in parallel with the legacy retrieval path.
+
+### Retrieval Versioning
+
+Introduce an internal retrieval mode such as:
+
+- `legacy`
+- `block`
+
+The system should be able to fall back to legacy retrieval if:
+
+- block index is unavailable
+- a document has not yet been re-indexed
+- structural extraction failed badly
+
+### Reindex Compatibility
+
+Do not require a one-shot full corpus rebuild before rollout.
+
+Each document should track:
+
+- `index_version`
+- `block_index_status`
+- `block_count`
+- `last_indexed_at`
+
+Recommended behavior:
+
+- new uploads use the new block indexing path immediately
+- old documents are backfilled asynchronously
+- documents without the new index can temporarily use the legacy path
+
+## Observability
+
+The system should record at least:
+
+- retrieval version used
+- recall source of each winning block (`bm25`, `vector`, `reranker`)
+- number of candidate blocks before and after rerank
+- fallback-to-legacy rate
+- index coverage rate for the corpus
+
+These are necessary to judge whether the redesign is actually improving retrieval.
+
+## Evaluation Strategy
+
+The redesign must be evaluated by retrieval quality, not only by tests passing.
+
+### Offline Regression Set
+
+Build a benchmark set of roughly 20-50 Word/PDF questions covering:
+
+- clause retrieval
+- policy lookup
+- heading / section localization
+- synonym / paraphrase matching
+
+### Quality Metrics
+
+Track at least:
+
+- document hit @1
+- document hit @3
+- best evidence block correctness
+- reader anchor correctness
+
+### Success Standard
+
+Phase one is successful when:
+
+1. Word/PDF queries default to the new block retrieval pipeline when indexed.
+2. The system returns document-first results with structure-aware evidence.
+3. The reader exposes heading path and page context where available.
+4. Reranking is part of the decision path for final evidence ordering.
+5. Offline retrieval quality is materially better than the current legacy pipeline.
+
+## Risks
+
+1. Structural extraction quality for PDF headings may be inconsistent across document styles.
+2. Running BM25 + vector + reranker may increase latency if candidate sizes are not bounded carefully.
+3. Maintaining legacy and new retrieval paths in parallel increases temporary complexity.
+4. Reader payload compatibility may become messy if old paragraph-based assumptions remain in the frontend too long.
+
+## Acceptance Criteria
+
+1. The retrieval architecture is explicitly defined as a routed system, not a single chunk retriever.
+2. Phase one is limited to Word/PDF clause retrieval improvements.
+3. Phase one replaces naive chunk retrieval with structure-aware block retrieval for indexed Word/PDF documents.
+4. `workspace-search` returns evidence blocks with structure metadata such as heading path and page number.
+5. `document reader` payloads are based on structural blocks rather than raw plain-text chunk assumptions.
+6. The design preserves compatibility with the current frontend workspace during phase one.
+7. The rollout includes retrieval versioning and re-index compatibility for older documents.
+8. The evaluation plan includes offline retrieval-quality benchmarking, not only unit or API tests.
