@@ -3,23 +3,26 @@ import os
 import uuid
 import threading
 import logging
+import re
 import requests
 import base64
 import hashlib
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Union
-from chromadb import PersistentClient
+from chromadb import EphemeralClient, PersistentClient
 from chromadb.utils import embedding_functions
 from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
 
+from app.infra.metadata_store import get_metadata_store
 from .document_processor import (
     process_document, process_pdf, process_word,
     process_excel, process_email, process_ppt, process_image
 )
 from .content_refiner import ContentRefiner
 from config import (
-    DATA_DIR, DOC_DIR, CHROMA_DB_PATH, MODEL_DIR,
+    BASE_DIR, DATA_DIR, DOC_DIR, CHROMA_DB_PATH, MODEL_DIR,
     MAX_CHUNK_LENGTH, MIN_CHUNK_LENGTH,
     DOUBAO_EMBEDDING_API_URL, DOUBAO_EMBEDDING_MODEL, DOUBAO_API_KEY
 )
@@ -28,6 +31,10 @@ from config import (
 # 因此相关函数使用延迟导入，在函数内部导入以避免循环导入错误
 
 logger = logging.getLogger(__name__)
+
+
+def _metadata_store():
+    return get_metadata_store(data_dir=DATA_DIR)
 
 # ===================== 豆包多模态嵌入API =====================
 def doubao_multimodal_embed(
@@ -131,10 +138,10 @@ def doubao_multimodal_embed(
 def doubao_batch_embed(texts: List[str]) -> List[Optional[List[float]]]:
     """
     批量调用豆包嵌入API
-    
+
     Args:
         texts: 文本列表
-    
+
     Returns:
         嵌入向量列表
     """
@@ -143,6 +150,87 @@ def doubao_batch_embed(texts: List[str]) -> List[Optional[List[float]]]:
         embedding = doubao_multimodal_embed(text)
         embeddings.append(embedding)
     return embeddings
+
+
+# ===================== 4.2 统一 embed_text 入口 =====================
+
+_embed_consecutive_failures = 0
+_EMBED_MAX_FAILURES = 3
+_bge_ef = None  # BGE embedding function（懒加载）
+
+
+def _get_bge_ef():
+    global _bge_ef
+    if _bge_ef is None:
+        bge_model = os.getenv("BGE_MODEL", "BAAI/bge-small-zh-v1.5")
+        logger.info(f"加载 BGE 本地模型: {bge_model}")
+        _bge_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=bge_model)
+    return _bge_ef
+
+
+def embed_text(text: str) -> Optional[List[float]]:
+    """
+    统一 embedding 入口。
+    优先 Doubao API，连续失败 _EMBED_MAX_FAILURES 次后切 BGE，成功后重置计数。
+    """
+    global _embed_consecutive_failures
+
+    if DOUBAO_API_KEY and _embed_consecutive_failures < _EMBED_MAX_FAILURES:
+        emb = doubao_multimodal_embed(text)
+        if emb is not None:
+            _embed_consecutive_failures = 0
+            return emb
+        _embed_consecutive_failures += 1
+        logger.warning(
+            f"Doubao embed 失败 ({_embed_consecutive_failures}/{_EMBED_MAX_FAILURES})，"
+            f"{'切换至 BGE' if _embed_consecutive_failures >= _EMBED_MAX_FAILURES else '下次重试'}"
+        )
+
+    # BGE fallback
+    try:
+        bge = _get_bge_ef()
+        result = bge([text])
+        if result:
+            return list(result[0])
+    except Exception as exc:
+        logger.error(f"BGE embed 失败: {exc}")
+    return None
+
+
+# ===================== 4.1 启动时锁定 embedding 维度 =====================
+
+_EMBEDDING_DIM_ARTIFACT = "embedding_dimension"
+
+
+def detect_and_lock_embedding_dim() -> None:
+    """
+    启动时检查并锁定 embedding 维度。
+    与已存储的维度不一致时打 WARNING 并提示 rechunk。
+    """
+    try:
+        test_emb = embed_text("维度检测")
+        if test_emb is None:
+            logger.warning("detect_and_lock_embedding_dim: embed_text 返回 None，跳过维度锁定")
+            return
+        current_dim = len(test_emb)
+
+        store = _metadata_store()
+        stored = store.load_artifact(_EMBEDDING_DIM_ARTIFACT)
+
+        if stored is None:
+            store.save_artifact(_EMBEDDING_DIM_ARTIFACT, {"dim": current_dim})
+            logger.info(f"Embedding 维度已锁定: {current_dim}")
+        elif int(stored.get("dim", 0)) != current_dim:
+            stored_dim = stored.get("dim")
+            logger.warning(
+                f"⚠️  Embedding 维度不一致！"
+                f"已存储={stored_dim}，当前={current_dim}。"
+                f"请运行 POST /api/v1/documents/batch/rechunk 修复。"
+            )
+        else:
+            logger.info(f"Embedding 维度校验通过: {current_dim}")
+    except Exception as exc:
+        logger.error(f"detect_and_lock_embedding_dim 失败: {exc}")
 
 
 class DoubaoEmbeddingFunction(EmbeddingFunction):
@@ -325,7 +413,59 @@ def save_embeddings_to_json(document_id: str, doc_embedding: Optional[List[float
 # ===================== 线程安全的单例客户端 =====================
 _chroma_client = None
 _chroma_collection = None
-_client_lock = threading.Lock()
+_client_lock = threading.RLock()
+
+
+def _is_legacy_chroma_schema_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "collections.topic" in message or "no such column" in message and "collections" in message
+
+
+def _backup_legacy_chroma_store(reason: Exception) -> Optional[Path]:
+    if not CHROMA_DB_PATH.exists():
+        CHROMA_DB_PATH.mkdir(parents=True, exist_ok=True)
+        return None
+
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    backup_path = CHROMA_DB_PATH.parent / f"{CHROMA_DB_PATH.name}_legacy_{timestamp}"
+    logger.warning("检测到旧版 Chroma 数据结构，备份到 %s，原因: %s", backup_path, reason)
+
+    if backup_path.exists():
+        shutil.rmtree(backup_path)
+
+    CHROMA_DB_PATH.rename(backup_path)
+    CHROMA_DB_PATH.mkdir(parents=True, exist_ok=True)
+    return backup_path
+
+
+def _resolve_embedding_function():
+    test_embedding = doubao_multimodal_embed("测试连接")
+    if test_embedding is not None:
+        bge_model = os.getenv('BGE_MODEL', 'BAAI/bge-small-zh-v1.5')
+        logger.info(f"豆包API可用，回退模型配置: {bge_model}")
+        return DoubaoEmbeddingFunction(fallback_model_name=bge_model)
+
+    logger.info("豆包嵌入不可用，尝试本地 BGE 模型...")
+    try:
+        bge_model = os.getenv('BGE_MODEL', 'BAAI/bge-small-zh-v1.5')
+        return embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=bge_model
+        )
+    except Exception as bge_error:
+        logger.error(f"BGE模型加载失败: {str(bge_error)}")
+        logger.warning("回退到默认嵌入函数...")
+        return embedding_functions.DefaultEmbeddingFunction()
+
+
+def _init_ephemeral_chroma_client() -> tuple[object, object]:
+    logger.warning("持久化 Chroma 不可用，回退到内存模式")
+    client = EphemeralClient()
+    embedding_function = _resolve_embedding_function()
+    collection = client.get_or_create_collection(
+        name="documents",
+        embedding_function=embedding_function,
+    )
+    return client, collection
 
 # 保存文档信息到JSON
 def save_document_info(doc_info):
@@ -333,11 +473,7 @@ def save_document_info(doc_info):
         logger.error("保存文档信息失败：无效的文档信息（缺少ID）")
         return False
     try:
-        filepath = DATA_DIR / f"{doc_info['id']}.json"
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(doc_info, f, ensure_ascii=False, indent=2)
-        logger.info(f"文档信息保存成功：{doc_info['id']}")
-        return True
+        return _metadata_store().upsert_document(doc_info)
     except Exception as e:
         logger.error(f"保存文档信息失败: {str(e)}")
         return False
@@ -348,12 +484,7 @@ def get_document_info(document_id):
         logger.error("获取文档信息失败：文档ID为空或非法")
         return None
     try:
-        filepath = DATA_DIR / f"{document_id}.json"
-        if not filepath.exists():
-            return None
-        with open(filepath, 'r', encoding='utf-8') as f:
-            doc_info = json.load(f)
-        return doc_info
+        return _metadata_store().get_document(document_id)
     except Exception as e:
         logger.error(f"获取文档信息失败: {str(e)}")
         return None
@@ -364,17 +495,7 @@ def save_classification_result(document_id, classification_result):
         logger.error("保存分类结果失败：ID或分类结果为空")
         return False
     try:
-        filepath = DATA_DIR / f"{document_id}.json"
-        if not filepath.exists():
-            return False
-        with open(filepath, 'r', encoding='utf-8') as f:
-            doc_info = json.load(f)
-        doc_info['classification_result'] = classification_result
-        doc_info['classification_time'] = datetime.now().isoformat()
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(doc_info, f, ensure_ascii=False, indent=2)
-        logger.info(f"分类结果保存成功：{document_id}")
-        return True
+        return _metadata_store().save_classification_result(document_id, classification_result)
     except Exception as e:
         logger.error(f"保存分类结果失败: {str(e)}")
         return False
@@ -391,43 +512,206 @@ def get_classification_result(document_id):
 # 获取所有文档信息
 def get_all_documents():
     try:
-        documents = []
-        if not DATA_DIR.exists():
-            return documents
-        json_files = sorted(
-            DATA_DIR.glob("*.json"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True
-        )
-        EXCLUDED_FILES = {'classification_tree.json'}
-        for filepath in json_files:
-            if filepath.name in EXCLUDED_FILES:
-                continue
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    doc_info = json.load(f)
-                    if doc_info.get('id') and doc_info.get('filename'):
-                        documents.append(doc_info)
-                    else:
-                        logger.warning(f"跳过无效文档文件: {filepath.name}")
-            except Exception as e:
-                logger.error(f"读取文档{filepath.name}失败: {str(e)}")
-                continue
-        return documents
+        return _metadata_store().list_documents()
     except Exception as e:
         logger.error(f"获取所有文档失败: {str(e)}")
         return []
 
+
+def _ordered_document_search_roots(original_path: str) -> List[Path]:
+    normalized = (original_path or "").replace("\\", "/")
+    classified_dir = BASE_DIR / "classified_docs"
+    test_data_dir = BASE_DIR / "test" / "test_date"
+    repo_root = BASE_DIR.parent
+
+    if "/test/test_date/" in normalized:
+        roots = [test_data_dir, classified_dir, DOC_DIR, repo_root]
+    elif "/classified_docs/" in normalized:
+        roots = [classified_dir, DOC_DIR, test_data_dir, repo_root]
+    else:
+        roots = [classified_dir, DOC_DIR, test_data_dir, repo_root]
+
+    deduped: List[Path] = []
+    seen = set()
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        deduped.append(root)
+    return deduped
+
+
+def _candidate_document_names(doc_info: dict) -> List[str]:
+    names: List[str] = []
+    filepath = (doc_info.get("filepath") or "").strip()
+    filename = (doc_info.get("filename") or "").strip()
+
+    basename = Path(filepath).name if filepath else ""
+    for item in [basename, filename]:
+        if item and item not in names:
+            names.append(item)
+    return names
+
+
+def _path_exists_safely(path_value: str) -> bool:
+    if not path_value:
+        return False
+    try:
+        return Path(path_value).exists()
+    except OSError:
+        return False
+
+
+def resolve_document_filepath(document_or_id: Union[str, dict], persist: bool = True) -> Optional[str]:
+    doc_info = get_document_info(document_or_id) if isinstance(document_or_id, str) else document_or_id
+    if not doc_info:
+        return None
+
+    current_path = (doc_info.get("filepath") or "").strip()
+    if _path_exists_safely(current_path):
+        resolved = str(Path(current_path).resolve())
+        if persist and doc_info.get("id") and resolved != current_path:
+            update_document_info(doc_info["id"], {"filepath": resolved})
+        return resolved
+
+    candidate_names = _candidate_document_names(doc_info)
+    if not candidate_names:
+        return None
+
+    for root in _ordered_document_search_roots(current_path):
+        if not root.exists():
+            continue
+        for name in candidate_names:
+            for candidate in root.rglob(name):
+                if not candidate.is_file():
+                    continue
+                resolved = str(candidate.resolve())
+                if persist and doc_info.get("id") and resolved != current_path:
+                    update_document_info(doc_info["id"], {"filepath": resolved})
+                return resolved
+
+    return None
+
+
+def enrich_document_file_state(doc_info: Optional[dict], persist: bool = True) -> dict:
+    enriched = dict(doc_info or {})
+    resolved_path = resolve_document_filepath(enriched, persist=persist)
+    enriched["filepath"] = resolved_path or enriched.get("filepath", "")
+    enriched["file_available"] = bool(resolved_path)
+    return enriched
+
+
+def save_document_content_record(
+    document_id: str,
+    full_content: str,
+    preview_content: Optional[str] = None,
+    extraction_status: str = "ready",
+    parser_name: Optional[str] = None,
+    extraction_error: Optional[str] = None,
+) -> bool:
+    try:
+        return _metadata_store().save_document_content(
+            document_id,
+            full_content=full_content,
+            preview_content=preview_content,
+            extraction_status=extraction_status,
+            parser_name=parser_name,
+            extraction_error=extraction_error,
+        )
+    except Exception as e:
+        logger.error(f"保存文档内容失败: {str(e)}")
+        return False
+
+
+def get_document_content_record(document_id: str):
+    try:
+        return _metadata_store().get_document_content(document_id)
+    except Exception as e:
+        logger.error(f"获取文档内容失败: {str(e)}")
+        return None
+
+
+def replace_document_segments(document_id: str, segments: List[dict]) -> bool:
+    try:
+        return _metadata_store().replace_document_segments(document_id, segments)
+    except Exception as e:
+        logger.error(f"保存文档分段失败: {str(e)}")
+        return False
+
+
+def list_document_segments(document_id: str) -> List[dict]:
+    try:
+        return _metadata_store().list_document_segments(document_id)
+    except Exception as e:
+        logger.error(f"获取文档分段失败: {str(e)}")
+        return []
+
+
+def save_document_artifact(document_id: str, artifact_type: str, payload: dict, artifact_id: Optional[str] = None):
+    try:
+        return _metadata_store().save_document_artifact(document_id, artifact_type, payload, artifact_id)
+    except Exception as e:
+        logger.error(f"保存文档工件失败: {str(e)}")
+        return None
+
+
+def upsert_document_artifact(document_id: str, artifact_type: str, payload: dict):
+    try:
+        return _metadata_store().upsert_document_artifact(document_id, artifact_type, payload)
+    except Exception as e:
+        logger.error(f"更新文档工件失败: {str(e)}")
+        return None
+
+
+def list_document_artifacts(document_id: str, artifact_type: Optional[str] = None) -> List[dict]:
+    try:
+        return _metadata_store().list_document_artifacts(document_id, artifact_type)
+    except Exception as e:
+        logger.error(f"获取文档工件失败: {str(e)}")
+        return []
+
+
+def get_document_artifact(document_id: str, artifact_type: str):
+    try:
+        return _metadata_store().get_document_artifact(document_id, artifact_type)
+    except Exception as e:
+        logger.error(f"获取文档工件详情失败: {str(e)}")
+        return None
+
+
+def save_classification_table_record(table_payload: dict, table_id: Optional[str] = None) -> Optional[str]:
+    try:
+        return _metadata_store().save_classification_table(table_payload, table_id)
+    except Exception as e:
+        logger.error(f"保存分类表失败: {str(e)}")
+        return None
+
+
+def get_classification_table_record(table_id: str):
+    try:
+        return _metadata_store().get_classification_table(table_id)
+    except Exception as e:
+        logger.error(f"获取分类表失败: {str(e)}")
+        return None
+
+
+def list_classification_table_records(limit: int = 50) -> List[dict]:
+    try:
+        return _metadata_store().list_classification_tables(limit)
+    except Exception as e:
+        logger.error(f"获取分类表列表失败: {str(e)}")
+        return []
+
 # 初始化Chroma客户端
 # 优先使用豆包多模态嵌入API，失败后回退到本地BGE模型
-def init_chroma_client():
+def init_chroma_client(_recovered_legacy_schema: bool = False):
     global _chroma_client, _chroma_collection
     if _chroma_client is not None and _chroma_collection is not None:
         return _chroma_client, _chroma_collection
     with _client_lock:
         if _chroma_client is not None and _chroma_collection is not None:
             return _chroma_client, _chroma_collection
-        
+
         client = PersistentClient(path=str(CHROMA_DB_PATH))
         
         try:
@@ -476,6 +760,9 @@ def init_chroma_client():
                 raise Exception("豆包API测试失败")
                 
         except Exception as doubao_error:
+            if _is_legacy_chroma_schema_error(doubao_error) and not _recovered_legacy_schema:
+                _backup_legacy_chroma_store(doubao_error)
+                return init_chroma_client(_recovered_legacy_schema=True)
             logger.warning(f"豆包嵌入初始化出错: {str(doubao_error)}", exc_info=True)
             logger.info("回退到本地BGE嵌入模型...")
             
@@ -497,6 +784,9 @@ def init_chroma_client():
                 return client, collection
                 
             except Exception as bge_error:
+                if _is_legacy_chroma_schema_error(bge_error) and not _recovered_legacy_schema:
+                    _backup_legacy_chroma_store(bge_error)
+                    return init_chroma_client(_recovered_legacy_schema=True)
                 logger.error(f"BGE模型加载失败: {str(bge_error)}")
                 logger.warning("回退到默认嵌入函数...")
                 
@@ -511,8 +801,18 @@ def init_chroma_client():
                     _chroma_collection = collection
                     return client, collection
                 except Exception as fallback_error:
+                    if _is_legacy_chroma_schema_error(fallback_error) and not _recovered_legacy_schema:
+                        _backup_legacy_chroma_store(fallback_error)
+                        return init_chroma_client(_recovered_legacy_schema=True)
                     logger.error(f"兜底初始化也失败: {str(fallback_error)}")
-                    return None, None
+                    try:
+                        client, collection = _init_ephemeral_chroma_client()
+                        _chroma_client = client
+                        _chroma_collection = collection
+                        return client, collection
+                    except Exception as ephemeral_error:
+                        logger.error(f"内存 Chroma 初始化失败: {str(ephemeral_error)}")
+                        return None, None
 
 
 def get_chroma_collection():
@@ -525,64 +825,57 @@ def get_chroma_collection():
 def split_text_into_chunks(text, max_length=MAX_CHUNK_LENGTH, min_length=MIN_CHUNK_LENGTH):
     if not text:
         return []
+    normalized = text.replace("\r\n", "\n").strip()
+    if not normalized:
+        return []
+
+    sentence_pattern = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]|\n|$)")
+    sentences = [item.strip() for item in sentence_pattern.findall(normalized) if item.strip()]
+
+    if not sentences:
+        sentences = [normalized]
+
     chunks = []
     current_chunk = ""
-    separators = ['。', '！', '？', '. ', '! ', '? ', '; ', '；', '\n']
-    for sep in separators:
-        if sep in text:
-            sentences = text.split(sep)
-            for sentence in sentences:
-                sentence = sentence.strip() + sep
-                if len(current_chunk + sentence) <= max_length:
-                    current_chunk += sentence
-                else:
-                    if len(current_chunk) >= min_length:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sentence
-            break
-    else:
-        for i in range(0, len(text), max_length):
-            chunk = text[i:i+max_length].strip()
-            if len(chunk) >= min_length:
-                chunks.append(chunk)
-    if len(current_chunk) >= min_length:
-        chunks.append(current_chunk.strip())
+
+    def flush_current():
+        nonlocal current_chunk
+        chunk = current_chunk.strip()
+        if len(chunk) >= min_length:
+            chunks.append(chunk)
+        current_chunk = ""
+
+    for sentence in sentences:
+        if len(sentence) > max_length:
+            flush_current()
+            for start in range(0, len(sentence), max_length):
+                chunk = sentence[start:start + max_length].strip()
+                if len(chunk) >= min_length:
+                    chunks.append(chunk)
+            continue
+
+        if len(current_chunk) + len(sentence) <= max_length:
+            current_chunk += sentence
+        else:
+            flush_current()
+            current_chunk = sentence
+
+    flush_current()
     return chunks
 
 # 保存文档摘要信息用于分类
-def save_document_summary_for_classification(filepath):
+def save_document_summary_for_classification(filepath, full_content: Optional[str] = None, parser_name: Optional[str] = None, display_filename: Optional[str] = None):
     filepath_path = Path(filepath) if filepath else None
     if not filepath_path or not filepath_path.exists():
         logger.error(f"保存摘要失败：文件不存在 {filepath}")
         return None, None
     try:
         document_id = str(uuid.uuid4())
-        filename = filepath_path.name
+        filename = display_filename if display_filename else filepath_path.name
         ext = filepath_path.suffix.lower()
-        
-        content_handlers = {
-            '.pdf': process_pdf,
-            '.docx': process_word,
-            '.xlsx': process_excel,
-            '.xls': process_excel,
-            '.eml': process_email,
-            '.msg': process_email,
-            '.ppt': process_ppt,
-            '.pptx': process_ppt,
-            '.jpg': process_image,
-            '.jpeg': process_image,
-            '.png': process_image,
-            '.gif': process_image,
-            '.bmp': process_image,
-            '.webp': process_image
-        }
-        
-        if ext in content_handlers:
-            content = content_handlers[ext](filepath)
-            if content.startswith("处理失败") or content.startswith("（扫描版PDF"):
-                logger.error(f"文档内容无效：{filepath}")
-                return None, None
-        else:
+
+        content = full_content
+        if content is None:
             success, content = process_document(filepath)
             if not success:
                 logger.error(f"文档内容无效：{filepath}")
@@ -597,10 +890,19 @@ def save_document_summary_for_classification(filepath):
             'file_type': ext,
             'preview_content': preview_content,
             'full_content_length': len(content),
+            'parser_name': parser_name or ext.lstrip('.'),
+            'extraction_status': 'ready',
             'created_at': mtime,
             'created_at_iso': datetime.fromtimestamp(mtime).isoformat()
         }
         if save_document_info(doc_info):
+            save_document_content_record(
+                document_id,
+                full_content=content,
+                preview_content=preview_content,
+                extraction_status='ready',
+                parser_name=parser_name or ext.lstrip('.'),
+            )
             update_classification_tree_after_add(doc_info)
             return document_id, doc_info
         return None, None
@@ -649,7 +951,7 @@ def update_classification_tree_after_add(doc_info):
         logger.error(f"新增文档后更新分类树失败: {str(e)}")
 
 # 保存文档到Chroma（使用内容提炼引擎）
-def save_document_to_chroma(filepath, document_id=None, use_refiner=True, save_chunk_info=True):
+def save_document_to_chroma(filepath, document_id=None, use_refiner=True, save_chunk_info=True, full_content: Optional[str] = None):
     filepath_path = Path(filepath) if filepath else None
     if not filepath_path or not filepath_path.exists():
         logger.error(f"保存失败：文件不存在 {filepath}")
@@ -662,10 +964,11 @@ def save_document_to_chroma(filepath, document_id=None, use_refiner=True, save_c
         filename = filepath_path.name
         ext = filepath_path.suffix.lower()
         
-        success, full_content = process_document(filepath)
-        if not success:
-            logger.error(f"文档内容无效：{filepath}")
-            return False
+        if full_content is None:
+            success, full_content = process_document(filepath)
+            if not success:
+                logger.error(f"文档内容无效：{filepath}")
+                return False
         
         if use_refiner:
             try:
@@ -682,6 +985,14 @@ def save_document_to_chroma(filepath, document_id=None, use_refiner=True, save_c
         if not chunks:
             logger.error(f"无有效分片：{filepath}")
             return False
+
+        save_document_content_record(
+            document_id,
+            full_content=full_content,
+            preview_content=full_content[:1000] if len(full_content) > 1000 else full_content,
+            extraction_status='ready',
+            parser_name=ext.lstrip('.'),
+        )
         
         # 保存分片信息到文档JSON
         if save_chunk_info:
@@ -709,7 +1020,21 @@ def save_document_to_chroma(filepath, document_id=None, use_refiner=True, save_c
                 'refined': use_refiner
             })
             ids.append(chunk_id)
-        
+
+        replace_document_segments(
+            document_id,
+            [
+                {
+                    'segment_id': ids[i],
+                    'segment_index': i,
+                    'segment_type': 'chunk',
+                    'content': chunk,
+                    'metadata': metadatas[i],
+                }
+                for i, chunk in enumerate(chunks)
+            ]
+        )
+
         collection.add(documents=chunks, metadatas=metadatas, ids=ids)
         logger.info(f"文档保存成功：{filename}，共{len(chunks)}个分片")
         return True
@@ -864,9 +1189,6 @@ def delete_document(document_id):
         logger.error("删除失败：文档ID为空")
         return False
     try:
-        json_file = DATA_DIR / f"{document_id}.json"
-        if json_file.exists():
-            json_file.unlink()
         collection = get_chroma_collection()
         if collection:
             try:
@@ -877,6 +1199,7 @@ def delete_document(document_id):
                 pass
         
         update_classification_tree_after_delete(document_id)
+        _metadata_store().delete_document(document_id)
         
         logger.info(f"文档{document_id}删除成功")
         return True
@@ -996,12 +1319,7 @@ def update_document_info(document_id, updated_info):
         logger.error("更新失败：ID为空或更新信息非法")
         return False
     try:
-        doc_info = get_document_info(document_id)
-        if not doc_info:
-            return False
-        doc_info.update(updated_info)
-        doc_info['updated_at'] = datetime.now().isoformat()
-        return save_document_info(doc_info)
+        return _metadata_store().update_document(document_id, updated_info)
     except Exception as e:
         logger.error(f"更新文档信息失败: {str(e)}")
         return False
@@ -1012,8 +1330,7 @@ def get_documents_by_classification(classification):
         logger.error("分类过滤失败：分类标签为空")
         return []
     try:
-        all_docs = get_all_documents()
-        return [doc for doc in all_docs if doc.get('classification_result') == classification]
+        return _metadata_store().list_by_classification(classification)
     except Exception as e:
         logger.error(f"根据分类获取文档失败: {str(e)}")
         return []
