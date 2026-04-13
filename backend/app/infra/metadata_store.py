@@ -578,8 +578,23 @@ class DocumentMetadataStore:
         document_id: str,
         artifact_type: str,
     ) -> Optional[Dict[str, Any]]:
-        artifacts = self.list_document_artifacts(document_id, artifact_type)
-        return artifacts[0] if artifacts else None
+        artifact_id = f"{document_id}:{artifact_type}"
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT artifact_id, document_id, artifact_type, payload, updated_at
+                FROM document_artifacts
+                WHERE artifact_id = ?
+                """,
+                (artifact_id,),
+            ).fetchone()
+
+        if not row:
+            return None
+
+        item = dict(row)
+        item["payload"] = json.loads(item["payload"])
+        return item
 
     def save_classification_table(self, table_payload: Dict[str, Any], table_id: Optional[str] = None) -> str:
         table_id = table_id or str(uuid.uuid4())
