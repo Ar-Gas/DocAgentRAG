@@ -413,6 +413,7 @@ def save_embeddings_to_json(document_id: str, doc_embedding: Optional[List[float
 # ===================== 线程安全的单例客户端 =====================
 _chroma_client = None
 _chroma_collection = None
+_chroma_block_collection = None
 _client_lock = threading.RLock()
 
 
@@ -821,6 +822,30 @@ def get_chroma_collection():
         return _chroma_collection
     _, collection = init_chroma_client()
     return collection
+
+
+def get_block_collection():
+    global _chroma_block_collection
+    if _chroma_block_collection is not None:
+        return _chroma_block_collection
+
+    client, _ = init_chroma_client()
+    if client is None:
+        return None
+
+    with _client_lock:
+        if _chroma_block_collection is not None:
+            return _chroma_block_collection
+        try:
+            embedding_function = _resolve_embedding_function()
+            _chroma_block_collection = client.get_or_create_collection(
+                name="document_blocks",
+                embedding_function=embedding_function,
+            )
+        except Exception as exc:
+            logger.warning(f"初始化 document_blocks collection 失败，使用默认配置重试: {exc}")
+            _chroma_block_collection = client.get_or_create_collection(name="document_blocks")
+        return _chroma_block_collection
 # 智能分片函数
 def split_text_into_chunks(text, max_length=MAX_CHUNK_LENGTH, min_length=MIN_CHUNK_LENGTH):
     if not text:
