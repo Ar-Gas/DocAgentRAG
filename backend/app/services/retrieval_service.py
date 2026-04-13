@@ -248,6 +248,7 @@ class RetrievalService:
         if requested_retrieval_version == "block":
             ready_document_ids = get_ready_block_document_ids(
                 file_types=normalized_file_types,
+                filename=filename,
                 classification=classification,
                 date_from=date_from,
                 date_to=date_to,
@@ -412,7 +413,10 @@ class RetrievalService:
                         "document_id": document_id,
                         "block_id": evidence.get("block_id"),
                         "block_index": evidence.get("block_index", 0),
+                        "block_type": evidence.get("block_type", "paragraph"),
                         "snippet": evidence.get("snippet", ""),
+                        "heading_path": evidence.get("heading_path", []),
+                        "page_number": evidence.get("page_number"),
                         "score": evidence.get("score", 0.0),
                         "match_reason": evidence.get("match_reason", ""),
                     }

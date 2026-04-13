@@ -317,368 +317,6 @@ def search_with_highlight(
     return results, meta_info
 
 
-def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    normalized = str(value).strip()
-    if not normalized:
-        return None
-    try:
-        return datetime.fromisoformat(normalized.replace("Z", "+00:00"))
-    except ValueError:
-        try:
-            return datetime.fromisoformat(f"{normalized}T00:00:00")
-        except ValueError:
-            return None
-
-
-def _is_on_or_after(created_at_iso: Optional[str], lower_bound: Optional[str]) -> bool:
-    created_at = _parse_iso_datetime(created_at_iso)
-    lower = _parse_iso_datetime(lower_bound)
-    if created_at is None or lower is None:
-        return False
-    return created_at >= lower
-
-
-def _is_on_or_before(created_at_iso: Optional[str], upper_bound: Optional[str]) -> bool:
-    created_at = _parse_iso_datetime(created_at_iso)
-    upper = _parse_iso_datetime(upper_bound)
-    if created_at is None or upper is None:
-        return False
-    if len(str(upper_bound).strip()) == 10:
-        upper = upper.replace(hour=23, minute=59, second=59, microsecond=999999)
-    return created_at <= upper
-
-
-def get_ready_block_document_ids(
-    file_types: Optional[List[str]] = None,
-    filename: Optional[str] = None,
-    classification: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-) -> set[str]:
-    normalized_file_types = {
-        (item or "").strip().lower().lstrip(".")
-        for item in (file_types or [])
-        if (item or "").strip()
-    }
-    filename_filter = (filename or "").strip().lower()
-    classification_filter = (classification or "").strip().lower()
-
-    ready_ids: set[str] = set()
-    for doc in get_all_documents():
-        document_id = doc.get("id")
-        if not document_id:
-            continue
-        if (doc.get("block_index_status") or "").strip().lower() != "ready":
-            continue
-
-        file_type = (doc.get("file_type") or "").strip().lower().lstrip(".")
-        if normalized_file_types and file_type not in normalized_file_types:
-            continue
-        if filename_filter and filename_filter not in (doc.get("filename") or "").lower():
-            continue
-        if classification_filter and classification_filter not in (doc.get("classification_result") or "").lower():
-            continue
-        created_at_iso = doc.get("created_at_iso")
-        if date_from and not _is_on_or_after(created_at_iso, date_from):
-            continue
-        if date_to and not _is_on_or_before(created_at_iso, date_to):
-            continue
-        ready_ids.add(document_id)
-
-    return ready_ids
-
-
-def _decode_heading_path(raw_value: Any) -> List[str]:
-    if isinstance(raw_value, list):
-        return [str(item) for item in raw_value if str(item).strip()]
-    if isinstance(raw_value, str):
-        text = raw_value.strip()
-        if not text:
-            return []
-        try:
-            payload = json.loads(text)
-            if isinstance(payload, list):
-                return [str(item) for item in payload if str(item).strip()]
-        except (TypeError, ValueError, json.JSONDecodeError):
-            pass
-        return [segment.strip() for segment in text.split(" > ") if segment.strip()]
-    return []
-
-
-def _normalize_block_page_number(value: Any) -> Optional[int]:
-    if value in (None, "", -1):
-        return None
-    try:
-        page_number = int(value)
-    except (TypeError, ValueError):
-        return None
-    return page_number if page_number >= 0 else None
-
-
-def _collect_block_documents(
-    collection,
-    ready_document_ids: set[str],
-    file_types: List[str],
-) -> List[Dict[str, Any]]:
-    all_blocks = collection.get(include=["documents", "metadatas"]) or {}
-    documents = list(all_blocks.get("documents") or [])
-    metadatas = list(all_blocks.get("metadatas") or [])
-    block_rows: List[Dict[str, Any]] = []
-
-    for index, metadata in enumerate(metadatas):
-        if not metadata:
-            continue
-        document_id = metadata.get("document_id")
-        if document_id not in ready_document_ids:
-            continue
-        file_type = (metadata.get("file_type") or "").strip().lower().lstrip(".")
-        if file_types and file_type not in file_types:
-            continue
-        block_rows.append(
-            {
-                "document": documents[index] if index < len(documents) else "",
-                "metadata": metadata,
-            }
-        )
-    return block_rows
-
-
-def _build_block_result(metadata: Dict[str, Any], snippet: str, score: float, match_reason: str) -> Dict[str, Any]:
-    heading_path = _decode_heading_path(metadata.get("heading_path"))
-    document_id = metadata.get("document_id", "")
-    block_index = int(metadata.get("block_index", 0) or 0)
-    return {
-        "document_id": document_id,
-        "filename": metadata.get("filename", ""),
-        "file_type": metadata.get("file_type", ""),
-        "block_id": metadata.get("block_id") or f"{document_id}:{block_index}",
-        "block_index": block_index,
-        "block_type": metadata.get("block_type", "paragraph"),
-        "snippet": snippet[:240],
-        "score": round(float(score), 4),
-        "match_reason": match_reason,
-        "heading_path": heading_path,
-        "page_number": _normalize_block_page_number(metadata.get("page_number")),
-    }
-
-
-def _group_block_results(
-    block_results: List[Dict[str, Any]],
-    doc_lookup: Dict[str, Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    grouped: Dict[str, Dict[str, Any]] = {}
-    for result in block_results:
-        document_id = result.get("document_id")
-        if not document_id:
-            continue
-        doc_info = doc_lookup.get(document_id, {})
-        group = grouped.setdefault(
-            document_id,
-            {
-                "document_id": document_id,
-                "filename": result.get("filename") or doc_info.get("filename", ""),
-                "file_type": result.get("file_type") or doc_info.get("file_type", ""),
-                "classification_result": doc_info.get("classification_result"),
-                "file_available": bool(doc_info.get("filepath")),
-                "created_at_iso": doc_info.get("created_at_iso"),
-                "score": result.get("score", 0.0),
-                "best_similarity": result.get("score", 0.0),
-                "hit_count": 0,
-                "result_count": 0,
-                "best_excerpt": "",
-                "best_block_id": None,
-                "preview_content": doc_info.get("preview_content", ""),
-                "evidence_blocks": [],
-                "results": [],
-            },
-        )
-        group["hit_count"] += 1
-        group["result_count"] = group["hit_count"]
-        group["score"] = max(group["score"], result.get("score", 0.0))
-        group["best_similarity"] = group["score"]
-        group["results"].append(result)
-        group["evidence_blocks"].append(
-            {
-                "block_id": result.get("block_id"),
-                "block_index": result.get("block_index", 0),
-                "block_type": result.get("block_type", "paragraph"),
-                "snippet": result.get("snippet", ""),
-                "heading_path": result.get("heading_path", []),
-                "page_number": result.get("page_number"),
-                "score": result.get("score", 0.0),
-                "match_reason": result.get("match_reason", ""),
-            }
-        )
-        if (
-            not group["best_block_id"]
-            or result.get("score", 0.0) >= group.get("best_similarity", 0.0)
-        ):
-            group["best_block_id"] = result.get("block_id")
-            group["best_excerpt"] = result.get("snippet", "")
-
-    documents = list(grouped.values())
-    for document in documents:
-        document["evidence_blocks"] = sorted(
-            document["evidence_blocks"],
-            key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)),
-            reverse=True,
-        )
-        document["results"] = sorted(
-            document["results"],
-            key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)),
-            reverse=True,
-        )
-        if not document["best_excerpt"] and document["evidence_blocks"]:
-            document["best_excerpt"] = document["evidence_blocks"][0].get("snippet", "")
-    documents.sort(
-        key=lambda item: (item.get("score", 0.0), item.get("hit_count", 0), item.get("created_at_iso") or ""),
-        reverse=True,
-    )
-    return documents
-
-
-def search_block_documents(
-    query: str,
-    mode: str,
-    limit: int,
-    alpha: float,
-    use_rerank: bool,
-    use_llm_rerank: bool,
-    file_types: List[str],
-    classification: Optional[str],
-    date_from: Optional[str],
-    date_to: Optional[str],
-    ready_document_ids: set[str],
-) -> Dict[str, Any]:
-    if not ready_document_ids:
-        return {"documents": [], "results": [], "meta": {"fallback_used": False}}
-
-    collection = get_block_collection()
-    if collection is None:
-        return {"documents": [], "results": [], "meta": {"fallback_used": False}}
-
-    parser = get_query_parser()
-    parsed = parser.parse(query or "")
-    search_text = parser.get_search_string(parsed) or (query or "").strip()
-    normalized_file_types = list({item.lower().lstrip(".") for item in (file_types or []) if item})
-    if parsed.file_types:
-        normalized_file_types = list({*normalized_file_types, *[item.lower().lstrip(".") for item in parsed.file_types]})
-
-    doc_lookup = {doc.get("id"): doc for doc in get_all_documents() if doc.get("id") in ready_document_ids}
-    block_rows = _collect_block_documents(collection, ready_document_ids, normalized_file_types)
-    if not block_rows:
-        return {"documents": [], "results": [], "meta": {"fallback_used": False}}
-
-    max_candidates = max(limit * 5, 20)
-    combined_results: Dict[str, Dict[str, Any]] = {}
-
-    if query.strip():
-        try:
-            vector_results = collection.query(
-                query_texts=[search_text],
-                n_results=max_candidates,
-                include=["documents", "metadatas", "distances"],
-            )
-        except Exception:
-            vector_results = {}
-
-        documents_payload = (vector_results.get("documents") or [[]])[0] if vector_results.get("documents") else []
-        metadatas_payload = (vector_results.get("metadatas") or [[]])[0] if vector_results.get("metadatas") else []
-        distances_payload = (vector_results.get("distances") or [[]])[0] if vector_results.get("distances") else []
-        for metadata, document, distance in zip(metadatas_payload, documents_payload, distances_payload):
-            if not metadata:
-                continue
-            document_id = metadata.get("document_id")
-            if document_id not in ready_document_ids:
-                continue
-            file_type = (metadata.get("file_type") or "").strip().lower().lstrip(".")
-            if normalized_file_types and file_type not in normalized_file_types:
-                continue
-            block_id = metadata.get("block_id") or f"{document_id}:{metadata.get('block_index', 0)}"
-            vector_score = max(0.0, min(1.0, 1 - float(distance)))
-            combined_results[block_id] = {
-                **_build_block_result(metadata, document or "", vector_score, "vector match"),
-                "content_snippet": (document or "")[:300],
-                "_vector_score": vector_score,
-                "_bm25_score": 0.0,
-            }
-
-    bm25_documents = [row["document"] for row in block_rows]
-    bm25_scores = []
-    if bm25_documents and search_text:
-        bm25 = get_cached_bm25_index(bm25_documents, BM25)
-        bm25_scores = bm25.search(search_text, bm25_documents, top_k=min(len(bm25_documents), max_candidates))
-
-    max_bm25 = max((score for _, score in bm25_scores), default=0.0)
-    for index, raw_score in bm25_scores:
-        if index >= len(block_rows):
-            continue
-        metadata = block_rows[index]["metadata"]
-        document = block_rows[index]["document"]
-        block_id = metadata.get("block_id") or f"{metadata.get('document_id')}:{metadata.get('block_index', 0)}"
-        bm25_score = (raw_score / max_bm25) if max_bm25 > 0 else 0.0
-        match_reason = "heading + body match" if _decode_heading_path(metadata.get("heading_path")) else "body match"
-        if block_id in combined_results:
-            combined_results[block_id]["_bm25_score"] = bm25_score
-            combined_results[block_id]["match_reason"] = match_reason
-        else:
-            combined_results[block_id] = {
-                **_build_block_result(metadata, document or "", bm25_score, match_reason),
-                "content_snippet": (document or "")[:300],
-                "_vector_score": 0.0,
-                "_bm25_score": bm25_score,
-            }
-
-    block_results = list(combined_results.values())
-    for result in block_results:
-        result["score"] = round(
-            alpha * result.pop("_vector_score", 0.0) + (1 - alpha) * result.pop("_bm25_score", 0.0),
-            4,
-        )
-
-    block_results.sort(key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)), reverse=True)
-
-    if use_rerank and use_llm_rerank and block_results:
-        try:
-            from .smart_retrieval import llm_rerank
-
-            reranked = llm_rerank(query, [dict(item) for item in block_results], top_k=min(len(block_results), max_candidates))
-            block_results = [
-                {
-                    **item,
-                    "score": round(float(item.get("similarity", item.get("score", 0.0))), 4),
-                }
-                for item in reranked
-            ]
-            block_results.sort(key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)), reverse=True)
-        except Exception:
-            pass
-
-    documents = _group_block_results(block_results, doc_lookup)
-    return {
-        "documents": documents,
-        "results": [
-            {
-                "document_id": item.get("document_id"),
-                "filename": item.get("filename"),
-                "file_type": item.get("file_type"),
-                "block_id": item.get("block_id"),
-                "block_index": item.get("block_index", 0),
-                "block_type": item.get("block_type", "paragraph"),
-                "snippet": item.get("snippet", ""),
-                "heading_path": item.get("heading_path", []),
-                "page_number": item.get("page_number"),
-                "score": item.get("score", 0.0),
-                "match_reason": item.get("match_reason", ""),
-            }
-            for item in block_results
-        ],
-        "meta": {"fallback_used": False},
-    }
-
-
 def keyword_search(query: str, limit: int = 10, file_types: Optional[List[str]] = None) -> List[Dict]:
     """
     精确关键词检索：仅使用 BM25 算法进行关键词匹配
@@ -1594,12 +1232,15 @@ def _is_on_or_before(value: Optional[str], upper_bound: Optional[str]) -> bool:
     upper = _parse_filter_datetime(upper_bound)
     if created_at is None or upper is None:
         return False
+    if len(str(upper_bound).strip()) == 10:
+        upper = upper.replace(hour=23, minute=59, second=59, microsecond=999999)
     return created_at <= upper
 
 
 def _matches_block_document_filters(
     document: Dict[str, Any],
     file_types: Optional[List[str]] = None,
+    filename: Optional[str] = None,
     classification: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -1611,6 +1252,9 @@ def _matches_block_document_filters(
     )
 
     if normalized_file_types and document_file_type not in normalized_file_types and document_family not in normalized_file_types:
+        return False
+
+    if filename and filename.strip().lower() not in (document.get("filename") or "").lower():
         return False
 
     if classification:
@@ -1629,6 +1273,7 @@ def _matches_block_document_filters(
 
 def get_ready_block_document_ids(
     file_types: Optional[List[str]] = None,
+    filename: Optional[str] = None,
     classification: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -1643,6 +1288,7 @@ def get_ready_block_document_ids(
         if not _matches_block_document_filters(
             document,
             file_types=file_types,
+            filename=filename,
             classification=classification,
             date_from=date_from,
             date_to=date_to,

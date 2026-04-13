@@ -259,6 +259,60 @@ def test_workspace_search_block_mode_falls_back_to_legacy_when_no_ready_docs(mon
     assert payload["meta"]["fallback_used"] is True
 
 
+def test_workspace_search_block_mode_forwards_filename_filter(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+    captured = {}
+
+    def fake_get_ready_block_document_ids(**kwargs):
+        captured.update(kwargs)
+        return {"doc-1"}
+
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", fake_get_ready_block_document_ids)
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {
+            "documents": [
+                {
+                    "document_id": "doc-1",
+                    "filename": "财务制度.docx",
+                    "file_type": ".docx",
+                    "score": 0.92,
+                    "hit_count": 1,
+                    "best_block_id": "doc-1:block-v1:14",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-1:block-v1:14",
+                            "block_index": 14,
+                            "block_type": "paragraph",
+                            "snippet": "员工差旅报销标准如下……",
+                            "heading_path": ["第三章 财务管理", "3.2 报销标准"],
+                            "page_number": 12,
+                            "score": 0.92,
+                            "match_reason": "heading + body match",
+                        }
+                    ],
+                }
+            ],
+            "results": [],
+            "meta": {"fallback_used": False},
+        },
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="报销标准",
+        mode="hybrid",
+        retrieval_version="block",
+        filename="财务制度",
+        limit=10,
+        group_by_document=True,
+    )
+
+    assert captured["filename"] == "财务制度"
+    assert payload["retrieval_version_used"] == "block"
+    assert payload["results"][0]["heading_path"] == ["第三章 财务管理", "3.2 报销标准"]
+
+
 def test_workspace_search_falls_back_to_metadata_when_index_is_empty(monkeypatch):
     search_cache_module.get_search_cache().invalidate_all()
     monkeypatch.setattr(retrieval_service_module, "hybrid_search", lambda *args, **kwargs: [])
