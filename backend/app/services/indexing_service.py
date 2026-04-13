@@ -19,16 +19,18 @@ class IndexingService:
         if not doc_info:
             return {"document_id": document_id, "block_index_status": "failed", "error": "document not found"}
 
+        block_collection = None
+        old_snapshot = {"ids": [], "documents": [], "metadatas": []}
+        new_ids = []
         try:
             block_payload = extract_structured_blocks(doc_info.get("filepath", ""), document_id)
             block_collection = get_block_collection()
             if block_collection is None:
                 raise RuntimeError("block collection unavailable")
 
-            old_entries = block_collection.get(where={"document_id": document_id}, include=[])
-            old_ids = old_entries.get("ids") or []
-            if old_ids:
-                block_collection.delete(ids=old_ids)
+            old_snapshot = self._snapshot_existing_blocks(block_collection, document_id)
+            if old_snapshot["ids"]:
+                block_collection.delete(ids=old_snapshot["ids"])
 
             blocks = block_payload.get("blocks") or []
             ids = []
@@ -44,8 +46,9 @@ class IndexingService:
 
             if ids:
                 block_collection.add(documents=documents, metadatas=metadatas, ids=ids)
+                new_ids = list(ids)
 
-            upsert_document_artifact(
+            artifact_id = upsert_document_artifact(
                 document_id,
                 self.READER_ARTIFACT_TYPE,
                 {
@@ -55,6 +58,8 @@ class IndexingService:
                     "blocks": blocks,
                 },
             )
+            if not artifact_id:
+                raise RuntimeError("failed to persist reader artifact")
 
             update_document_info(
                 document_id,
@@ -69,6 +74,7 @@ class IndexingService:
             )
             return {"document_id": document_id, "block_index_status": "ready"}
         except Exception as exc:
+            self._rollback_blocks(block_collection, old_snapshot, new_ids)
             short_error = self._short_error(exc)
             update_document_info(
                 document_id,
@@ -143,3 +149,31 @@ class IndexingService:
     def _short_error(exc: Exception, max_len: int = 160) -> str:
         raw = str(exc).strip() or exc.__class__.__name__
         return raw[:max_len]
+
+    @staticmethod
+    def _snapshot_existing_blocks(block_collection, document_id: str) -> Dict[str, Any]:
+        existing = block_collection.get(where={"document_id": document_id}, include=["documents", "metadatas"])
+        ids = list(existing.get("ids") or [])
+        documents = list(existing.get("documents") or [])
+        metadatas = list(existing.get("metadatas") or [])
+
+        if len(documents) != len(ids):
+            documents = [""] * len(ids)
+        if len(metadatas) != len(ids):
+            metadatas = [{"document_id": document_id, "block_id": item_id} for item_id in ids]
+        return {"ids": ids, "documents": documents, "metadatas": metadatas}
+
+    def _rollback_blocks(self, block_collection, old_snapshot: Dict[str, Any], new_ids: list[str]) -> None:
+        if block_collection is None:
+            return
+        try:
+            if new_ids:
+                block_collection.delete(ids=new_ids)
+            if old_snapshot.get("ids"):
+                block_collection.add(
+                    documents=old_snapshot.get("documents") or [],
+                    metadatas=old_snapshot.get("metadatas") or [],
+                    ids=old_snapshot.get("ids") or [],
+                )
+        except Exception:
+            pass
