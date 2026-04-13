@@ -167,13 +167,13 @@ This keeps planning concrete without inventing undocumented renderer behavior.
 
 ### Loading And Error States
 
-The current PDF-specific loading and error state should be generalized so all supported renderers follow the same pattern:
+The current PDF-specific loading and error state should be generalized so all supported renderers follow the same loading pattern:
 
 - show a loading skeleton while the component is rendering
 - surface a friendly render error if the component emits an error event
 
 The message can remain generic, for example “预览失败，请在新标签页打开查看。”
-This shared error state applies equally to `.pdf`, `.docx`, and `.xlsx`.
+This shared render-error state is required for `.pdf` and `.xlsx`, and should also be used for `.docx` if the installed component version exposes `@error`.
 
 ### Removed Behavior
 
