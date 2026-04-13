@@ -288,6 +288,22 @@ Phase one should normalize blocks for indexability:
   - header line: `A | B | C`
   - row line: `v1 | v2 | v3`
 
+### `indexed_content_hash` Normalization
+
+`indexed_content_hash` must be derived from a deterministic serialization of the normalized structured blocks used for block indexing.
+
+Phase-one normalization contract:
+
+- hash input must be based on the ordered block list after structural extraction and normalization, not on raw file bytes and not on vector-store payload order
+- normalize all newlines to `\n`
+- trim trailing whitespace on every line
+- collapse repeated blank lines inside block text to a single blank line
+- normalize `heading_path` with stable segment cleaning and join it as ` > `
+- serialize narrative blocks from stable fields only: `block_type`, normalized `heading_path`, `page_number`, normalized `text`
+- serialize table blocks with the same canonical delimiter rules used for indexing, including retained header rows for split table-region blocks
+- exclude transient metadata from the hash input, including `block_id`, parser runtime data, storage paths, upload timestamps, and retrieval scores
+- compute the hash from the UTF-8 bytes of that canonical serialized block sequence
+
 ## Phase-One Retrieval Pipeline
 
 The phase-one pipeline should be:
@@ -374,6 +390,16 @@ Each evidence block should expose:
 - semantic reranker match
 
 ## Backend Design
+
+### Repository Reality Rule
+
+This project should follow the current code layout already in use in the repository, even where older repo guidelines mention different folders.
+
+Authoritative phase-one rule:
+
+- backend service orchestration may continue under `backend/app/services`, because that is already part of the current project structure
+- frontend page-level search workspace code may continue under `frontend/docagent-frontend/src/pages`, because that is the current frontend convention in this repo
+- stale references to `backend/utils`-only service placement or `src/views` do not override the actual codebase structure for this redesign
 
 ### New Or Refactored Responsibilities
 
@@ -527,10 +553,22 @@ Top-level response shape should remain document-workspace compatible:
 
 `group_by_document` behavior in phase one:
 
-- `group_by_document=true`: `documents` is the primary UI object and `results` may be empty or compatibility-only
+- `group_by_document=true`: `documents` is the primary UI object and `results` must remain populated with compatibility block-hit objects derived from the top evidence blocks of the returned documents
 - `group_by_document=false`: `results` must contain block-level hits ordered by final block score, and `documents` may be omitted or treated as a compatibility aggregate
 
 The current frontend workspace should continue using `group_by_document=true`.
+
+Compatibility expectation for `results` when `group_by_document=true`:
+
+- `results` is not an empty placeholder in phase one
+- each compatibility item should correspond to one surfaced evidence block
+- each compatibility item should at minimum expose:
+  - `document_id`
+  - `block_id`
+  - `block_index`
+  - `snippet`
+  - `score`
+  - `match_reason`
 
 Authoritative request schema:
 
@@ -617,9 +655,18 @@ Legacy fallback should be explicit in `meta`, for example:
   "mode": "hybrid",
   "retrieval_version_requested": "block",
   "retrieval_version_used": "block",
-  "total_results": 6,
-  "total_documents": 2,
-  "results": [],
+  "total_results": 1,
+  "total_documents": 1,
+  "results": [
+    {
+      "document_id": "doc-1",
+      "block_id": "doc-1:block-v1:14",
+      "block_index": 14,
+      "snippet": "员工差旅报销标准如下……",
+      "score": 0.92,
+      "match_reason": "heading + body match"
+    }
+  ],
   "documents": [
     {
       "document_id": "doc-1",
@@ -686,6 +733,8 @@ Reader request contract in phase one:
   - `anchor_block_id`
 - `anchor_block_id` must refer to the same deterministic `block_id` returned by `workspace-search`
 - if `anchor_block_id` is missing or invalid, the service should resolve `best_anchor` from the highest-ranked matching block in the reader payload
+- the response should return the full persisted structured block list for the document in phase one, ordered by `block_index`
+- pagination, windowing, or partial block streaming are explicitly out of scope for phase one
 
 ### `GET /documents/{id}/reader` Example
 
@@ -731,6 +780,11 @@ Phase one should preserve the current document workspace structure:
 - `frontend/docagent-frontend/src/pages/SearchPage.vue`
 - `frontend/docagent-frontend/src/components/DocumentResultList.vue`
 - `frontend/docagent-frontend/src/components/DocumentReader.vue`
+
+Repository reality rule for the frontend:
+
+- `src/pages` is the authoritative page-level convention for this repo during phase one
+- older guideline references to `src/views` do not override the actual frontend structure already in use
 
 The frontend changes should be additive:
 
