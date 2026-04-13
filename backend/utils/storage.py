@@ -648,6 +648,40 @@ def list_document_segments(document_id: str) -> List[dict]:
         return []
 
 
+def list_document_chunk_embeddings(document_id: str) -> List[dict]:
+    if not document_id:
+        return []
+
+    try:
+        collection = get_chroma_collection()
+        if collection is None:
+            return []
+
+        payload = collection.get(
+            where={"document_id": document_id},
+            include=["embeddings", "metadatas", "documents"],
+        )
+        embeddings = payload.get("embeddings") or []
+        metadatas = payload.get("metadatas") or []
+        documents = payload.get("documents") or []
+
+        results = []
+        for embedding, metadata, content in zip(embeddings, metadatas, documents):
+            if embedding is None:
+                continue
+            results.append(
+                {
+                    "embedding": list(embedding),
+                    "metadata": metadata or {},
+                    "content": content or "",
+                }
+            )
+        return results
+    except Exception as e:
+        logger.error(f"获取文档分片向量失败: {str(e)}")
+        return []
+
+
 def save_document_artifact(document_id: str, artifact_type: str, payload: dict, artifact_id: Optional[str] = None):
     try:
         return _metadata_store().save_document_artifact(document_id, artifact_type, payload, artifact_id)
