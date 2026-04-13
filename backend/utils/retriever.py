@@ -4,10 +4,18 @@ import re
 import math
 import base64
 import hashlib
+import json
 from collections import Counter
+from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
-from .storage import init_chroma_client, doubao_multimodal_embed, DOUBAO_EMBEDDING_MODEL
+from .storage import (
+    DOUBAO_EMBEDDING_MODEL,
+    doubao_multimodal_embed,
+    get_all_documents,
+    get_block_collection,
+    init_chroma_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +315,368 @@ def search_with_highlight(
     }
     
     return results, meta_info
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    try:
+        return datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.fromisoformat(f"{normalized}T00:00:00")
+        except ValueError:
+            return None
+
+
+def _is_on_or_after(created_at_iso: Optional[str], lower_bound: Optional[str]) -> bool:
+    created_at = _parse_iso_datetime(created_at_iso)
+    lower = _parse_iso_datetime(lower_bound)
+    if created_at is None or lower is None:
+        return False
+    return created_at >= lower
+
+
+def _is_on_or_before(created_at_iso: Optional[str], upper_bound: Optional[str]) -> bool:
+    created_at = _parse_iso_datetime(created_at_iso)
+    upper = _parse_iso_datetime(upper_bound)
+    if created_at is None or upper is None:
+        return False
+    if len(str(upper_bound).strip()) == 10:
+        upper = upper.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return created_at <= upper
+
+
+def get_ready_block_document_ids(
+    file_types: Optional[List[str]] = None,
+    filename: Optional[str] = None,
+    classification: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> set[str]:
+    normalized_file_types = {
+        (item or "").strip().lower().lstrip(".")
+        for item in (file_types or [])
+        if (item or "").strip()
+    }
+    filename_filter = (filename or "").strip().lower()
+    classification_filter = (classification or "").strip().lower()
+
+    ready_ids: set[str] = set()
+    for doc in get_all_documents():
+        document_id = doc.get("id")
+        if not document_id:
+            continue
+        if (doc.get("block_index_status") or "").strip().lower() != "ready":
+            continue
+
+        file_type = (doc.get("file_type") or "").strip().lower().lstrip(".")
+        if normalized_file_types and file_type not in normalized_file_types:
+            continue
+        if filename_filter and filename_filter not in (doc.get("filename") or "").lower():
+            continue
+        if classification_filter and classification_filter not in (doc.get("classification_result") or "").lower():
+            continue
+        created_at_iso = doc.get("created_at_iso")
+        if date_from and not _is_on_or_after(created_at_iso, date_from):
+            continue
+        if date_to and not _is_on_or_before(created_at_iso, date_to):
+            continue
+        ready_ids.add(document_id)
+
+    return ready_ids
+
+
+def _decode_heading_path(raw_value: Any) -> List[str]:
+    if isinstance(raw_value, list):
+        return [str(item) for item in raw_value if str(item).strip()]
+    if isinstance(raw_value, str):
+        text = raw_value.strip()
+        if not text:
+            return []
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, list):
+                return [str(item) for item in payload if str(item).strip()]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+        return [segment.strip() for segment in text.split(" > ") if segment.strip()]
+    return []
+
+
+def _normalize_block_page_number(value: Any) -> Optional[int]:
+    if value in (None, "", -1):
+        return None
+    try:
+        page_number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return page_number if page_number >= 0 else None
+
+
+def _collect_block_documents(
+    collection,
+    ready_document_ids: set[str],
+    file_types: List[str],
+) -> List[Dict[str, Any]]:
+    all_blocks = collection.get(include=["documents", "metadatas"]) or {}
+    documents = list(all_blocks.get("documents") or [])
+    metadatas = list(all_blocks.get("metadatas") or [])
+    block_rows: List[Dict[str, Any]] = []
+
+    for index, metadata in enumerate(metadatas):
+        if not metadata:
+            continue
+        document_id = metadata.get("document_id")
+        if document_id not in ready_document_ids:
+            continue
+        file_type = (metadata.get("file_type") or "").strip().lower().lstrip(".")
+        if file_types and file_type not in file_types:
+            continue
+        block_rows.append(
+            {
+                "document": documents[index] if index < len(documents) else "",
+                "metadata": metadata,
+            }
+        )
+    return block_rows
+
+
+def _build_block_result(metadata: Dict[str, Any], snippet: str, score: float, match_reason: str) -> Dict[str, Any]:
+    heading_path = _decode_heading_path(metadata.get("heading_path"))
+    document_id = metadata.get("document_id", "")
+    block_index = int(metadata.get("block_index", 0) or 0)
+    return {
+        "document_id": document_id,
+        "filename": metadata.get("filename", ""),
+        "file_type": metadata.get("file_type", ""),
+        "block_id": metadata.get("block_id") or f"{document_id}:{block_index}",
+        "block_index": block_index,
+        "block_type": metadata.get("block_type", "paragraph"),
+        "snippet": snippet[:240],
+        "score": round(float(score), 4),
+        "match_reason": match_reason,
+        "heading_path": heading_path,
+        "page_number": _normalize_block_page_number(metadata.get("page_number")),
+    }
+
+
+def _group_block_results(
+    block_results: List[Dict[str, Any]],
+    doc_lookup: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for result in block_results:
+        document_id = result.get("document_id")
+        if not document_id:
+            continue
+        doc_info = doc_lookup.get(document_id, {})
+        group = grouped.setdefault(
+            document_id,
+            {
+                "document_id": document_id,
+                "filename": result.get("filename") or doc_info.get("filename", ""),
+                "file_type": result.get("file_type") or doc_info.get("file_type", ""),
+                "classification_result": doc_info.get("classification_result"),
+                "file_available": bool(doc_info.get("filepath")),
+                "created_at_iso": doc_info.get("created_at_iso"),
+                "score": result.get("score", 0.0),
+                "best_similarity": result.get("score", 0.0),
+                "hit_count": 0,
+                "result_count": 0,
+                "best_excerpt": "",
+                "best_block_id": None,
+                "preview_content": doc_info.get("preview_content", ""),
+                "evidence_blocks": [],
+                "results": [],
+            },
+        )
+        group["hit_count"] += 1
+        group["result_count"] = group["hit_count"]
+        group["score"] = max(group["score"], result.get("score", 0.0))
+        group["best_similarity"] = group["score"]
+        group["results"].append(result)
+        group["evidence_blocks"].append(
+            {
+                "block_id": result.get("block_id"),
+                "block_index": result.get("block_index", 0),
+                "block_type": result.get("block_type", "paragraph"),
+                "snippet": result.get("snippet", ""),
+                "heading_path": result.get("heading_path", []),
+                "page_number": result.get("page_number"),
+                "score": result.get("score", 0.0),
+                "match_reason": result.get("match_reason", ""),
+            }
+        )
+        if (
+            not group["best_block_id"]
+            or result.get("score", 0.0) >= group.get("best_similarity", 0.0)
+        ):
+            group["best_block_id"] = result.get("block_id")
+            group["best_excerpt"] = result.get("snippet", "")
+
+    documents = list(grouped.values())
+    for document in documents:
+        document["evidence_blocks"] = sorted(
+            document["evidence_blocks"],
+            key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)),
+            reverse=True,
+        )
+        document["results"] = sorted(
+            document["results"],
+            key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)),
+            reverse=True,
+        )
+        if not document["best_excerpt"] and document["evidence_blocks"]:
+            document["best_excerpt"] = document["evidence_blocks"][0].get("snippet", "")
+    documents.sort(
+        key=lambda item: (item.get("score", 0.0), item.get("hit_count", 0), item.get("created_at_iso") or ""),
+        reverse=True,
+    )
+    return documents
+
+
+def search_block_documents(
+    query: str,
+    mode: str,
+    limit: int,
+    alpha: float,
+    use_rerank: bool,
+    use_llm_rerank: bool,
+    file_types: List[str],
+    classification: Optional[str],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    ready_document_ids: set[str],
+) -> Dict[str, Any]:
+    if not ready_document_ids:
+        return {"documents": [], "results": [], "meta": {"fallback_used": False}}
+
+    collection = get_block_collection()
+    if collection is None:
+        return {"documents": [], "results": [], "meta": {"fallback_used": False}}
+
+    parser = get_query_parser()
+    parsed = parser.parse(query or "")
+    search_text = parser.get_search_string(parsed) or (query or "").strip()
+    normalized_file_types = list({item.lower().lstrip(".") for item in (file_types or []) if item})
+    if parsed.file_types:
+        normalized_file_types = list({*normalized_file_types, *[item.lower().lstrip(".") for item in parsed.file_types]})
+
+    doc_lookup = {doc.get("id"): doc for doc in get_all_documents() if doc.get("id") in ready_document_ids}
+    block_rows = _collect_block_documents(collection, ready_document_ids, normalized_file_types)
+    if not block_rows:
+        return {"documents": [], "results": [], "meta": {"fallback_used": False}}
+
+    max_candidates = max(limit * 5, 20)
+    combined_results: Dict[str, Dict[str, Any]] = {}
+
+    if query.strip():
+        try:
+            vector_results = collection.query(
+                query_texts=[search_text],
+                n_results=max_candidates,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception:
+            vector_results = {}
+
+        documents_payload = (vector_results.get("documents") or [[]])[0] if vector_results.get("documents") else []
+        metadatas_payload = (vector_results.get("metadatas") or [[]])[0] if vector_results.get("metadatas") else []
+        distances_payload = (vector_results.get("distances") or [[]])[0] if vector_results.get("distances") else []
+        for metadata, document, distance in zip(metadatas_payload, documents_payload, distances_payload):
+            if not metadata:
+                continue
+            document_id = metadata.get("document_id")
+            if document_id not in ready_document_ids:
+                continue
+            file_type = (metadata.get("file_type") or "").strip().lower().lstrip(".")
+            if normalized_file_types and file_type not in normalized_file_types:
+                continue
+            block_id = metadata.get("block_id") or f"{document_id}:{metadata.get('block_index', 0)}"
+            vector_score = max(0.0, min(1.0, 1 - float(distance)))
+            combined_results[block_id] = {
+                **_build_block_result(metadata, document or "", vector_score, "vector match"),
+                "content_snippet": (document or "")[:300],
+                "_vector_score": vector_score,
+                "_bm25_score": 0.0,
+            }
+
+    bm25_documents = [row["document"] for row in block_rows]
+    bm25_scores = []
+    if bm25_documents and search_text:
+        bm25 = get_cached_bm25_index(bm25_documents, BM25)
+        bm25_scores = bm25.search(search_text, bm25_documents, top_k=min(len(bm25_documents), max_candidates))
+
+    max_bm25 = max((score for _, score in bm25_scores), default=0.0)
+    for index, raw_score in bm25_scores:
+        if index >= len(block_rows):
+            continue
+        metadata = block_rows[index]["metadata"]
+        document = block_rows[index]["document"]
+        block_id = metadata.get("block_id") or f"{metadata.get('document_id')}:{metadata.get('block_index', 0)}"
+        bm25_score = (raw_score / max_bm25) if max_bm25 > 0 else 0.0
+        match_reason = "heading + body match" if _decode_heading_path(metadata.get("heading_path")) else "body match"
+        if block_id in combined_results:
+            combined_results[block_id]["_bm25_score"] = bm25_score
+            combined_results[block_id]["match_reason"] = match_reason
+        else:
+            combined_results[block_id] = {
+                **_build_block_result(metadata, document or "", bm25_score, match_reason),
+                "content_snippet": (document or "")[:300],
+                "_vector_score": 0.0,
+                "_bm25_score": bm25_score,
+            }
+
+    block_results = list(combined_results.values())
+    for result in block_results:
+        result["score"] = round(
+            alpha * result.pop("_vector_score", 0.0) + (1 - alpha) * result.pop("_bm25_score", 0.0),
+            4,
+        )
+
+    block_results.sort(key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)), reverse=True)
+
+    if use_rerank and use_llm_rerank and block_results:
+        try:
+            from .smart_retrieval import llm_rerank
+
+            reranked = llm_rerank(query, [dict(item) for item in block_results], top_k=min(len(block_results), max_candidates))
+            block_results = [
+                {
+                    **item,
+                    "score": round(float(item.get("similarity", item.get("score", 0.0))), 4),
+                }
+                for item in reranked
+            ]
+            block_results.sort(key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)), reverse=True)
+        except Exception:
+            pass
+
+    documents = _group_block_results(block_results, doc_lookup)
+    return {
+        "documents": documents,
+        "results": [
+            {
+                "document_id": item.get("document_id"),
+                "filename": item.get("filename"),
+                "file_type": item.get("file_type"),
+                "block_id": item.get("block_id"),
+                "block_index": item.get("block_index", 0),
+                "block_type": item.get("block_type", "paragraph"),
+                "snippet": item.get("snippet", ""),
+                "heading_path": item.get("heading_path", []),
+                "page_number": item.get("page_number"),
+                "score": item.get("score", 0.0),
+                "match_reason": item.get("match_reason", ""),
+            }
+            for item in block_results
+        ],
+        "meta": {"fallback_used": False},
+    }
 
 
 def keyword_search(query: str, limit: int = 10, file_types: Optional[List[str]] = None) -> List[Dict]:
@@ -1161,6 +1531,598 @@ def get_document_by_id(document_id):
         logger.error(f"根据ID获取文档失败: {str(e)}")
         return None
 
+
+_FILE_TYPE_FAMILY_MAP = {
+    "pdf": "pdf",
+    "doc": "word",
+    "docx": "word",
+    "word": "word",
+    "ppt": "ppt",
+    "pptx": "ppt",
+    "presentation": "ppt",
+    "xls": "excel",
+    "xlsx": "excel",
+    "csv": "excel",
+    "excel": "excel",
+    "eml": "eml",
+    "msg": "eml",
+    "txt": "txt",
+    "md": "txt",
+    "png": "image",
+    "jpg": "image",
+    "jpeg": "image",
+    "gif": "image",
+    "bmp": "image",
+    "image": "image",
+}
+
+
+def _normalize_filter_file_type(value: Optional[str]) -> str:
+    return (value or "").strip().lower().lstrip(".")
+
+
+def _derive_file_type_family(file_type: Optional[str]) -> str:
+    normalized = _normalize_filter_file_type(file_type)
+    return _FILE_TYPE_FAMILY_MAP.get(normalized, normalized)
+
+
+def _parse_filter_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        return datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.fromisoformat(f"{normalized}T00:00:00")
+        except ValueError:
+            return None
+
+
+def _is_on_or_after(value: Optional[str], lower_bound: Optional[str]) -> bool:
+    created_at = _parse_filter_datetime(value)
+    lower = _parse_filter_datetime(lower_bound)
+    if created_at is None or lower is None:
+        return False
+    return created_at >= lower
+
+
+def _is_on_or_before(value: Optional[str], upper_bound: Optional[str]) -> bool:
+    created_at = _parse_filter_datetime(value)
+    upper = _parse_filter_datetime(upper_bound)
+    if created_at is None or upper is None:
+        return False
+    return created_at <= upper
+
+
+def _matches_block_document_filters(
+    document: Dict[str, Any],
+    file_types: Optional[List[str]] = None,
+    classification: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> bool:
+    normalized_file_types = [_normalize_filter_file_type(item) for item in (file_types or []) if item]
+    document_file_type = _normalize_filter_file_type(document.get("file_type"))
+    document_family = _normalize_filter_file_type(
+        document.get("file_type_family") or _derive_file_type_family(document.get("file_type"))
+    )
+
+    if normalized_file_types and document_file_type not in normalized_file_types and document_family not in normalized_file_types:
+        return False
+
+    if classification:
+        document_classification = (document.get("classification_result") or "未分类").lower()
+        if classification.strip().lower() not in document_classification:
+            return False
+
+    created_at = document.get("created_at_iso")
+    if date_from and not _is_on_or_after(created_at, date_from):
+        return False
+    if date_to and not _is_on_or_before(created_at, date_to):
+        return False
+
+    return True
+
+
+def get_ready_block_document_ids(
+    file_types: Optional[List[str]] = None,
+    classification: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> set[str]:
+    ready_ids: set[str] = set()
+    for document in get_all_documents():
+        document_id = document.get("id")
+        if not document_id:
+            continue
+        if (document.get("block_index_status") or "").strip().lower() != "ready":
+            continue
+        if not _matches_block_document_filters(
+            document,
+            file_types=file_types,
+            classification=classification,
+            date_from=date_from,
+            date_to=date_to,
+        ):
+            continue
+        ready_ids.add(document_id)
+    return ready_ids
+
+
+def _parse_heading_path(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    if not value:
+        return []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if item]
+        return [segment.strip() for segment in value.split(">") if segment.strip()]
+    return []
+
+
+def _coerce_page_number(value: Any) -> Optional[int]:
+    try:
+        page_number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return page_number if page_number >= 0 else None
+
+
+def _build_block_search_text(row: Dict[str, Any]) -> str:
+    metadata = row.get("metadata") or {}
+    parts = [
+        " ".join(_parse_heading_path(metadata.get("heading_path"))),
+        row.get("document") or "",
+    ]
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _load_block_rows_for_documents(collection, ready_document_ids: set[str]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for document_id in ready_document_ids:
+        try:
+            response = collection.get(where={"document_id": document_id}, include=["documents", "metadatas"])
+        except Exception:
+            continue
+
+        ids = list(response.get("ids") or [])
+        documents = list(response.get("documents") or [])
+        metadatas = list(response.get("metadatas") or [])
+
+        if len(documents) < len(ids):
+            documents.extend([""] * (len(ids) - len(documents)))
+        if len(metadatas) < len(ids):
+            metadatas.extend([{}] * (len(ids) - len(metadatas)))
+
+        for index, row_id in enumerate(ids):
+            rows.append(
+                {
+                    "id": row_id,
+                    "document": documents[index] or "",
+                    "metadata": metadatas[index] or {},
+                }
+            )
+    return rows
+
+
+def _upsert_block_candidate(
+    candidates: Dict[str, Dict[str, Any]],
+    row: Dict[str, Any],
+    document_lookup: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    metadata = row.get("metadata") or {}
+    document_id = metadata.get("document_id")
+    if not document_id:
+        return None
+
+    block_id = metadata.get("block_id") or row.get("id")
+    if not block_id:
+        return None
+
+    snippet = row.get("document") or ""
+    document_info = document_lookup.get(document_id, {})
+    candidate = candidates.setdefault(
+        block_id,
+        {
+            "document_id": document_id,
+            "block_id": block_id,
+            "block_index": int(metadata.get("block_index", 0) or 0),
+            "snippet": snippet[:240],
+            "raw_text": snippet,
+            "filename": metadata.get("filename") or document_info.get("filename", ""),
+            "path": document_info.get("filepath") or metadata.get("filepath", ""),
+            "file_type": metadata.get("file_type") or document_info.get("file_type", ""),
+            "classification_result": document_info.get("classification_result"),
+            "file_available": document_info.get("file_available", False),
+            "created_at_iso": document_info.get("created_at_iso"),
+            "parser_name": document_info.get("parser_name"),
+            "extraction_status": document_info.get("extraction_status"),
+            "preview_content": document_info.get("preview_content") or snippet[:240],
+            "block_type": metadata.get("block_type", "paragraph"),
+            "heading_path": _parse_heading_path(metadata.get("heading_path")),
+            "page_number": _coerce_page_number(metadata.get("page_number")),
+            "vector_score": 0.0,
+            "bm25_score": 0.0,
+            "score": 0.0,
+            "match_reason": "",
+        },
+    )
+    if len(snippet) > len(candidate.get("raw_text") or ""):
+        candidate["raw_text"] = snippet
+        candidate["snippet"] = snippet[:240]
+    return candidate
+
+
+def _build_block_match_reason(
+    heading_path: List[str],
+    snippet: str,
+    search_terms: List[str],
+    mode: str,
+) -> str:
+    heading_text = " ".join(heading_path or []).lower()
+    body_text = (snippet or "").lower()
+    heading_match = any(term in heading_text for term in search_terms if term)
+    body_match = any(term in body_text for term in search_terms if term)
+    if heading_match and body_match:
+        return "heading + body match"
+    if heading_match:
+        return "heading match"
+    if body_match:
+        return "body match"
+    return "vector match" if mode == "vector" else "keyword match"
+
+
+def _flatten_query_results(results: Dict[str, Any]) -> List[Dict[str, Any]]:
+    flattened: List[Dict[str, Any]] = []
+    metadatas = results.get("metadatas") or []
+    documents = results.get("documents") or []
+    distances = results.get("distances") or []
+
+    if metadatas and not isinstance(metadatas[0], list):
+        metadatas = [metadatas]
+        documents = [documents]
+        distances = [distances]
+
+    for index in range(len(metadatas)):
+        metadata_items = metadatas[index] or []
+        document_items = documents[index] or []
+        distance_items = distances[index] or []
+        min_len = min(len(metadata_items), len(document_items), len(distance_items))
+        for item_index in range(min_len):
+            flattened.append(
+                {
+                    "metadata": metadata_items[item_index] or {},
+                    "document": document_items[item_index] or "",
+                    "distance": distance_items[item_index],
+                }
+            )
+    return flattened
+
+
+def search_block_documents(
+    query: str,
+    mode: str,
+    limit: int,
+    alpha: float,
+    use_rerank: bool,
+    use_llm_rerank: bool,
+    file_types: Optional[List[str]],
+    classification: Optional[str],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    ready_document_ids: set[str],
+    group_by_document: bool = True,
+    use_query_expansion: bool = True,
+    expansion_method: str = "llm",
+) -> Dict[str, Any]:
+    collection = get_block_collection()
+    if collection is None or not ready_document_ids:
+        return {"documents": [], "results": [], "meta": {"fallback_used": False}}
+
+    document_lookup = {
+        document.get("id"): document
+        for document in get_all_documents()
+        if document.get("id") in ready_document_ids
+    }
+    block_rows = _load_block_rows_for_documents(collection, ready_document_ids)
+    if not block_rows:
+        return {"documents": [], "results": [], "meta": {"fallback_used": False}}
+
+    normalized_mode = (mode or "hybrid").strip().lower()
+    parser = get_query_parser()
+    parsed = parser.parse(query) if query else parser.parse("")
+    search_terms: List[str] = []
+    for item in [*parsed.include_terms, *parsed.exact_phrases, *parsed.fuzzy_terms]:
+        normalized = (item or "").strip().lower()
+        if normalized and normalized not in search_terms:
+            search_terms.append(normalized)
+    normalized_query = (query or "").strip().lower()
+    if normalized_query and normalized_query not in search_terms:
+        search_terms.append(normalized_query)
+
+    expanded_queries = [query] if query else []
+    keyword_query = query
+    if normalized_mode == "smart" and query and use_query_expansion:
+        try:
+            from .smart_retrieval import expand_query_keywords, expand_query_with_llm, is_llm_available
+
+            if expansion_method == "llm" and is_llm_available():
+                extra_queries = expand_query_with_llm(query)
+            else:
+                extra_queries = expand_query_keywords(query)
+            for item in extra_queries:
+                normalized = (item or "").strip()
+                if normalized and normalized not in expanded_queries:
+                    expanded_queries.append(normalized)
+            keyword_query = " ".join(expanded_queries)
+        except Exception:
+            expanded_queries = [query]
+            keyword_query = query
+
+    candidates: Dict[str, Dict[str, Any]] = {}
+    candidate_limit = min(max(limit * 8, 40), 200)
+
+    if keyword_query and normalized_mode in {"keyword", "hybrid", "smart"}:
+        corpus = [_build_block_search_text(row) for row in block_rows]
+        bm25 = BM25()
+        bm25.fit(corpus)
+        bm25_scores = bm25.search(keyword_query, corpus, top_k=min(len(corpus), candidate_limit))
+        max_bm25 = max((score for _, score in bm25_scores), default=0.0) or 1.0
+        for index, score in bm25_scores:
+            row = block_rows[index]
+            candidate = _upsert_block_candidate(candidates, row, document_lookup)
+            if candidate is None:
+                continue
+            candidate["bm25_score"] = max(candidate["bm25_score"], score / max_bm25)
+
+    if query and normalized_mode in {"vector", "hybrid", "smart"}:
+        for search_query in expanded_queries or [query]:
+            try:
+                query_results = collection.query(
+                    query_texts=[search_query],
+                    n_results=candidate_limit,
+                    include=["documents", "metadatas", "distances"],
+                )
+            except Exception:
+                query_results = {}
+
+            for item in _flatten_query_results(query_results):
+                metadata = item.get("metadata") or {}
+                document_id = metadata.get("document_id")
+                if document_id not in ready_document_ids:
+                    continue
+                row = {
+                    "id": metadata.get("block_id"),
+                    "document": item.get("document") or "",
+                    "metadata": metadata,
+                }
+                candidate = _upsert_block_candidate(candidates, row, document_lookup)
+                if candidate is None:
+                    continue
+                vector_score = max(0.0, min(1.0, 1 - float(item.get("distance", 1.0) or 1.0)))
+                candidate["vector_score"] = max(candidate["vector_score"], vector_score)
+
+    flat_results: List[Dict[str, Any]] = []
+    if not query:
+        for row in block_rows:
+            candidate = _upsert_block_candidate(candidates, row, document_lookup)
+            if candidate is None:
+                continue
+            candidate["score"] = 1.0
+
+    for candidate in candidates.values():
+        if query:
+            if normalized_mode == "keyword":
+                candidate["score"] = candidate["bm25_score"]
+            elif normalized_mode == "vector":
+                candidate["score"] = candidate["vector_score"]
+            else:
+                candidate["score"] = alpha * candidate["vector_score"] + (1 - alpha) * candidate["bm25_score"]
+            if candidate["score"] <= 0:
+                continue
+        candidate["score"] = round(candidate["score"], 4)
+        candidate["match_reason"] = _build_block_match_reason(
+            candidate.get("heading_path") or [],
+            candidate.get("raw_text") or candidate.get("snippet", ""),
+            search_terms,
+            normalized_mode,
+        )
+        flat_results.append(
+            {
+                "document_id": candidate.get("document_id"),
+                "filename": candidate.get("filename", ""),
+                "file_type": candidate.get("file_type", ""),
+                "path": candidate.get("path", ""),
+                "classification_result": candidate.get("classification_result"),
+                "file_available": candidate.get("file_available", False),
+                "created_at_iso": candidate.get("created_at_iso"),
+                "parser_name": candidate.get("parser_name"),
+                "extraction_status": candidate.get("extraction_status"),
+                "preview_content": candidate.get("preview_content", ""),
+                "block_id": candidate.get("block_id"),
+                "block_index": candidate.get("block_index", 0),
+                "block_type": candidate.get("block_type", "paragraph"),
+                "snippet": candidate.get("snippet", ""),
+                "heading_path": candidate.get("heading_path") or [],
+                "page_number": candidate.get("page_number"),
+                "score": candidate.get("score", 0.0),
+                "match_reason": candidate.get("match_reason", ""),
+                "content_snippet": candidate.get("snippet", ""),
+            }
+        )
+
+    flat_results.sort(
+        key=lambda item: (
+            item.get("score", 0.0),
+            -item.get("block_index", 0),
+        ),
+        reverse=True,
+    )
+
+    if query and use_rerank and use_llm_rerank and len(flat_results) > 1:
+        try:
+            from .smart_retrieval import llm_rerank
+
+            reranked = llm_rerank(
+                query,
+                [
+                    {
+                        **item,
+                        "similarity": item.get("score", 0.0),
+                        "content_snippet": item.get("snippet", ""),
+                    }
+                    for item in flat_results
+                ],
+                top_k=len(flat_results),
+            )
+            flat_results = [
+                {
+                    **item,
+                    "score": round(float(item.get("similarity", item.get("score", 0.0)) or 0.0), 4),
+                }
+                for item in reranked
+            ]
+            flat_results.sort(
+                key=lambda item: (
+                    item.get("score", 0.0),
+                    -item.get("block_index", 0),
+                ),
+                reverse=True,
+            )
+        except Exception:
+            pass
+
+    grouped_documents: Dict[str, Dict[str, Any]] = {}
+    for result in flat_results:
+        document_id = result.get("document_id")
+        if not document_id:
+            continue
+        group = grouped_documents.setdefault(
+            document_id,
+            {
+                "document_id": document_id,
+                "filename": result.get("filename", ""),
+                "file_type": result.get("file_type", ""),
+                "path": result.get("path", ""),
+                "classification_result": result.get("classification_result"),
+                "created_at_iso": result.get("created_at_iso"),
+                "parser_name": result.get("parser_name"),
+                "extraction_status": result.get("extraction_status"),
+                "preview_content": result.get("preview_content", ""),
+                "score": result.get("score", 0.0),
+                "best_similarity": result.get("score", 0.0),
+                "hit_count": 0,
+                "result_count": 0,
+                "best_excerpt": "",
+                "best_block_id": None,
+                "matched_terms": list(search_terms),
+                "file_available": result.get("file_available", False),
+                "evidence_blocks": [],
+                "top_segments": [],
+                "results": [],
+            },
+        )
+        group["hit_count"] += 1
+        group["result_count"] = group["hit_count"]
+        group["score"] = max(group["score"], result.get("score", 0.0))
+        group["best_similarity"] = group["score"]
+        group["results"].append(result)
+
+        evidence_block = {
+            "block_id": result.get("block_id"),
+            "block_index": result.get("block_index", 0),
+            "block_type": result.get("block_type", "paragraph"),
+            "snippet": result.get("snippet", ""),
+            "heading_path": result.get("heading_path") or [],
+            "page_number": result.get("page_number"),
+            "score": result.get("score", 0.0),
+            "match_reason": result.get("match_reason", ""),
+        }
+        if evidence_block["block_id"] not in {item.get("block_id") for item in group["evidence_blocks"]}:
+            group["evidence_blocks"].append(evidence_block)
+
+        if not group["best_block_id"]:
+            group["best_block_id"] = result.get("block_id")
+            group["best_excerpt"] = result.get("snippet", "")
+
+    documents = list(grouped_documents.values())
+    for document in documents:
+        document["evidence_blocks"] = sorted(
+            document["evidence_blocks"],
+            key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)),
+            reverse=True,
+        )[:3]
+        document["results"] = sorted(
+            document["results"],
+            key=lambda item: (item.get("score", 0.0), -item.get("block_index", 0)),
+            reverse=True,
+        )
+        if not document["best_block_id"] and document["evidence_blocks"]:
+            document["best_block_id"] = document["evidence_blocks"][0].get("block_id")
+        if not document["best_excerpt"] and document["evidence_blocks"]:
+            document["best_excerpt"] = document["evidence_blocks"][0].get("snippet", "")
+
+    documents.sort(
+        key=lambda item: (
+            item.get("score", 0.0),
+            item.get("hit_count", 0),
+            item.get("created_at_iso") or "",
+        ),
+        reverse=True,
+    )
+
+    if group_by_document:
+        documents = documents[:limit]
+        results = [
+            {
+                "document_id": document.get("document_id"),
+                "block_id": evidence.get("block_id"),
+                "block_index": evidence.get("block_index", 0),
+                "snippet": evidence.get("snippet", ""),
+                "score": evidence.get("score", 0.0),
+                "match_reason": evidence.get("match_reason", ""),
+            }
+            for document in documents
+            for evidence in document.get("evidence_blocks") or []
+        ]
+    else:
+        results = [
+            {
+                "document_id": item.get("document_id"),
+                "block_id": item.get("block_id"),
+                "block_index": item.get("block_index", 0),
+                "snippet": item.get("snippet", ""),
+                "score": item.get("score", 0.0),
+                "match_reason": item.get("match_reason", ""),
+            }
+            for item in flat_results[:limit]
+        ]
+
+    results.sort(
+        key=lambda item: (
+            item.get("score", 0.0),
+            -item.get("block_index", 0),
+        ),
+        reverse=True,
+    )
+    return {
+        "documents": documents,
+        "results": results,
+        "meta": {
+            "fallback_used": False,
+            "candidate_count": len(flat_results),
+            "expanded_queries": expanded_queries,
+        },
+    }
+
 # 获取文档统计信息
 def get_document_stats():
     """
@@ -1171,13 +2133,14 @@ def get_document_stats():
         client, collection = init_chroma_client()
         if not client or not collection:
             logger.error("初始化Chroma客户端失败")
-            return {"total_chunks": 0, "file_types": {}}
+            return {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}}
 
         # ===================== 修复2：用 count() 替代 get()，避免内存溢出 =====================
         total_chunks = collection.count()
 
         # 统计不同文件类型的文档数量（仅获取元数据，不获取文档内容）
         file_types = {}
+        document_ids = set()
         if total_chunks > 0:
             # 分批获取元数据，避免一次性加载过多
             batch_size = 1000
@@ -1191,15 +2154,182 @@ def get_document_stats():
                     for metadata in results['metadatas']:
                         if metadata is None:
                             continue
+                        document_id = metadata.get('document_id')
+                        if document_id:
+                            document_ids.add(document_id)
                         file_type = metadata.get('file_type', 'unknown')
                         file_types[file_type] = file_types.get(file_type, 0) + 1
 
         stats = {
             "total_chunks": total_chunks,
+            "vector_indexed_documents": len(document_ids),
             "file_types": file_types
         }
         logger.info(f"获取统计信息成功：{stats}")
         return stats
     except Exception as e:
         logger.error(f"获取文档统计信息失败: {str(e)}")
-        return {}
+        return {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}}
+
+
+# ===================== BM25IndexService 单例（增量更新） =====================
+
+import threading as _threading
+from typing import Set as _Set
+
+
+class BM25IndexService:
+    """
+    线程安全的 BM25 索引单例。
+    文档增/删时通过 patch_add / patch_remove 增量更新，
+    避免每次 keyword_search 都重新从 ChromaDB 拉全量数据重建索引。
+    """
+
+    _instance: Optional["BM25IndexService"] = None
+    _class_lock = _threading.Lock()
+
+    def __init__(self):
+        self._index: Optional[BM25] = None
+        self._chunk_ids: List[str] = []       # ChromaDB chunk id 列表，与索引顺序对应
+        self._cached_docs: List[dict] = []    # [{id, document, metadata}, ...]
+        self._doc_count: int = 0
+        self._lock = _threading.RLock()
+
+    @classmethod
+    def get_instance(cls) -> "BM25IndexService":
+        if cls._instance is None:
+            with cls._class_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    # ------------------------------------------------------------------
+    # 公开 API
+    # ------------------------------------------------------------------
+
+    def ensure_built(self) -> None:
+        """
+        懒加载：首次调用时从 ChromaDB 拉全量数据构建索引。
+        后续仅在索引为空时重建，增量操作通过 patch_add/patch_remove 维护。
+        """
+        with self._lock:
+            if self._index is not None:
+                return
+            self._rebuild_from_chroma()
+
+    def patch_add(self, new_chunks: List[dict]) -> None:
+        """
+        新增 chunks 后增量更新索引。
+        new_chunks: [{id, document, metadata}, ...]
+        """
+        with self._lock:
+            if self._index is None:
+                self._rebuild_from_chroma()
+                return
+            self._cached_docs.extend(new_chunks)
+            self._rebuild(self._cached_docs)
+
+    def patch_remove(self, removed_ids: _Set[str]) -> None:
+        """
+        删除 chunks 后增量更新索引。
+        removed_ids: ChromaDB chunk id 集合
+        """
+        with self._lock:
+            if self._index is None:
+                return
+            self._cached_docs = [d for d in self._cached_docs if d["id"] not in removed_ids]
+            self._rebuild(self._cached_docs)
+
+    def search(self, query: str, limit: int, parsed_query=None) -> List[dict]:
+        """
+        执行 BM25 关键词检索。
+        返回格式与原 keyword_search 兼容的 result 列表。
+        """
+        with self._lock:
+            if self._index is None:
+                self._rebuild_from_chroma()
+            if not self._cached_docs:
+                return []
+
+            parser = get_query_parser()
+            if parsed_query is None:
+                parsed_query = parser.parse(query)
+            search_str = parser.get_search_string(parsed_query)
+
+            raw_scores = self._index.search(
+                search_str,
+                [d["document"] for d in self._cached_docs],
+                top_k=limit * 3,
+            )
+            if not raw_scores:
+                return []
+
+            max_score = max(s for _, s in raw_scores) or 1.0
+            results = []
+            for idx, score in raw_scores:
+                if idx >= len(self._cached_docs):
+                    continue
+                item = self._cached_docs[idx]
+                snippet = item["document"]
+                metadata = item.get("metadata") or {}
+                if parser.should_exclude(snippet, parsed_query):
+                    continue
+                results.append({
+                    "document_id": metadata.get("document_id", ""),
+                    "filename": metadata.get("filename", ""),
+                    "path": metadata.get("filepath", ""),
+                    "file_type": metadata.get("file_type", ""),
+                    "similarity": round(score / max_score, 4),
+                    "content_snippet": snippet[:200] + "..." if len(snippet) > 200 else snippet,
+                    "chunk_index": metadata.get("chunk_index", 0),
+                    "has_exact_match": parser.has_exact_match(snippet, parsed_query),
+                })
+            results.sort(key=lambda x: (x["has_exact_match"], x["similarity"]), reverse=True)
+            return results[:limit]
+
+    def invalidate(self) -> None:
+        """强制清空索引，下次 ensure_built 时重建（用于 rechunk 等批量操作）"""
+        with self._lock:
+            self._index = None
+            self._cached_docs = []
+            self._chunk_ids = []
+            self._doc_count = 0
+
+    # ------------------------------------------------------------------
+    # 内部方法
+    # ------------------------------------------------------------------
+
+    def _rebuild_from_chroma(self) -> None:
+        """从 ChromaDB 拉全量数据重建索引"""
+        try:
+            client, collection = init_chroma_client()
+            if not client or not collection:
+                logger.warning("BM25IndexService: ChromaDB 不可用，跳过索引构建")
+                return
+            raw = collection.get(include=["documents", "metadatas"])
+            ids = raw.get("ids") or []
+            documents = raw.get("documents") or []
+            metadatas = raw.get("metadatas") or []
+            chunks = [
+                {"id": ids[i], "document": documents[i], "metadata": metadatas[i] or {}}
+                for i in range(len(ids))
+                if documents[i]
+            ]
+            self._rebuild(chunks)
+            logger.info(f"BM25IndexService: 索引构建完成，共 {len(chunks)} 个 chunks")
+        except Exception as exc:
+            logger.error(f"BM25IndexService: 重建索引失败: {exc}")
+
+    def _rebuild(self, chunks: List[dict]) -> None:
+        """从 chunks 列表重建 BM25 索引"""
+        bm25 = BM25()
+        bm25.fit([c["document"] for c in chunks])
+        self._index = bm25
+        self._cached_docs = list(chunks)
+        self._chunk_ids = [c["id"] for c in chunks]
+        self._doc_count = len(chunks)
+
+
+def get_bm25_service() -> BM25IndexService:
+    """获取全局 BM25IndexService 单例"""
+    return BM25IndexService.get_instance()
