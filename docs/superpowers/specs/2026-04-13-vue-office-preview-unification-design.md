@@ -37,9 +37,12 @@ That split causes inconsistent behavior. The user has explicitly requested that 
 - `.xls`
 - `.ppt`
 - `.pptx`
+- `.txt`
+- `.md`
+- `.csv`
 - any other file type outside the supported list
 
-Unsupported formats should display a stable empty state that tells the user online preview is unavailable and they should download the file instead.
+Unsupported formats should display a stable empty state that tells the user online preview is unavailable and they should download the file instead. This rule is intentional and global for the modal: every file type outside `.pdf/.docx/.xlsx` is treated as unsupported in this change.
 
 ## Data Contract
 
@@ -145,6 +148,23 @@ The modal should statically import:
 
 Each renderer should receive the existing file URL returned by `api.getDocumentFileUrl(documentId)`.
 
+### Renderer API Notes
+
+The implementation plan should use the official `vue-office` README examples as the contract baseline for this repo version:
+
+- `VueOfficePdf` uses `:src`, `@rendered`, and `@error`
+- `VueOfficeExcel` uses `:src`, `@rendered`, and `@error`
+- `VueOfficeDocx` uses `:src` and `@rendered` in the documented examples
+
+Planning assumption for this change:
+
+1. all three renderers receive the same file URL string through `:src`
+2. loading state ends on `@rendered` for all three supported renderers
+3. shared render-error UI is mandatory for PDF and Excel through `@error`
+4. DOCX uses the same loading UX, and the implementation step must verify whether the installed package version also emits `@error`; if it does, DOCX is wired into the same shared error state, otherwise DOCX keeps the generic open-in-new-tab escape hatch without blocking this feature
+
+This keeps planning concrete without inventing undocumented renderer behavior.
+
 ### Loading And Error States
 
 The current PDF-specific loading and error state should be generalized so all supported renderers follow the same pattern:
@@ -167,6 +187,7 @@ The modal should delete the following preview behavior:
 - generic extracted-text rendering
 
 This change intentionally makes the preview modal depend on the original file instead of extracted text.
+That includes previously text-previewable non-Office formats such as `.txt`: they move to the unsupported-format state in this change.
 
 ## Dependencies
 
@@ -186,6 +207,7 @@ Update frontend unit tests for `DocumentViewerModal` to cover:
 3. `.xlsx` renders with the Excel office component and does not call the reader API.
 4. `fileAvailable === false` shows the missing-file empty state and does not mount a renderer.
 5. `.pptx` shows the unsupported-format state and does not show extracted text.
+6. `.txt` also shows the unsupported-format state and does not show extracted text.
 
 Run:
 
@@ -207,4 +229,5 @@ Run:
 5. Unsupported formats show a clear “download to view” message.
 6. Missing files still show the existing missing-file state.
 7. The preview modal no longer calls the reader API for document preview.
-8. Render errors from `.pdf/.docx/.xlsx` use one shared fallback message instead of per-format custom behavior.
+8. Render errors from `.pdf` and `.xlsx` use one shared fallback message instead of per-format custom behavior.
+9. `.txt` and any other non `.pdf/.docx/.xlsx` type show the unsupported-format state instead of inline text.
