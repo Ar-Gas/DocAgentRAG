@@ -257,12 +257,18 @@ Phase one should at least support:
 Phase one should normalize blocks for indexability:
 
 - narrative blocks should have a bounded text size suitable for BM25, embedding, and reranker usage
+- preferred serialized narrative block size: <= 1200 Chinese characters
+- hard cap before forced split: 2000 Chinese characters
 - very large narrative blocks should be split on structural boundaries before indexing
 - table blocks should serialize to a deterministic plain-text form, recommended as:
   - table caption line if available
   - header row
   - row lines with cell values joined in a stable delimiter format
 - very large tables may be split into multiple table-region blocks, but each block must preserve its header row context
+- phase-one table split threshold: tables with more than 50 rows may be split into multiple table-region blocks
+- recommended serialized delimiter format:
+  - header line: `A | B | C`
+  - row line: `v1 | v2 | v3`
 
 ## Phase-One Retrieval Pipeline
 
@@ -381,7 +387,13 @@ Recommended persistence split:
 
 - document-level indexing status fields live in the existing document metadata JSON / storage layer
 - block-level vector entries live in a dedicated Chroma collection for block retrieval
-- block-level BM25 corpus lives in a dedicated block BM25 index/cache keyed by document and `index_version`
+- block-level BM25 corpus lives in one global BM25 index over all blocks whose `block_index_status=ready`
+- BM25 entries must retain filterable metadata at least for:
+  - `document_id`
+  - `file_type`
+  - `classification_result`
+  - `created_at_iso`
+  - `index_version`
 
 This avoids splitting document truth across multiple stores in the first phase.
 
@@ -398,7 +410,7 @@ The rollout switch must use a separate request field:
 
 Phase-one behavior:
 
-- if `retrieval_version` is omitted, treat the request as `retrieval_version=block`
+- if `retrieval_version` is omitted, resolve the effective request version through a server-side rollout feature flag
 - response must echo:
   - `retrieval_version_requested`
   - `retrieval_version_used`
@@ -408,7 +420,9 @@ Mixed-corpus rule for phase one:
 
 - phase one does **not** merge legacy and block rankings inside one request
 - the service chooses one primary pipeline per request
-- if `retrieval_version=block` is requested but the required block index coverage is unavailable for the request, the whole request falls back to `legacy`
+- if `retrieval_version=block` is requested, the block pipeline runs against the subset of documents with `block_index_status=ready` after request filters are applied
+- documents without ready block indexes are excluded from that block request rather than merged in through legacy ranking
+- if the eligible ready subset is empty, the whole request falls back to `legacy`
 - that fallback must be explicit in `retrieval_version_used` and `meta.fallback_*`
 
 This avoids score normalization problems between legacy chunks and structured blocks during phase one.
@@ -437,6 +451,13 @@ Recommended phase-one candidate sizes:
 - `keyword`: BM25 top 50
 - `vector`: vector top 50
 - `smart`: per expanded query hybrid recall with capped merged candidate set before rerank
+
+`alpha` under `retrieval_version=block` should preserve the current hybrid meaning:
+
+- `alpha` controls pre-rerank fusion balance between BM25 score and vector score
+- `alpha=0` is keyword-dominant fusion
+- `alpha=1` is vector-dominant fusion
+- `alpha` is applied during block candidate fusion before reranking and before document aggregation
 
 Top-level response shape should remain document-workspace compatible:
 
@@ -492,6 +513,7 @@ Migration / compatibility rules:
 Each `documents[].evidence_blocks[]` should include:
 
 - `block_id`
+- `block_index`
 - `block_type`
 - `snippet`
 - `heading_path`
@@ -540,6 +562,7 @@ Legacy fallback should be explicit in `meta`, for example:
       "evidence_blocks": [
         {
           "block_id": "doc-1:v2:14",
+          "block_index": 14,
           "block_type": "paragraph",
           "snippet": "员工差旅报销标准如下……",
           "heading_path": ["第三章 财务管理", "3.2 报销标准"],
@@ -718,6 +741,17 @@ Build a benchmark set of roughly 20-50 Word/PDF questions covering:
 - heading / section localization
 - synonym / paraphrase matching
 
+Recommended in-repo location:
+
+- `backend/test/retrieval_fixtures/phase1_word_pdf_eval.json`
+
+Recommended labeling fields:
+
+- `query`
+- `expected_document_ids`
+- `expected_best_block_id`
+- `expected_heading_path`
+
 ### Quality Metrics
 
 Track at least:
@@ -726,6 +760,8 @@ Track at least:
 - document hit @3
 - best evidence block correctness
 - reader anchor correctness
+
+`best evidence block correctness` means the top evidence block matches the labeled `expected_best_block_id` or a reviewer-approved equivalent block from the same clause / section.
 
 ### Success Standard
 
