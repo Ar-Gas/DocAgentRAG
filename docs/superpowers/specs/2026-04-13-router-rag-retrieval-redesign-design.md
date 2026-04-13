@@ -200,6 +200,35 @@ Each block should include at minimum:
 - `table_caption`
 - `source_parser`
 
+### Phase-One Block Schema
+
+The minimum schema should be treated as:
+
+- `block_id: str`
+- `document_id: str`
+- `file_type: str`
+- `block_type: str`
+- `text: str`
+- `heading_path: list[str]`
+- `section_title: str | null`
+- `page_number: int | null`
+- `order_index: int`
+- `keywords: list[str]`
+- `table_caption: str | null`
+- `source_parser: str`
+
+### `block_id` Stability
+
+`block_id` must be deterministic for the same indexed document version so the existing reader anchor flow can rely on it.
+
+Phase-one rule:
+
+- `block_id` should be derived from `document_id + index_version + order_index`
+- the same document content re-indexed under the same `index_version` must preserve the same `block_id`
+- if block structure changes because the indexing version changes, the `index_version` change is allowed to invalidate old `block_id` values
+
+This keeps anchors stable within one index generation while making versioned reindexing explicit.
+
 ### Block Types
 
 Phase one should at least support:
@@ -325,11 +354,47 @@ The first phase should preserve the existing API entry points where possible:
 
 But the payloads should become structure-aware.
 
+### Persistence Choices
+
+Phase one should persist its new indexing state in the existing document metadata store rather than introducing a second metadata authority.
+
+Recommended persistence split:
+
+- document-level indexing status fields live in the existing document metadata JSON / storage layer
+- block-level vector entries live in a dedicated Chroma collection for block retrieval
+- block-level BM25 corpus lives in a dedicated block BM25 index/cache keyed by document and `index_version`
+
+This avoids splitting document truth across multiple stores in the first phase.
+
 ## API Contract Changes
 
 ### `POST /retrieval/workspace-search`
 
 Keep the route, but return structured evidence blocks rather than legacy chunk-shaped records.
+
+The existing request field `mode` must keep its current meaning (`hybrid`, `keyword`, `vector`, `smart`).
+The rollout switch must use a separate field:
+
+- `retrieval_version: "legacy" | "block"`
+
+Phase-one behavior:
+
+- if `retrieval_version` is omitted, default to `block` for indexed Word/PDF documents
+- if a document corpus or candidate document is not block-indexed yet, the service may fall back to `legacy`
+- `mode` still controls recall style inside the selected retrieval version
+
+Top-level response shape should remain document-workspace compatible:
+
+- `query`
+- `mode`
+- `retrieval_version_requested`
+- `retrieval_version_used`
+- `total_results`
+- `total_documents`
+- `results`
+- `documents`
+- `meta`
+- `applied_filters`
 
 Each `documents[].evidence_blocks[]` should include:
 
@@ -340,6 +405,71 @@ Each `documents[].evidence_blocks[]` should include:
 - `page_number`
 - `score`
 - `match_reason`
+
+Each `documents[]` entry should still expose the existing document-centric fields used by the current frontend:
+
+- `document_id`
+- `filename`
+- `file_type`
+- `score`
+- `hit_count`
+- `best_block_id`
+- `classification_result`
+- `file_available`
+
+Legacy fallback should be explicit in `meta`, for example:
+
+- `meta.fallback_used`
+- `meta.fallback_reason`
+- `meta.fallback_documents`
+
+### `POST /retrieval/workspace-search` Example
+
+```json
+{
+  "query": "报销标准",
+  "mode": "hybrid",
+  "retrieval_version_requested": "block",
+  "retrieval_version_used": "block",
+  "total_results": 6,
+  "total_documents": 2,
+  "results": [],
+  "documents": [
+    {
+      "document_id": "doc-1",
+      "filename": "财务制度.docx",
+      "file_type": ".docx",
+      "score": 0.92,
+      "hit_count": 3,
+      "best_block_id": "doc-1:v2:14",
+      "classification_result": "财务制度",
+      "file_available": true,
+      "evidence_blocks": [
+        {
+          "block_id": "doc-1:v2:14",
+          "block_type": "paragraph",
+          "snippet": "员工差旅报销标准如下……",
+          "heading_path": ["第三章 财务管理", "3.2 报销标准"],
+          "page_number": 12,
+          "score": 0.92,
+          "match_reason": "heading + body match"
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "fallback_used": false
+  },
+  "applied_filters": {
+    "file_types": [],
+    "filename": null,
+    "classification": null,
+    "date_from": null,
+    "date_to": null,
+    "group_by_document": true
+  }
+}
+```
 
 ### `GET /documents/{id}/reader`
 
@@ -355,13 +485,56 @@ Keep the route, but return structured reader blocks:
 
 This should allow the existing reader UI to become more informative without requiring a new page model in phase one.
 
+The reader payload must preserve anchor behavior already used by the frontend:
+
+- `best_anchor.block_id`
+- `best_anchor.block_index`
+- `best_anchor.match_index`
+
+### `GET /documents/{id}/reader` Example
+
+```json
+{
+  "document_id": "doc-1",
+  "filename": "财务制度.docx",
+  "file_type": ".docx",
+  "query": "报销标准",
+  "total_matches": 4,
+  "best_anchor": {
+    "block_id": "doc-1:v2:14",
+    "block_index": 14,
+    "match_index": 0,
+    "start": 6,
+    "end": 10,
+    "term": "报销标准"
+  },
+  "blocks": [
+    {
+      "block_id": "doc-1:v2:14",
+      "block_index": 14,
+      "block_type": "paragraph",
+      "heading_path": ["第三章 财务管理", "3.2 报销标准"],
+      "page_number": 12,
+      "text": "员工差旅报销标准如下……",
+      "matches": [
+        {
+          "start": 6,
+          "end": 10,
+          "term": "报销标准"
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## Frontend Compatibility
 
 Phase one should preserve the current document workspace structure:
 
-- `SearchPage.vue`
-- `DocumentResultList.vue`
-- `DocumentReader.vue`
+- `frontend/docagent-frontend/src/pages/SearchPage.vue`
+- `frontend/docagent-frontend/src/components/DocumentResultList.vue`
+- `frontend/docagent-frontend/src/components/DocumentReader.vue`
 
 The frontend changes should be additive:
 
@@ -399,6 +572,18 @@ Each document should track:
 - `block_index_status`
 - `block_count`
 - `last_indexed_at`
+
+These fields should be stored in the existing document metadata record returned by the storage layer.
+
+Phase-one status values should be explicit:
+
+- `block_index_status = not_indexed | indexing | ready | failed`
+
+`vector indexed` and `block indexed` are not the same concept:
+
+- existing `vector_indexed_documents` can continue to report legacy vector coverage
+- phase one should add a distinct block-index coverage metric
+- the stats API should eventually expose both numbers during migration
 
 Recommended behavior:
 
