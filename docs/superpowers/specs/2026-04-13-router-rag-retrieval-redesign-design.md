@@ -266,7 +266,7 @@ Phase one should at least support:
 ### Extraction Rules
 
 - Word and PDF should preserve heading hierarchy where possible.
-- Tables should remain intact as single logical blocks.
+- Tables should remain intact as single logical blocks unless they exceed the phase-one split threshold defined in the normalization rules.
 - Page numbers should be retained when available.
 - If structural extraction fails, the system may fall back to paragraph-style blocks, but only as a fallback mode.
 
@@ -298,7 +298,8 @@ Phase-one normalization contract:
 - normalize all newlines to `\n`
 - trim trailing whitespace on every line
 - collapse repeated blank lines inside block text to a single blank line
-- normalize `heading_path` with stable segment cleaning and join it as ` > `
+- normalize `heading_path` by trimming segment edges, replacing internal newlines and tabs with spaces, collapsing repeated spaces to one space, and then joining segments as ` > `
+- do not normalize punctuation, numbering tokens, or full-width/half-width character forms inside `heading_path` segments in phase one
 - serialize narrative blocks from stable fields only: `block_type`, normalized `heading_path`, `page_number`, normalized `text`
 - serialize table blocks with the same canonical delimiter rules used for indexing, including retained header rows for split table-region blocks
 - exclude transient metadata from the hash input, including `block_id`, parser runtime data, storage paths, upload timestamps, and retrieval scores
@@ -551,6 +552,14 @@ Top-level response shape should remain document-workspace compatible:
 - `meta`
 - `applied_filters`
 
+`limit` and totals contract in phase one:
+
+- when `group_by_document=true`, `limit` caps the number of returned `documents`
+- when `group_by_document=false`, `limit` caps the number of returned `results`
+- `total_documents` is the number of `documents` actually returned in the current response after phase-one shaping
+- `total_results` is the number of `results` items actually returned in the current response after phase-one shaping
+- corpus-wide pagination totals are out of scope for phase one; if needed later, they should be introduced as new fields rather than overloading `total_documents` or `total_results`
+
 `group_by_document` behavior in phase one:
 
 - `group_by_document=true`: `documents` is the primary UI object and `results` must remain populated with compatibility block-hit objects derived from the top evidence blocks of the returned documents
@@ -561,7 +570,8 @@ The current frontend workspace should continue using `group_by_document=true`.
 Compatibility expectation for `results` when `group_by_document=true`:
 
 - `results` is not an empty placeholder in phase one
-- each compatibility item should correspond to one surfaced evidence block
+- `results` should be the flattened compatibility view of the surfaced `documents[].evidence_blocks[]`, ordered by final block score
+- each compatibility item should correspond to one surfaced evidence block, not to every matched block counted in `hit_count`
 - each compatibility item should at minimum expose:
   - `document_id`
   - `block_id`
@@ -569,6 +579,12 @@ Compatibility expectation for `results` when `group_by_document=true`:
   - `snippet`
   - `score`
   - `match_reason`
+
+Document aggregation field semantics:
+
+- `hit_count` is the number of distinct matched blocks assigned to the document before evidence-block truncation
+- `documents[].evidence_blocks[]` is a capped subset of those matches selected for user-facing evidence diversity
+- `results` under `group_by_document=true` mirrors only the surfaced `documents[].evidence_blocks[]`, not the full `hit_count`
 
 Authoritative request schema:
 
