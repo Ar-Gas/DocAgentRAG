@@ -252,6 +252,18 @@ Phase one should at least support:
 - Page numbers should be retained when available.
 - If structural extraction fails, the system may fall back to paragraph-style blocks, but only as a fallback mode.
 
+### Block Normalization Rules
+
+Phase one should normalize blocks for indexability:
+
+- narrative blocks should have a bounded text size suitable for BM25, embedding, and reranker usage
+- very large narrative blocks should be split on structural boundaries before indexing
+- table blocks should serialize to a deterministic plain-text form, recommended as:
+  - table caption line if available
+  - header row
+  - row lines with cell values joined in a stable delimiter format
+- very large tables may be split into multiple table-region blocks, but each block must preserve its header row context
+
 ## Phase-One Retrieval Pipeline
 
 The phase-one pipeline should be:
@@ -403,10 +415,21 @@ This avoids score normalization problems between legacy chunks and structured bl
 
 Phase-one meaning of `mode` under `retrieval_version=block`:
 
-- `hybrid`: BM25 recall + vector recall + reranker
+- `hybrid`: BM25 recall + vector recall
 - `keyword`: BM25-only block recall, optional lightweight rules scoring, no vector dependency
 - `vector`: vector-only block recall, optional reranker if configured
-- `smart`: query expansion + hybrid block recall + reranker
+- `smart`: query expansion + hybrid block recall
+
+### Rerank Control
+
+`mode` controls recall sources. Reranking is controlled by flags, not by `mode`.
+
+Authoritative rule for phase one:
+
+- `use_rerank` controls whether the block candidate set is reranked
+- `use_llm_rerank` only matters when the rerank backend is LLM-based or when the system falls back from cross-encoder reranking
+- if `use_rerank=false`, the system must skip reranking even for `hybrid` and `smart`
+- if `use_rerank=true`, reranking runs after recall fusion for any mode that yields more than one candidate block
 
 Recommended phase-one candidate sizes:
 
@@ -427,6 +450,13 @@ Top-level response shape should remain document-workspace compatible:
 - `documents`
 - `meta`
 - `applied_filters`
+
+`group_by_document` behavior in phase one:
+
+- `group_by_document=true`: `documents` is the primary UI object and `results` may be empty or compatibility-only
+- `group_by_document=false`: `results` must contain block-level hits ordered by final block score, and `documents` may be omitted or treated as a compatibility aggregate
+
+The current frontend workspace should continue using `group_by_document=true`.
 
 Authoritative request schema:
 
@@ -449,6 +479,15 @@ Authoritative request schema:
   "group_by_document": true
 }
 ```
+
+Migration / compatibility rules:
+
+- the server must accept both old requests (without `retrieval_version`) and new requests (with `retrieval_version`)
+- during rollout, omission of `retrieval_version` should be interpreted through a server-side feature flag:
+  - flag off -> default request behavior is `legacy`
+  - flag on -> default request behavior is `block`
+- the frontend should explicitly send `retrieval_version` once phase-one UI integration is enabled
+- unknown future request fields should be ignored during the migration window rather than causing hard rejection
 
 Each `documents[].evidence_blocks[]` should include:
 
@@ -544,6 +583,15 @@ The reader payload must preserve anchor behavior already used by the frontend:
 - `best_anchor.block_id`
 - `best_anchor.block_index`
 - `best_anchor.match_index`
+
+Reader request contract in phase one:
+
+- route remains `GET /documents/{id}/reader`
+- supported query parameters remain:
+  - `query`
+  - `anchor_block_id`
+- `anchor_block_id` must refer to the same deterministic `block_id` returned by `workspace-search`
+- if `anchor_block_id` is missing or invalid, the service should resolve `best_anchor` from the highest-ranked matching block in the reader payload
 
 ### `GET /documents/{id}/reader` Example
 
