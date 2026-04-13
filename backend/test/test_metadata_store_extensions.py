@@ -151,6 +151,7 @@ def test_block_artifact_helpers_upsert_single_reader_payload(tmp_path: Path):
     saved = store.get_document_artifact("doc-1", "reader_blocks")
 
     assert artifact_id == "doc-1:reader_blocks"
+    assert saved is not None
     assert saved["artifact_id"] == "doc-1:reader_blocks"
     assert saved["payload"]["blocks"][0]["block_id"] == "doc-1:block-v1:0"
 
@@ -198,3 +199,30 @@ def test_get_document_artifact_prefers_deterministic_artifact_id(tmp_path: Path)
 
     assert saved["artifact_id"] == "doc-1:reader_blocks"
     assert saved["payload"]["source"] == "deterministic"
+
+
+def test_get_document_artifact_returns_none_without_deterministic_row(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    assert store.upsert_document(
+        {
+            "id": "doc-1",
+            "filename": "spec.docx",
+            "filepath": "/tmp/spec.docx",
+            "file_type": ".docx",
+        },
+        mirror=False,
+    )
+    assert (
+        store.save_document_artifact(
+            "doc-1",
+            "reader_blocks",
+            {"source": "manual-only"},
+            artifact_id="manual-id",
+        )
+        == "manual-id"
+    )
+
+    assert store.get_document_artifact("doc-1", "reader_blocks") is None

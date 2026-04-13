@@ -655,7 +655,7 @@ def save_document_artifact(document_id: str, artifact_type: str, payload: dict, 
         return None
 
 
-def upsert_document_artifact(document_id: str, artifact_type: str, payload: dict):
+def upsert_document_artifact(document_id: str, artifact_type: str, payload: dict) -> Optional[str]:
     try:
         return _metadata_store().upsert_document_artifact(document_id, artifact_type, payload)
     except Exception as e:
@@ -671,7 +671,7 @@ def list_document_artifacts(document_id: str, artifact_type: Optional[str] = Non
         return []
 
 
-def get_document_artifact(document_id: str, artifact_type: str):
+def get_document_artifact(document_id: str, artifact_type: str) -> Optional[dict]:
     try:
         return _metadata_store().get_document_artifact(document_id, artifact_type)
     except Exception as e:

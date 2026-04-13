@@ -543,6 +543,8 @@ class DocumentMetadataStore:
         artifact_type: str,
         payload: Dict[str, Any],
     ) -> Optional[str]:
+        if not document_id or not artifact_type:
+            return None
         artifact_id = f"{document_id}:{artifact_type}"
         return self.save_document_artifact(
             document_id=document_id,
@@ -578,6 +580,11 @@ class DocumentMetadataStore:
         document_id: str,
         artifact_type: str,
     ) -> Optional[Dict[str, Any]]:
+        """Return only the deterministic {document_id}:{artifact_type} artifact.
+
+        Returns None when that deterministic row does not exist. Any legacy or
+        caller-specific fallback must be handled outside this helper.
+        """
         artifact_id = f"{document_id}:{artifact_type}"
         with self._connect() as connection:
             row = connection.execute(
