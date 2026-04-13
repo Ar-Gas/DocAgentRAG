@@ -1,8 +1,11 @@
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from docx import Document
 
 from utils.block_extractor import (
     BLOCK_INDEX_VERSION,
@@ -124,6 +127,39 @@ def test_extract_structured_blocks_smoke_docx_has_required_fields():
         assert block["block_type"]
         assert "heading_path" in block
         assert "page_number" in block
+
+
+def test_extract_structured_blocks_docx_with_table_emits_table_block(tmp_path: Path):
+    sample_docx = tmp_path / "table.docx"
+    document = Document()
+    document.add_heading("第一章 总则", level=1)
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "姓名"
+    table.cell(0, 1).text = "方向"
+    table.cell(1, 0).text = "张三"
+    table.cell(1, 1).text = "人工智能"
+    document.save(sample_docx)
+
+    runner = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys; "
+                "sys.path.insert(0, %r); "
+                "from utils.block_extractor import extract_structured_blocks; "
+                "payload = extract_structured_blocks(%r, document_id='table-docx'); "
+                "assert any(block['block_type'] == 'table' for block in payload['blocks']); "
+                "assert any(block['heading_path'] == ['第一章 总则'] for block in payload['blocks']); "
+                "print(json.dumps({'ok': True}, ensure_ascii=False))"
+            )
+            % (os.path.dirname(os.path.dirname(os.path.abspath(__file__))), str(sample_docx)),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert runner.returncode == 0, runner.stderr or runner.stdout
 
 
 def test_extract_structured_blocks_smoke_pdf_has_page_numbers():

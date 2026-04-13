@@ -7,7 +7,9 @@
     python3 scripts/backfill_block_index.py --document-id <doc-id>
 """
 import argparse
+import os
 import sys
+import zipfile
 from pathlib import Path
 
 # 确保 backend/ 目录在 Python 路径中
@@ -17,6 +19,41 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from app.services.indexing_service import IndexingService
 from utils.storage import get_all_documents, get_document_info
+
+SUPPORTED_BLOCK_FILE_TYPES = {".pdf", ".docx", ".doc"}
+
+
+def _normalize_file_type(doc_info: dict) -> str:
+    file_type = (doc_info.get("file_type") or "").strip().lower()
+    if file_type:
+        return file_type if file_type.startswith(".") else f".{file_type}"
+    filepath = (doc_info.get("filepath") or "").strip()
+    return Path(filepath).suffix.lower()
+
+
+def _get_skip_reason(doc_info: dict) -> str:
+    file_type = _normalize_file_type(doc_info)
+    if file_type not in SUPPORTED_BLOCK_FILE_TYPES:
+        return f"unsupported file type: {file_type or '(none)'}"
+
+    filepath = (doc_info.get("filepath") or "").strip()
+    if not filepath:
+        return "missing source filepath"
+
+    source_path = Path(filepath)
+    try:
+        exists = source_path.exists()
+    except OSError:
+        return f"source file not readable: {filepath}"
+
+    if not exists:
+        return f"source file missing: {filepath}"
+    if not os.access(source_path, os.R_OK):
+        return f"source file not readable: {filepath}"
+    if file_type == ".docx" and not zipfile.is_zipfile(source_path):
+        return f"invalid docx package: {filepath}"
+
+    return ""
 
 
 def _select_candidates(document_id: str = "", failed_only: bool = False, limit: int = 0) -> list[str]:
@@ -52,13 +89,28 @@ def backfill(document_id: str = "", failed_only: bool = False, limit: int = 0, d
             print("未找到需要回填的文档。")
         return 0
 
-    print(f"待处理文档数: {len(candidate_ids)}")
     service = IndexingService()
     success_count = 0
     failed_count = 0
     skipped_count = 0
+    actionable_ids: list[tuple[str, dict]] = []
+    skipped_docs: list[tuple[str, str]] = []
 
     for doc_id in candidate_ids:
+        doc_info = get_document_info(doc_id) or {}
+        skip_reason = _get_skip_reason(doc_info)
+        if skip_reason:
+            skipped_docs.append((doc_id, skip_reason))
+            continue
+        actionable_ids.append((doc_id, doc_info))
+
+    print(f"待处理文档数: {len(actionable_ids)}")
+
+    for doc_id, skip_reason in skipped_docs:
+        print(f"[SKIP] {doc_id} - {skip_reason}")
+        skipped_count += 1
+
+    for doc_id, _doc_info in actionable_ids:
         if dry_run:
             print(f"[DRY] {doc_id}")
             skipped_count += 1

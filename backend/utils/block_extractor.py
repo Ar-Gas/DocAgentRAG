@@ -11,8 +11,12 @@ except ImportError:
 
 try:
     import docx
+    from docx.table import Table as DocxTable
+    from docx.text.paragraph import Paragraph as DocxParagraph
 except ImportError:
     docx = None
+    DocxTable = None
+    DocxParagraph = None
 
 
 BLOCK_INDEX_VERSION = "block-v1"
@@ -124,7 +128,7 @@ def _split_table_block(rows: List[str], heading_path: List[str], page_number: in
 
 
 def _extract_docx_blocks(filepath: str) -> List[Dict]:
-    if docx is None:
+    if docx is None or DocxTable is None or DocxParagraph is None:
         raise RuntimeError("python-docx is required for .docx extraction")
     document = docx.Document(filepath)
 
@@ -135,7 +139,7 @@ def _extract_docx_blocks(filepath: str) -> List[Dict]:
     for element in body.iterchildren():
         tag = element.tag.split("}")[-1]
         if tag == "p":
-            para = docx.text.paragraph.Paragraph(element, document)
+            para = DocxParagraph(element, document)
             text = para.text or ""
             if not text.strip():
                 continue
@@ -166,7 +170,7 @@ def _extract_docx_blocks(filepath: str) -> List[Dict]:
                 }
             )
         elif tag == "tbl":
-            table = docx.table.Table(element, document)
+            table = DocxTable(element, document)
             rows = []
             for row in table.rows:
                 row_cells = [cell.text.strip() for cell in row.cells]
