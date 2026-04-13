@@ -41,6 +41,39 @@ That split causes inconsistent behavior. The user has explicitly requested that 
 
 Unsupported formats should display a stable empty state that tells the user online preview is unavailable and they should download the file instead.
 
+## Data Contract
+
+`DocumentViewerModal` consumes frontend props, while the page-level callers pass through backend fields.
+
+### Backend To Frontend Mapping
+
+- backend field `file_type` is passed into modal prop `fileType`
+- backend field `file_available` is passed into modal prop `fileAvailable`
+
+This mapping already happens at the page layer, for example:
+
+- `:file-type="viewerDoc.file_type"`
+- `:file-available="viewerDoc.file_available"`
+
+Planning and tests should use the frontend prop names when targeting `DocumentViewerModal`, and backend field names when targeting API payloads or page integration.
+
+### Normalized File Type
+
+The modal should normalize the preview type using this rule:
+
+1. prefer `fileType` if it is a non-empty extension-like value
+2. lowercase the result
+3. if `fileType` does not start with `.`, prefix it with `.`
+4. if `fileType` is empty or unusable, fall back to the extension parsed from `filename`
+5. if neither source yields a known extension, treat the document as unsupported
+
+Examples:
+
+- `fileType=".PDF"` -> normalized `.pdf`
+- `fileType="docx"` -> normalized `.docx`
+- `fileType=""` and `filename="report.xlsx"` -> normalized `.xlsx`
+- `fileType=""` and `filename="README"` -> unsupported
+
 ## User Experience
 
 The existing fullscreen preview modal remains the single preview entry point.
@@ -58,7 +91,7 @@ If the original file exists and the extension is supported:
 If the backend reports `file_available === false`:
 
 - do not attempt rendering
-- show the existing missing-file empty state
+- show the canonical missing-file empty state: `原文件不存在或路径已失效，当前无法预览原文。`
 - keep the open-in-new-tab action disabled
 
 ### Unsupported Format
@@ -100,6 +133,7 @@ The modal should determine a normalized extension from `fileType` and derive boo
 - `fileUnavailable`
 
 Only the supported branch should mount a preview renderer.
+The missing-file branch should be shared across all file types instead of staying PDF-only.
 
 ### Rendering Components
 
@@ -119,6 +153,7 @@ The current PDF-specific loading and error state should be generalized so all su
 - surface a friendly render error if the component emits an error event
 
 The message can remain generic, for example “预览失败，请在新标签页打开查看。”
+This shared error state applies equally to `.pdf`, `.docx`, and `.xlsx`.
 
 ### Removed Behavior
 
@@ -172,3 +207,4 @@ Run:
 5. Unsupported formats show a clear “download to view” message.
 6. Missing files still show the existing missing-file state.
 7. The preview modal no longer calls the reader API for document preview.
+8. Render errors from `.pdf/.docx/.xlsx` use one shared fallback message instead of per-format custom behavior.
