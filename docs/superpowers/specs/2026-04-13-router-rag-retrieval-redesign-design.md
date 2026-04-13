@@ -405,7 +405,7 @@ Recommended persistence split:
 
 - document-level indexing status fields live in the existing document metadata JSON / storage layer
 - block-level vector entries live in a dedicated Chroma collection for block retrieval
-- block-level BM25 corpus lives in one global BM25 index over all blocks whose `block_index_status=ready`
+- block-level BM25 corpus lives in one global BM25 index over all blocks whose parent document has `block_index_status=ready`
 - structured reader blocks live in a persisted block artifact stored through the existing document artifact/content storage path
 - BM25 entries must retain filterable metadata at least for:
   - `document_id`
@@ -443,6 +443,12 @@ Store-specific expectations:
 - Chroma block metadata should include the full filterable metadata above plus any retrieval-only fields needed for rerank context
 - BM25 block entries should include the same filterable metadata and the same `block_id`
 - request filters (`file_types`, `classification`, `date_from`, `date_to`) must be applied consistently against these stored metadata fields for both BM25 and vector candidate generation
+
+Incremental indexing rules:
+
+- when a document is reindexed successfully, its old block entries for the previous `index_version` must be removed from both Chroma and BM25 before the new entries are activated
+- documents with `block_index_status=failed` or `block_index_status=indexing` must be excluded from the ready BM25 and vector retrieval sets
+- partial corpus readiness is acceptable in phase one; retrieval over the block pipeline should simply operate on the ready document subset without mixing in legacy-scored results
 
 ## API Contract Changes
 
@@ -587,7 +593,23 @@ Legacy fallback should be explicit in `meta`, for example:
 - `meta.fallback_reason`
 - `meta.fallback_documents`
 
-### `POST /retrieval/workspace-search` Example
+### `POST /retrieval/workspace-search` Example Request
+
+```json
+{
+  "query": "报销标准",
+  "mode": "hybrid",
+  "retrieval_version": "block",
+  "limit": 10,
+  "alpha": 0.5,
+  "use_rerank": true,
+  "use_query_expansion": false,
+  "use_llm_rerank": false,
+  "group_by_document": true
+}
+```
+
+### `POST /retrieval/workspace-search` Example Response
 
 ```json
 {
@@ -605,12 +627,12 @@ Legacy fallback should be explicit in `meta`, for example:
       "file_type": ".docx",
       "score": 0.92,
       "hit_count": 3,
-      "best_block_id": "doc-1:v2:14",
+      "best_block_id": "doc-1:block-v1:14",
       "classification_result": "财务制度",
       "file_available": true,
       "evidence_blocks": [
         {
-          "block_id": "doc-1:v2:14",
+          "block_id": "doc-1:block-v1:14",
           "block_index": 14,
           "block_type": "paragraph",
           "snippet": "员工差旅报销标准如下……",
@@ -675,7 +697,7 @@ Reader request contract in phase one:
   "query": "报销标准",
   "total_matches": 4,
   "best_anchor": {
-    "block_id": "doc-1:v2:14",
+    "block_id": "doc-1:block-v1:14",
     "block_index": 14,
     "match_index": 0,
     "start": 6,
@@ -684,7 +706,7 @@ Reader request contract in phase one:
   },
   "blocks": [
     {
-      "block_id": "doc-1:v2:14",
+      "block_id": "doc-1:block-v1:14",
       "block_index": 14,
       "block_type": "paragraph",
       "heading_path": ["第三章 财务管理", "3.2 报销标准"],
