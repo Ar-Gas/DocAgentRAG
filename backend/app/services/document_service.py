@@ -16,6 +16,7 @@ from utils.storage import (
     check_document_chunks,
     delete_document,
     enrich_document_file_state,
+    get_document_artifact,
     get_document_content_record,
     get_all_documents,
     get_document_info,
@@ -279,14 +280,31 @@ class DocumentService:
         return {"results": results, "total": len(results), "success_count": success_count}
 
     def _build_reader_blocks(self, document_id: str, content_record: Dict) -> List[Dict]:
+        artifact = get_document_artifact(document_id, "reader_blocks") or {}
+        artifact_blocks = (artifact.get("payload") or {}).get("blocks") or []
+        if artifact_blocks:
+            return [
+                {
+                    "block_id": block.get("block_id") or f"{document_id}#{block.get('block_index', index)}",
+                    "block_index": block.get("block_index", index),
+                    "block_type": block.get("block_type") or "paragraph",
+                    "heading_path": list(block.get("heading_path") or []),
+                    "page_number": block.get("page_number"),
+                    "text": block.get("text", ""),
+                }
+                for index, block in enumerate(sorted(artifact_blocks, key=lambda item: item.get("block_index", 0)))
+                if block.get("text")
+            ]
+
         segments = list_document_segments(document_id)
         if segments:
             return [
                 {
                     "block_id": segment.get("segment_id") or f"{document_id}#{segment.get('segment_index', index)}",
                     "block_index": segment.get("segment_index", index),
+                    "block_type": "paragraph",
+                    "heading_path": [segment.get("title")] if segment.get("title") else [],
                     "text": segment.get("content", ""),
-                    "title": segment.get("title"),
                     "page_number": segment.get("page_number"),
                 }
                 for index, segment in enumerate(segments)
@@ -302,8 +320,9 @@ class DocumentService:
             {
                 "block_id": f"{document_id}#{index}",
                 "block_index": index,
+                "block_type": "paragraph",
+                "heading_path": [],
                 "text": paragraph,
-                "title": None,
                 "page_number": None,
             }
             for index, paragraph in enumerate(paragraphs)
