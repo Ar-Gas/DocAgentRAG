@@ -190,12 +190,13 @@ Each block should include at minimum:
 - `block_id`
 - `document_id`
 - `file_type`
+- `file_type_family`
 - `block_type`
 - `text`
 - `heading_path`
 - `section_title`
 - `page_number`
-- `order_index`
+- `block_index`
 - `keywords`
 - `table_caption`
 - `source_parser`
@@ -207,18 +208,21 @@ The minimum schema should be treated as:
 - `block_id: str`
 - `document_id: str`
 - `file_type: str`
+- `file_type_family: str`
 - `block_type: str`
 - `text: str`
 - `heading_path: list[str]`
 - `section_title: str | null`
 - `page_number: int | null`
-- `order_index: int`
+- `block_index: int`
 - `keywords: list[str]`
 - `table_caption: str | null`
 - `source_parser: str`
 
 Field derivation rules:
 
+- `file_type` is the canonical extension-style display value, such as `.pdf` or `.docx`
+- `file_type_family` is the canonical retrieval/filter family value, such as `pdf`, `word`, `excel`, `ppt`, `eml`, `txt`, `image`
 - `section_title` may be `null` when no reliable local title can be inferred
 - `page_number` is required for PDF blocks when available from the parser, and may be `null` for DOCX blocks
 - `keywords` may be an empty list if no explicit keyword extraction runs in phase one
@@ -230,11 +234,25 @@ Field derivation rules:
 
 Phase-one rule:
 
-- `block_id` should be derived from `document_id + index_version + order_index`
+- `block_id` should be derived from `document_id + index_version + block_index`
 - the same document content re-indexed under the same `index_version` must preserve the same `block_id`
 - if block structure changes because the indexing version changes, the `index_version` change is allowed to invalidate old `block_id` values
 
 This keeps anchors stable within one index generation while making versioned reindexing explicit.
+
+### Phase-One Decisions
+
+The following choices are authoritative for planning:
+
+- `block_index` is the canonical stable positional field for persisted blocks, API payloads, anchors, and frontend rendering
+- `order_index` should not appear in phase-one persisted or API schemas; if internal helpers use a local ordering variable, it must map to `block_index`
+- `file_type` remains the extension-style display field; request filtering should use `file_type_family`
+- `index_version` is a global retrieval-schema constant such as `block-v1`, bumped manually when extraction, serialization, or metadata rules change incompatibly
+- each document should also store `indexed_content_hash`, derived from the normalized extracted source content used for indexing
+- a document requires reindex when either:
+  - `index_version` differs from the current global block indexing version, or
+  - `indexed_content_hash` differs from the current normalized content hash
+- structured reader blocks should be read from the persisted block artifact generated during indexing, not regenerated ad hoc on every reader request
 
 ### Block Types
 
@@ -388,14 +406,43 @@ Recommended persistence split:
 - document-level indexing status fields live in the existing document metadata JSON / storage layer
 - block-level vector entries live in a dedicated Chroma collection for block retrieval
 - block-level BM25 corpus lives in one global BM25 index over all blocks whose `block_index_status=ready`
+- structured reader blocks live in a persisted block artifact stored through the existing document artifact/content storage path
 - BM25 entries must retain filterable metadata at least for:
   - `document_id`
   - `file_type`
+  - `file_type_family`
   - `classification_result`
   - `created_at_iso`
   - `index_version`
 
 This avoids splitting document truth across multiple stores in the first phase.
+
+### Minimal Persisted Block Metadata
+
+The minimum metadata persisted per indexed block should be:
+
+```json
+{
+  "block_id": "doc-1:block-v1:14",
+  "document_id": "doc-1",
+  "block_index": 14,
+  "file_type": ".docx",
+  "file_type_family": "word",
+  "block_type": "paragraph",
+  "classification_result": "财务制度",
+  "created_at_iso": "2026-04-13T00:00:00",
+  "index_version": "block-v1",
+  "page_number": 12,
+  "heading_path_text": "第三章 财务管理 > 3.2 报销标准",
+  "source_parser": "python-docx"
+}
+```
+
+Store-specific expectations:
+
+- Chroma block metadata should include the full filterable metadata above plus any retrieval-only fields needed for rerank context
+- BM25 block entries should include the same filterable metadata and the same `block_id`
+- request filters (`file_types`, `classification`, `date_from`, `date_to`) must be applied consistently against these stored metadata fields for both BM25 and vector candidate generation
 
 ## API Contract Changes
 
@@ -500,6 +547,8 @@ Authoritative request schema:
   "group_by_document": true
 }
 ```
+
+In phase one, request `file_types` should continue using `file_type_family` values such as `pdf`, `word`, `excel`, rather than extension-style values.
 
 Migration / compatibility rules:
 
