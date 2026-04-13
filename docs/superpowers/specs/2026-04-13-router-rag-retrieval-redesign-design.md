@@ -217,6 +217,13 @@ The minimum schema should be treated as:
 - `table_caption: str | null`
 - `source_parser: str`
 
+Field derivation rules:
+
+- `section_title` may be `null` when no reliable local title can be inferred
+- `page_number` is required for PDF blocks when available from the parser, and may be `null` for DOCX blocks
+- `keywords` may be an empty list if no explicit keyword extraction runs in phase one
+- `table_caption` may be `null` for non-table blocks and for table blocks without a reliable caption source
+
 ### `block_id` Stability
 
 `block_id` must be deterministic for the same indexed document version so the existing reader anchor flow can rely on it.
@@ -373,15 +380,40 @@ This avoids splitting document truth across multiple stores in the first phase.
 Keep the route, but return structured evidence blocks rather than legacy chunk-shaped records.
 
 The existing request field `mode` must keep its current meaning (`hybrid`, `keyword`, `vector`, `smart`).
-The rollout switch must use a separate field:
+The rollout switch must use a separate request field:
 
 - `retrieval_version: "legacy" | "block"`
 
 Phase-one behavior:
 
-- if `retrieval_version` is omitted, default to `block` for indexed Word/PDF documents
-- if a document corpus or candidate document is not block-indexed yet, the service may fall back to `legacy`
+- if `retrieval_version` is omitted, treat the request as `retrieval_version=block`
+- response must echo:
+  - `retrieval_version_requested`
+  - `retrieval_version_used`
 - `mode` still controls recall style inside the selected retrieval version
+
+Mixed-corpus rule for phase one:
+
+- phase one does **not** merge legacy and block rankings inside one request
+- the service chooses one primary pipeline per request
+- if `retrieval_version=block` is requested but the required block index coverage is unavailable for the request, the whole request falls back to `legacy`
+- that fallback must be explicit in `retrieval_version_used` and `meta.fallback_*`
+
+This avoids score normalization problems between legacy chunks and structured blocks during phase one.
+
+Phase-one meaning of `mode` under `retrieval_version=block`:
+
+- `hybrid`: BM25 recall + vector recall + reranker
+- `keyword`: BM25-only block recall, optional lightweight rules scoring, no vector dependency
+- `vector`: vector-only block recall, optional reranker if configured
+- `smart`: query expansion + hybrid block recall + reranker
+
+Recommended phase-one candidate sizes:
+
+- `hybrid`: BM25 top 40 + vector top 40
+- `keyword`: BM25 top 50
+- `vector`: vector top 50
+- `smart`: per expanded query hybrid recall with capped merged candidate set before rerank
 
 Top-level response shape should remain document-workspace compatible:
 
@@ -395,6 +427,28 @@ Top-level response shape should remain document-workspace compatible:
 - `documents`
 - `meta`
 - `applied_filters`
+
+Authoritative request schema:
+
+```json
+{
+  "query": "string",
+  "mode": "hybrid | keyword | vector | smart",
+  "retrieval_version": "legacy | block",
+  "limit": 10,
+  "alpha": 0.5,
+  "use_rerank": false,
+  "use_query_expansion": true,
+  "use_llm_rerank": true,
+  "expansion_method": "llm",
+  "file_types": [],
+  "filename": null,
+  "classification": null,
+  "date_from": null,
+  "date_to": null,
+  "group_by_document": true
+}
+```
 
 Each `documents[].evidence_blocks[]` should include:
 
