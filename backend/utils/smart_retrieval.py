@@ -10,6 +10,7 @@ import os
 import logging
 import asyncio
 import base64
+import json
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
@@ -545,3 +546,238 @@ def smart_multimodal_retrieval(
     except Exception as e:
         logger.error(f"智能多模态检索失败: {str(e)}")
         return [], meta_info
+
+
+def summarize_retrieval_results(query: str, results: List[Dict], max_items: int = 6) -> Dict[str, Any]:
+    """
+    基于检索结果生成总结，并返回引用来源。
+    当 LLM 不可用时退化为基于 Top-K 结果的规则摘要。
+    """
+    trimmed_results = _normalize_document_evidence_results(results[:max_items])
+    citations = []
+    for item in trimmed_results:
+        evidence = (item.get("evidence_blocks") or [{}])[0]
+        citations.append(
+            {
+                "document_id": item.get("document_id"),
+                "filename": item.get("filename"),
+                "block_id": evidence.get("block_id"),
+                "block_index": evidence.get("block_index"),
+                "score": evidence.get("score", item.get("score", 0)),
+                "snippet": evidence.get("snippet", ""),
+            }
+        )
+
+    if not trimmed_results:
+        return {
+            "summary": "未找到可用于总结的检索结果。",
+            "citations": [],
+            "llm_used": False,
+        }
+
+    fallback_lines = []
+    for item in trimmed_results[:3]:
+        snippet = (item.get("best_excerpt") or "").replace("\n", " ").strip()
+        if len(snippet) > 120:
+            snippet = snippet[:120] + "..."
+        fallback_lines.append(f"{item.get('filename', '未知文件')}: {snippet}")
+    fallback_summary = "；".join(fallback_lines)
+
+    if not is_llm_available():
+        return {
+            "summary": fallback_summary or "LLM 未配置，已返回检索结果摘要。",
+            "citations": citations,
+            "llm_used": False,
+        }
+
+    docs_text = []
+    for index, item in enumerate(trimmed_results, start=1):
+        evidence_lines = []
+        for evidence_index, evidence in enumerate(item.get("evidence_blocks", [])[:3], start=1):
+            evidence_lines.append(f"证据{evidence_index}: {(evidence.get('snippet') or '')[:220]}")
+        docs_text.append(
+            "\n".join(
+                [
+                    f"[文档{index}] 文件名: {item.get('filename', '未知文件')}",
+                    f"已有分类: {item.get('classification_result') or '无'}",
+                    f"文档相关度: {item.get('score', 0):.4f}",
+                    f"最佳证据: {(item.get('best_excerpt') or '')[:300]}",
+                    *evidence_lines,
+                ]
+            )
+        )
+
+    prompt = f"""你是企业文档检索助手。请仅基于给定检索结果回答用户问题，并输出简洁中文总结。
+
+用户查询:
+{query}
+
+检索结果:
+{chr(10).join(docs_text)}
+
+要求:
+1. 只使用检索结果中的信息，不要补充外部知识。
+2. 用 3 到 6 句总结核心信息。
+3. 如果结果之间存在重复或冲突，要明确说明。
+4. 不要编造文件内容。
+"""
+
+    content = _call_llm(prompt, max_tokens=400, temperature=0.2)
+    return {
+        "summary": content.strip() if content else (fallback_summary or "未能生成总结。"),
+        "citations": citations,
+        "llm_used": bool(content),
+    }
+
+
+def _fallback_classification_table(query: str, results: List[Dict], max_groups: int = 8) -> Dict[str, Any]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    for item in _normalize_document_evidence_results(results):
+        label = (
+            item.get("classification_result")
+            or item.get("document_category")
+            or item.get("file_type")
+            or "未分组"
+        )
+        if not label or label == ".":
+            label = "未分组"
+
+        entry = grouped.setdefault(
+            label,
+            {
+                "label": label,
+                "document_ids": set(),
+                "filenames": [],
+                "keywords": Counter(),
+                "snippets": [],
+            },
+        )
+        document_id = item.get("document_id")
+        if document_id:
+            entry["document_ids"].add(document_id)
+        filename = item.get("filename")
+        if filename and filename not in entry["filenames"]:
+            entry["filenames"].append(filename)
+        snippet = (item.get("best_excerpt") or "").replace("\n", " ").strip()
+        if snippet:
+            entry["snippets"].append(snippet[:140])
+
+        tokens = expand_query_keywords(f"{filename or ''} {snippet}")[:5]
+        for token in tokens:
+            if token != query:
+                entry["keywords"][token] += 1
+
+    rows = []
+    for entry in grouped.values():
+        rows.append(
+            {
+                "label": entry["label"],
+                "document_count": len(entry["document_ids"]),
+                "representative_documents": entry["filenames"][:3],
+                "keywords": [kw for kw, _ in entry["keywords"].most_common(5)],
+                "summary": "；".join(entry["snippets"][:2])[:240],
+                "confidence": 0.45 if entry["document_ids"] else 0.0,
+            }
+        )
+
+    rows.sort(key=lambda item: (-item["document_count"], item["label"]))
+    rows = rows[:max_groups]
+    return {
+        "query": query,
+        "title": f"{query} 分类表",
+        "summary": f"基于 {len(results)} 条检索结果生成，共 {len(rows)} 个分组。",
+        "rows": rows,
+        "llm_used": False,
+    }
+
+
+def generate_classification_table(query: str, results: List[Dict], max_groups: int = 8) -> Dict[str, Any]:
+    trimmed_results = _normalize_document_evidence_results(results[: min(len(results), 12)])
+    fallback = _fallback_classification_table(query, trimmed_results, max_groups=max_groups)
+
+    if not trimmed_results or not is_llm_available():
+        return fallback
+
+    docs_text = []
+    for index, item in enumerate(trimmed_results, start=1):
+        evidence_lines = []
+        for evidence_index, evidence in enumerate(item.get("evidence_blocks", [])[:3], start=1):
+            evidence_lines.append(f"证据{evidence_index}: {(evidence.get('snippet') or '')[:180]}")
+        docs_text.append(
+            "\n".join(
+                [
+                    f"[文档{index}] 文件名: {item.get('filename', '未知文件')}",
+                    f"文件类型: {item.get('file_type', '未知')}",
+                    f"已有分类: {item.get('classification_result') or item.get('document_category') or '无'}",
+                    f"最佳证据: {(item.get('best_excerpt') or '')[:260]}",
+                    *evidence_lines,
+                ]
+            )
+        )
+
+    prompt = f"""你是企业文档整理助手。请基于检索结果为查询生成分类表，输出 JSON。
+
+用户查询:
+{query}
+
+检索结果:
+{chr(10).join(docs_text)}
+
+输出要求:
+1. 只基于给定结果，不要编造文档。
+2. 输出 JSON 对象，字段必须是 query、title、summary、rows。
+3. rows 是数组，每项包含 label、document_count、representative_documents、keywords、summary、confidence。
+4. representative_documents 是文件名数组，keywords 是关键词数组，confidence 范围 0 到 1。
+5. 最多 {max_groups} 个分组。
+"""
+
+    content = _call_llm(prompt, max_tokens=700, temperature=0.2)
+    if not content:
+        return fallback
+
+    try:
+        start = content.find("{")
+        end = content.rfind("}")
+        if start == -1 or end == -1:
+            return fallback
+        parsed = json.loads(content[start : end + 1])
+        parsed.setdefault("query", query)
+        parsed.setdefault("title", f"{query} 分类表")
+        parsed.setdefault("summary", fallback["summary"])
+        parsed.setdefault("rows", [])
+        parsed["rows"] = parsed["rows"][:max_groups]
+        parsed["llm_used"] = True
+        return parsed
+    except Exception as exc:
+        logger.warning("解析分类表 LLM 输出失败: %s", exc)
+        return fallback
+
+
+def _normalize_document_evidence_results(results: List[Dict]) -> List[Dict]:
+    normalized: List[Dict] = []
+    for item in results:
+        document_id = item.get("document_id")
+        chunk_index = item.get("chunk_index", 0)
+        best_excerpt = item.get("best_excerpt") or item.get("content_snippet") or ""
+        evidence_blocks = item.get("evidence_blocks") or []
+        if not evidence_blocks:
+            evidence_blocks = [
+                {
+                    "block_id": item.get("best_block_id") or (f"{document_id}#{chunk_index}" if document_id else None),
+                    "block_index": chunk_index,
+                    "snippet": best_excerpt,
+                    "score": item.get("score", item.get("similarity", 0)),
+                }
+            ]
+
+        normalized.append(
+            {
+                **item,
+                "score": item.get("score", item.get("best_similarity", item.get("similarity", 0))),
+                "best_excerpt": best_excerpt,
+                "best_block_id": item.get("best_block_id") or evidence_blocks[0].get("block_id"),
+                "evidence_blocks": evidence_blocks,
+            }
+        )
+    return normalized

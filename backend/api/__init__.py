@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import TypeVar, Optional, Generic, List, Any
 import logging
 
@@ -16,8 +16,7 @@ class ApiResponse(BaseModel, Generic[T]):
     message: str = "success"
     data: Optional[T] = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class PaginatedResponse(BaseModel, Generic[T]):
     items: List[T]

@@ -13,6 +13,40 @@ from config import MAX_FILE_SIZE, MAX_TEXT_LENGTH, PDF_PAGE_LIMIT, EXCEL_CHUNK_S
 
 logger = logging.getLogger(__name__)
 
+try:
+    from PyPDF2 import PdfReader
+except ImportError:
+    PdfReader = None
+
+try:
+    import docx
+except ImportError:
+    docx = None
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None
+
+PROCESSING_ERROR_PREFIXES = (
+    "处理失败",
+    "PDF处理失败",
+    "Word处理失败",
+    "Excel处理失败",
+    "PPT处理失败",
+    "邮件处理失败",
+    "图片处理失败",
+    "文本文件处理失败",
+    "文件过大",
+    "文件不存在",
+    "MinerU未安装",
+)
+
 # ===================== 工具：图片处理（OCR提取文字）=====================
 def process_image(filepath):
     """
@@ -67,6 +101,14 @@ def _truncate_text(text):
         return text[:MAX_TEXT_LENGTH] + "\n（文本过长，已截断）"
     return text
 
+
+def _is_processing_error(content):
+    if not isinstance(content, str):
+        return True
+    if content.startswith("（扫描版PDF"):
+        return True
+    return any(content.startswith(prefix) for prefix in PROCESSING_ERROR_PREFIXES)
+
 # ===================== 工具：扫描版PDF检测 =====================
 def _is_scanned_pdf(filepath, min_text_length=100):
     """
@@ -76,7 +118,9 @@ def _is_scanned_pdf(filepath, min_text_length=100):
     :return: bool
     """
     try:
-        from PyPDF2 import PdfReader
+        if PdfReader is None:
+            logger.warning("PyPDF2 未安装，默认按扫描版 PDF 处理")
+            return True
         reader = PdfReader(filepath)
         total_text = ""
         # 仅检查前10页，避免大文件耗时过长
@@ -163,7 +207,8 @@ def process_scanned_pdf_with_mineru(filepath):
 # ===================== PDF文档处理（普通+扫描版自动切换）=====================
 def process_pdf(filepath):
     try:
-        from PyPDF2 import PdfReader
+        if PdfReader is None:
+            return "PDF处理失败: PyPDF2 未安装"
         reader = PdfReader(filepath)
         content = []
         
@@ -191,10 +236,41 @@ def process_pdf(filepath):
         logger.error(f"PDF处理失败: {str(e)}")
         return f"PDF处理失败: {str(e)}"
 
-# ===================== Word文档处理（增加表格提取）=====================
+
+def process_pdf_streaming(filepath: str):
+    """
+    6.2 按页流式生成 PDF 文本，避免大文件 OOM。
+
+    用法：
+        for page_text in process_pdf_streaming(filepath):
+            handle(page_text)
+
+    每次 yield 一页的文本（已过滤空白页）。
+    """
+    try:
+        if PdfReader is None:
+            yield "PDF处理失败: PyPDF2 未安装"
+            return
+        reader = PdfReader(filepath)
+        total_pages = min(len(reader.pages), PDF_PAGE_LIMIT)
+        logger.info(f"流式处理 PDF：{filepath}，共 {total_pages} 页")
+        for page_num in range(total_pages):
+            try:
+                page = reader.pages[page_num]
+                text = page.extract_text() or ""
+                stripped = text.strip()
+                if stripped:
+                    yield f"--- 第 {page_num + 1} 页 ---\n{stripped}"
+            except Exception as page_err:
+                logger.warning(f"PDF 第 {page_num + 1} 页解析失败: {page_err}，跳过")
+                continue
+    except Exception as exc:
+        logger.error(f"process_pdf_streaming 失败: {exc}")
+        yield f"PDF处理失败: {exc}"
 def process_word(filepath):
     try:
-        import docx
+        if docx is None:
+            return "Word处理失败: python-docx 未安装"
         doc = docx.Document(filepath)
         content = []
         logger.info(f"处理Word：{filepath}")
@@ -220,10 +296,58 @@ def process_word(filepath):
         logger.error(f"Word处理失败: {str(e)}")
         return f"Word处理失败: {str(e)}"
 
+
+def process_legacy_word(filepath):
+    """
+    处理旧版 .doc 文件，优先使用 antiword，其次尝试 LibreOffice 转换。
+    """
+    logger.info(f"处理旧版Word：{filepath}")
+
+    antiword_path = shutil.which("antiword")
+    if antiword_path:
+        try:
+            result = subprocess.run(
+                [antiword_path, filepath],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return _truncate_text(result.stdout.strip())
+        except Exception as e:
+            logger.warning(f"antiword 处理 .doc 失败: {str(e)}")
+
+    soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice_path:
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                result = subprocess.run(
+                    [
+                        soffice_path,
+                        "--headless",
+                        "--convert-to",
+                        "docx",
+                        "--outdir",
+                        temp_dir,
+                        filepath,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+                converted_path = Path(temp_dir) / f"{Path(filepath).stem}.docx"
+                if result.returncode == 0 and converted_path.exists():
+                    return process_word(str(converted_path))
+        except Exception as e:
+            logger.warning(f"LibreOffice 转换 .doc 失败: {str(e)}")
+
+    return "Word处理失败: 当前环境未安装 antiword 或 LibreOffice，无法解析 .doc 文件"
+
 # ===================== Excel文档处理（分块读取+优化内存）=====================
 def process_excel(filepath):
     try:
-        import pandas as pd
+        if pd is None:
+            return "Excel处理失败: pandas 未安装"
         content = []
         logger.info(f"处理Excel：{filepath}")
         
@@ -231,12 +355,18 @@ def process_excel(filepath):
         xls = pd.ExcelFile(filepath)
         for sheet_name in xls.sheet_names:
             content.append(f"\n--- 工作表: {sheet_name} ---")
-            # 分块读取，防大文件
-            for chunk_idx, df in enumerate(pd.read_excel(filepath, sheet_name=sheet_name, chunksize=EXCEL_CHUNK_SIZE)):
+            df = pd.read_excel(filepath, sheet_name=sheet_name)
+            if df.empty:
+                content.append("（空工作表）")
+                continue
+
+            total_rows = len(df)
+            for start in range(0, total_rows, EXCEL_CHUNK_SIZE):
+                chunk_idx = start // EXCEL_CHUNK_SIZE
+                chunk_df = df.iloc[start:start + EXCEL_CHUNK_SIZE]
                 if chunk_idx > 0:
-                    content.append(f"\n（第 {chunk_idx+1} 块数据）")
-                # 优化格式，避免超长
-                content.append(df.to_string(index=False, na_rep='-', max_colwidth=20))
+                    content.append(f"\n（第 {chunk_idx + 1} 块数据）")
+                content.append(chunk_df.to_string(index=False, na_rep='-', max_colwidth=20))
         
         return _truncate_text('\n'.join(content))
     except Exception as e:
@@ -246,24 +376,31 @@ def process_excel(filepath):
 # ===================== PPT文档处理 =====================
 def process_ppt(filepath):
     try:
-        from pptx import Presentation
+        if Presentation is None:
+            return "PPT处理失败: python-pptx 未安装"
         prs = Presentation(filepath)
         content = []
         logger.info(f"处理PPT：{filepath}")
         
         for slide_idx, slide in enumerate(prs.slides, 1):
             slide_content = []
+            extracted_tables = []
             # 提取文本框
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text.strip():
                     slide_content.append(shape.text.strip())
-            # 提取表格
-            if hasattr(slide.shapes, "tables"):
-                for table in slide.shapes.tables:
-                    for row in table.rows:
-                        row_text = " | ".join([cell.text.strip() for cell in row.cells if cell.text.strip()])
-                        if row_text:
-                            slide_content.append(row_text)
+                if getattr(shape, "has_table", False):
+                    extracted_tables.append(shape.table)
+
+            fallback_tables = getattr(slide.shapes, "tables", None)
+            if fallback_tables:
+                extracted_tables.extend(list(fallback_tables))
+
+            for table in extracted_tables:
+                for row in table.rows:
+                    row_text = " | ".join([cell.text.strip() for cell in row.cells if cell.text.strip()])
+                    if row_text:
+                        slide_content.append(row_text)
             
             if slide_content:
                 content.append(f"\n--- 第 {slide_idx} 页 ---\n" + "\n".join(slide_content))
@@ -276,6 +413,28 @@ def process_ppt(filepath):
 # ===================== 邮件处理（优化编码）=====================
 def process_email(filepath):
     try:
+        ext = Path(filepath).suffix.lower()
+        if ext == '.msg':
+            import extract_msg
+
+            message = extract_msg.Message(filepath)
+            content = []
+            logger.info(f"处理Outlook邮件：{filepath}")
+
+            if message.sender:
+                content.append(f"发件人: {message.sender}")
+            if message.to:
+                content.append(f"收件人: {message.to}")
+            if message.subject:
+                content.append(f"主题: {message.subject}")
+            if message.date:
+                content.append(f"发送时间: {message.date}")
+            content.append("\n--- 邮件正文 ---")
+            if message.body:
+                content.append(message.body)
+
+            return _truncate_text('\n'.join(content))
+
         with open(filepath, 'rb') as f:
             msg = BytesParser(policy=policy.default).parse(f)
         content = []
@@ -331,6 +490,7 @@ def process_document(filepath):
     # 处理器映射
     handlers = {
         '.pdf': process_pdf,
+        '.doc': process_legacy_word,
         '.docx': process_word,
         '.xlsx': process_excel,
         '.xls': process_excel,
@@ -367,6 +527,6 @@ def process_document(filepath):
             return False, f"文本文件处理失败: {str(e)}"
     
     # 判断是否成功
-    if content.startswith("处理失败") or content.startswith("文件过大") or content.startswith("文件不存在") or content.startswith("（扫描版PDF"):
+    if _is_processing_error(content):
         return False, content
     return True, content

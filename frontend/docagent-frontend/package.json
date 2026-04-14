@@ -6,18 +6,28 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
+    "@vue-office/docx": "^1.6.3",
+    "@vue-office/excel": "^1.7.14",
+    "@vue-office/pdf": "^2.0.10",
     "axios": "^1.13.5",
     "element-plus": "^2.13.2",
+    "mammoth": "^1.12.0",
     "vue": "^3.5.25",
-    "vue-router": "^5.0.2"
+    "vue-demi": "^0.14.10",
+    "vue-router": "^5.0.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.2",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.1.0",
     "sass-embedded": "^1.97.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^3.2.4"
   }
 }
