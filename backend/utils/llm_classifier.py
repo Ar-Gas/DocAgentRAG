@@ -1,9 +1,10 @@
 """
 LLM智能分类器 - 使用大模型进行文档分类
-支持 OpenAI 兼容 API（如 DeepSeek, GLM, Qwen 等）
+使用豆包 API 进行文档分类
 """
 import os
 import logging
+import requests
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -11,10 +12,21 @@ logger = logging.getLogger(__name__)
 _llm_client = None
 
 try:
-    from config import OPENAI_API_KEY, OPENAI_BASE_URL
+    from config import DOUBAO_API_KEY, DOUBAO_LLM_API_URL, DOUBAO_DEFAULT_LLM_MODEL
 except ImportError:
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-    OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+    DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "")
+    DOUBAO_LLM_API_URL = os.environ.get(
+        "DOUBAO_LLM_API_URL",
+        "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    )
+    DOUBAO_MINI_LLM_MODEL = os.environ.get(
+        "DOUBAO_MINI_LLM_MODEL",
+        "doubao-seed-2-0-mini-260215",
+    )
+    DOUBAO_DEFAULT_LLM_MODEL = os.environ.get(
+        "DOUBAO_DEFAULT_LLM_MODEL",
+        DOUBAO_MINI_LLM_MODEL,
+    )
 
 # 分类类别描述
 CATEGORY_DESCRIPTIONS = """
@@ -118,25 +130,20 @@ def _get_llm_client():
     if _llm_client is not None:
         return _llm_client
 
-    try:
-        from openai import OpenAI
-    except ImportError:
-        logger.warning("openai库未安装")
-        return None
-
-    api_key = OPENAI_API_KEY
-    base_url = OPENAI_BASE_URL
-
-    if not api_key:
-        logger.warning("未配置 OPENAI_API_KEY")
+    if not DOUBAO_API_KEY:
+        logger.warning("未配置 DOUBAO_API_KEY")
         return None
 
     try:
-        _llm_client = OpenAI(api_key=api_key, base_url=base_url)
-        logger.info(f"LLM客户端初始化成功: {base_url}")
+        _llm_client = {
+            "api_key": DOUBAO_API_KEY,
+            "base_url": DOUBAO_LLM_API_URL,
+            "model": DOUBAO_DEFAULT_LLM_MODEL,
+        }
+        logger.info(f"豆包LLM客户端初始化成功: {DOUBAO_LLM_API_URL}, model={DOUBAO_DEFAULT_LLM_MODEL}")
         return _llm_client
     except Exception as e:
-        logger.error(f"LLM客户端初始化失败: {str(e)}")
+        logger.error(f"豆包LLM客户端初始化失败: {str(e)}")
         return None
 
 
@@ -170,14 +177,28 @@ def classify_with_llm(doc_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 分类结果："""
 
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=50,
-            temperature=0.1
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {client['api_key']}",
+        }
+        payload = {
+            "model": client["model"],
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 50,
+            "temperature": 0.1,
+        }
+        response = requests.post(
+            client["base_url"],
+            headers=headers,
+            json=payload,
+            timeout=30,
         )
+        if response.status_code != 200:
+            logger.error(f"豆包LLM分类调用失败: {response.status_code} - {response.text}")
+            return None
 
-        category = response.choices[0].message.content.strip()
+        result = response.json()
+        category = result["choices"][0]["message"]["content"].strip()
         logger.info(f"LLM分类结果: {filename} -> {category}")
 
         import time

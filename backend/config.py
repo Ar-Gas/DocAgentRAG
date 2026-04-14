@@ -9,34 +9,39 @@ DOC_DIR = BASE_DIR / "doc"
 CHROMA_DB_PATH = BASE_DIR / "chromadb"
 MODEL_DIR = Path(os.getenv("MODEL_DIR", BASE_DIR / "models" / "all-MiniLM-L6-v2"))
 
+_secrets_api = None
 try:
-    from api_secrets import (
-        DOUBAO_API_KEY,
-        DOUBAO_EMBEDDING_API_URL,
-        DOUBAO_EMBEDDING_MODEL,
-        DOUBAO_LLM_API_URL,
-        DOUBAO_LLM_MODEL,
-        OPENAI_API_KEY,
-        OPENAI_BASE_URL
-    )
-except ImportError:
-    DOUBAO_API_KEY = os.getenv("DOUBAO_API_KEY", "")
-    DOUBAO_EMBEDDING_API_URL = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
-    DOUBAO_EMBEDDING_MODEL = "doubao-embedding-vision-250615"
-    DOUBAO_LLM_API_URL = os.getenv("DOUBAO_LLM_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
-    DOUBAO_LLM_MODEL = os.getenv("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+    import secrets_api as _secrets_api
+except ModuleNotFoundError as exc:
+    if exc.name != "secrets_api":
+        raise
+
+
+def _get_secret_or_env(name: str, default: str) -> str:
+    if _secrets_api is not None:
+        value = getattr(_secrets_api, name, None)
+        if value is not None:
+            return value
+    return os.getenv(name, default)
+
+
+DOUBAO_API_KEY = _get_secret_or_env("DOUBAO_API_KEY", "")
+DOUBAO_EMBEDDING_API_URL = _get_secret_or_env(
+    "DOUBAO_EMBEDDING_API_URL",
+    "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal",
+)
+DOUBAO_EMBEDDING_MODEL = _get_secret_or_env("DOUBAO_EMBEDDING_MODEL", "doubao-embedding-vision-250615")
+DOUBAO_LLM_API_URL = _get_secret_or_env(
+    "DOUBAO_LLM_API_URL",
+    "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+)
+DOUBAO_MINI_LLM_MODEL = _get_secret_or_env("DOUBAO_MINI_LLM_MODEL", "doubao-seed-2-0-mini-260215")
+DOUBAO_LLM_MODEL = _get_secret_or_env("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115")
+
+DOUBAO_DEFAULT_LLM_MODEL = DOUBAO_MINI_LLM_MODEL
 
 # LLM 可用性标志（启动时由 main.py 检查后设置）
-LLM_AVAILABLE: bool = bool(
-    os.getenv("DOUBAO_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
-)
-try:
-    from api_secrets import DOUBAO_API_KEY as _ak  # noqa: F401
-    LLM_AVAILABLE = bool(_ak)
-except ImportError:
-    pass
+LLM_AVAILABLE: bool = bool(DOUBAO_API_KEY)
 
 MAX_FILE_SIZE = 500 * 1024 * 1024
 MAX_TEXT_LENGTH = 10 * 1024 * 1024

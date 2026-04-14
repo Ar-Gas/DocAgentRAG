@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from config import DOUBAO_API_KEY, DOUBAO_DEFAULT_LLM_MODEL
 from app.services.errors import AppServiceError
 from utils.logger import get_logger, log_retrieval
 from utils.search_cache import get_search_cache
@@ -150,18 +151,11 @@ class RetrievalService:
         }
 
     def llm_status(self) -> Dict:
-        import os
-
-        doubao_key = os.environ.get("DOUBAO_API_KEY", "")
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
         return {
             "llm_available": is_llm_available(),
-            "provider": "doubao" if doubao_key else ("openai" if openai_key else None),
-            "doubao_configured": bool(doubao_key),
-            "doubao_model": os.environ.get("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115"),
-            "openai_configured": bool(openai_key),
-            "openai_base_url": os.environ.get("OPENAI_BASE_URL", "未配置"),
-            "openai_model": os.environ.get("LLM_MODEL", "未配置"),
+            "provider": "doubao" if DOUBAO_API_KEY else None,
+            "doubao_configured": bool(DOUBAO_API_KEY),
+            "default_model": DOUBAO_DEFAULT_LLM_MODEL,
         }
 
     def multimodal(self, query: str, image_url: Optional[str], limit: int, file_types: Optional[List[str]] = None) -> Dict:
@@ -191,6 +185,21 @@ class RetrievalService:
     def summarize_results(self, query: str, results: List[Dict]) -> Dict:
         self._ensure_query(query)
         return summarize_retrieval_results(query, results)
+
+    def regroup_workspace_payload(
+        self,
+        payload: Dict[str, Any],
+        results: List[Dict[str, Any]],
+        query: str = "",
+    ) -> Dict[str, Any]:
+        documents = self._group_workspace_results(results, query)
+        return {
+            **payload,
+            "results": results,
+            "documents": documents,
+            "total_results": len(results),
+            "total_documents": len(documents),
+        }
 
     @log_retrieval
     def workspace_search(

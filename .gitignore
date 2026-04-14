@@ -1,5 +1,7 @@
 
-backend/api_secrets.py
+backend/secrets_api.py
+backend/api_key.py
+backend/*api_key*.py
 *.pyc
 __pycache__/
 *.py[cod]

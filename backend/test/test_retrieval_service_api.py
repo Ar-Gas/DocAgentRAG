@@ -1,13 +1,17 @@
 import os
 import sys
 import asyncio
+import json
+import unittest
 from unittest.mock import Mock
+from unittest import mock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api.retrieval as retrieval_api  # noqa: E402
 import app.services.retrieval_service as retrieval_service_module  # noqa: E402
 from app.services.retrieval_service import RetrievalService  # noqa: E402
+import utils.smart_retrieval as smart_retrieval_module  # noqa: E402
 import utils.search_cache as search_cache_module  # noqa: E402
 
 def test_workspace_search_groups_results_and_applies_filters(monkeypatch):
@@ -259,6 +263,98 @@ def test_workspace_search_block_mode_falls_back_to_legacy_when_no_ready_docs(mon
     assert payload["meta"]["fallback_used"] is True
 
 
+async def _read_streaming_response(response):
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+    return "".join(chunks)
+
+
+def test_workspace_search_stream_rerank_updates_documents_payload(monkeypatch):
+    hybrid_payload = {
+        "query": "预算",
+        "mode": "hybrid",
+        "total_results": 2,
+        "total_documents": 2,
+        "results": [
+            {
+                "document_id": "doc-1",
+                "filename": "budget-plan.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.61,
+                "content_snippet": "预算计划",
+                "chunk_index": 0,
+                "file_available": True,
+            },
+            {
+                "document_id": "doc-2",
+                "filename": "budget-report.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.58,
+                "content_snippet": "预算报告",
+                "chunk_index": 0,
+                "file_available": True,
+            },
+        ],
+        "documents": [
+            {"document_id": "doc-1", "filename": "budget-plan.pdf"},
+            {"document_id": "doc-2", "filename": "budget-report.pdf"},
+        ],
+    }
+    regrouped_payload = {
+        **hybrid_payload,
+        "mode": "smart",
+        "results": [
+            {**hybrid_payload["results"][1], "similarity": 0.95},
+            {**hybrid_payload["results"][0], "similarity": 0.42},
+        ],
+        "documents": [
+            {"document_id": "doc-2", "filename": "budget-report.pdf"},
+            {"document_id": "doc-1", "filename": "budget-plan.pdf"},
+        ],
+        "total_results": 2,
+        "total_documents": 2,
+    }
+
+    monkeypatch.setattr(retrieval_api.retrieval_service, "workspace_search", Mock(return_value=hybrid_payload))
+    monkeypatch.setattr(retrieval_api, "is_llm_available", lambda: True)
+    monkeypatch.setattr(
+        retrieval_api,
+        "llm_rerank",
+        lambda query, results, top_k: [
+            {**results[1], "similarity": 0.95},
+            {**results[0], "similarity": 0.42},
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_api.retrieval_service,
+        "regroup_workspace_payload",
+        Mock(return_value=regrouped_payload),
+        raising=False,
+    )
+
+    response = asyncio.run(
+        retrieval_api.workspace_search_stream(
+            retrieval_api.WorkspaceSearchRequest(
+                query="预算",
+                mode="smart",
+                limit=2,
+                group_by_document=True,
+            )
+        )
+    )
+    stream_text = asyncio.run(_read_streaming_response(response))
+
+    reranked_frames = [
+        frame for frame in stream_text.split("\n\n")
+        if frame.startswith("event: reranked")
+    ]
+    assert len(reranked_frames) == 1
+    reranked_payload = json.loads(reranked_frames[0].split("data: ", 1)[1])
+    assert reranked_payload["documents"][0]["document_id"] == "doc-2"
+    assert reranked_payload["results"][0]["document_id"] == "doc-2"
+
+
 def test_workspace_search_block_mode_forwards_filename_filter(monkeypatch):
     search_cache_module.get_search_cache().invalidate_all()
     captured = {}
@@ -467,3 +563,46 @@ def test_stats_include_document_and_index_counts(monkeypatch):
     assert payload["segment_documents"] == 2
     assert payload["total_chunks"] == 7
     assert payload["file_types"] == {".pdf": 5, ".docx": 2}
+
+
+class DoubaoOnlyRetrievalTests(unittest.TestCase):
+    def test_llm_status_reports_doubao_only_payload_and_default_model(self):
+        with mock.patch.object(retrieval_service_module, "is_llm_available", return_value=True):
+            with mock.patch.object(retrieval_service_module, "DOUBAO_API_KEY", "doubao-key"):
+                with mock.patch.object(retrieval_service_module, "DOUBAO_DEFAULT_LLM_MODEL", "doubao-mini-for-test"):
+                    payload = RetrievalService().llm_status()
+
+        self.assertEqual(
+            payload,
+            {
+                "llm_available": True,
+                "provider": "doubao",
+                "doubao_configured": True,
+                "default_model": "doubao-mini-for-test",
+            },
+        )
+
+    def test_call_llm_uses_default_doubao_model_in_request_payload(self):
+        smart_retrieval_module._llm_client = None
+        smart_retrieval_module._llm_provider = None
+
+        fake_response = mock.Mock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "ok",
+                    }
+                }
+            ]
+        }
+
+        with mock.patch.object(smart_retrieval_module, "DOUBAO_API_KEY", "doubao-key"):
+            with mock.patch.object(smart_retrieval_module, "DOUBAO_LLM_API_URL", "https://doubao.test/chat"):
+                with mock.patch.object(smart_retrieval_module, "DOUBAO_DEFAULT_LLM_MODEL", "doubao-mini-for-test"):
+                    with mock.patch.object(smart_retrieval_module.requests, "post", return_value=fake_response) as post_mock:
+                        response_text = smart_retrieval_module._call_llm("hello", max_tokens=32, temperature=0.2)
+
+        self.assertEqual(response_text, "ok")
+        self.assertEqual(post_mock.call_args.kwargs["json"]["model"], "doubao-mini-for-test")

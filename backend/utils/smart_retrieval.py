@@ -6,7 +6,6 @@
 3. Result Fusion: 合并多个查询的检索结果
 4. LLM Reranking: 使用LLM对最终结果进行精确重排序
 """
-import os
 import logging
 import asyncio
 import base64
@@ -14,6 +13,7 @@ import json
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
+from config import DOUBAO_API_KEY, DOUBAO_DEFAULT_LLM_MODEL, DOUBAO_LLM_API_URL
 
 logger = logging.getLogger(__name__)
 
@@ -21,56 +21,27 @@ _llm_client = None
 _llm_provider = None
 
 def _get_llm_client():
-    """获取LLM客户端（支持豆包和OpenAI兼容接口）"""
+    """获取豆包LLM客户端"""
     global _llm_client, _llm_provider
     if _llm_client is not None:
         return _llm_client
 
-    # 优先使用豆包LLM
-    doubao_api_key = os.environ.get("DOUBAO_API_KEY", "")
-    doubao_llm_url = os.environ.get("DOUBAO_LLM_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
-    doubao_model = os.environ.get("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115")
-    
-    if doubao_api_key:
-        try:
-            _llm_client = {
-                'provider': 'doubao',
-                'api_key': doubao_api_key,
-                'base_url': doubao_llm_url,
-                'model': doubao_model
-            }
-            _llm_provider = 'doubao'
-            logger.info(f"豆包LLM客户端初始化成功: {doubao_llm_url}, model={doubao_model}")
-            return _llm_client
-        except Exception as e:
-            logger.warning(f"豆包LLM初始化失败: {str(e)}")
-
-    # 回退到 OpenAI 兼容接口
-    try:
-        from openai import OpenAI
-    except ImportError:
-        logger.warning("openai库未安装，智能检索功能不可用")
-        return None
-
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com")
-    model = os.environ.get("LLM_MODEL", "deepseek-chat")
-
-    if not api_key:
-        logger.warning("未配置 OPENAI_API_KEY 环境变量，智能检索功能不可用")
+    if not DOUBAO_API_KEY:
+        logger.warning("未配置 DOUBAO_API_KEY，智能检索功能不可用")
         return None
 
     try:
         _llm_client = {
-            'provider': 'openai',
-            'client': OpenAI(api_key=api_key, base_url=base_url),
-            'model': model
+            'provider': 'doubao',
+            'api_key': DOUBAO_API_KEY,
+            'base_url': DOUBAO_LLM_API_URL,
+            'model': DOUBAO_DEFAULT_LLM_MODEL
         }
-        _llm_provider = 'openai'
-        logger.info(f"OpenAI兼容LLM客户端初始化成功: {base_url}, model={model}")
+        _llm_provider = 'doubao'
+        logger.info(f"豆包LLM客户端初始化成功: {DOUBAO_LLM_API_URL}, model={DOUBAO_DEFAULT_LLM_MODEL}")
         return _llm_client
     except Exception as e:
-        logger.error(f"LLM客户端初始化失败: {str(e)}")
+        logger.error(f"豆包LLM客户端初始化失败: {str(e)}")
         return None
 
 
@@ -87,40 +58,29 @@ def _call_llm(prompt: str, max_tokens: int = 200, temperature: float = 0.7) -> O
     if client is None:
         return None
     
-    provider = client.get('provider', 'openai')
-    
     try:
-        if provider == 'doubao':
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {client['api_key']}"
-            }
-            payload = {
-                "model": client['model'],
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature
-            }
-            response = requests.post(
-                client['base_url'],
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            if response.status_code == 200:
-                result = response.json()
-                return result['choices'][0]['message']['content']
-            else:
-                logger.error(f"豆包LLM调用失败: {response.status_code} - {response.text}")
-                return None
-        else:
-            response = client['client'].chat.completions.create(
-                model=client['model'],
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            return response.choices[0].message.content
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {client['api_key']}"
+        }
+        payload = {
+            "model": client['model'],
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        response = requests.post(
+            client['base_url'],
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+
+        logger.error(f"豆包LLM调用失败: {response.status_code} - {response.text}")
+        return None
     except Exception as e:
         logger.error(f"LLM调用失败: {str(e)}")
         return None

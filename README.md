@@ -103,7 +103,7 @@ DocAgentRAG/
 │   └── docagent-frontend/
 │       ├── src/               # 源代码
 │       │   ├── components/    # Vue 组件
-│       │   ├── views/         # 页面视图
+│       │   ├── pages/         # 页面视图
 │       │   └── router/        # 路由配置
 │       ├── package.json       # NPM 依赖
 │       └── vite.config.js     # Vite 配置
@@ -164,10 +164,12 @@ npm run build
 | GET | `/api/documents/` | 获取文档列表（分页） |
 | GET | `/api/documents/{id}` | 获取文档详情 |
 | DELETE | `/api/documents/{id}` | 删除文档 |
-| GET | `/api/documents/{id}/refine` | 获取文档提炼结果 |
-| GET | `/api/documents/{id}/hierarchy` | 获取文档层次结构 |
-| GET | `/api/documents/{id}/key-info` | 获取文档关键信息 |
+| GET | `/api/documents/{id}/content` | 获取文档内容与分段 |
+| GET | `/api/documents/{id}/reader` | 获取文档阅读器文本与高亮命中 |
+| GET | `/api/documents/{id}/file` | 下载或预览原文件 |
 | POST | `/api/documents/{id}/rechunk` | 重新分片文档 |
+| GET | `/api/documents/{id}/chunk-status` | 获取文档分片状态 |
+| POST | `/api/documents/batch/rechunk` | 批量重新分片文档 |
 
 ### 检索服务
 
@@ -188,7 +190,12 @@ npm run build
 | POST | `/api/classification/reclassify/{id}` | 重新分类 |
 | GET | `/api/classification/categories` | 获取所有分类 |
 | GET | `/api/classification/documents/{category}` | 获取分类下文档 |
+| POST | `/api/classification/category/{category}/reclassify` | 按分类批量重新分类 |
+| POST | `/api/classification/category/{category}/rechunk` | 按分类批量重新分片 |
 | POST | `/api/classification/multi-level/build` | 构建多级分类树 |
+| GET | `/api/classification/topic-tree` | 获取动态语义主题树 |
+| POST | `/api/classification/topic-tree/build` | 重建动态语义主题树 |
+| POST | `/api/classification/tables/generate` | 根据检索结果生成分类表 |
 
 ## 配置说明
 
@@ -203,15 +210,16 @@ DOUBAO_API_KEY=your_api_key
 DOUBAO_EMBEDDING_API_URL=https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal
 DOUBAO_EMBEDDING_MODEL=doubao-embedding-vision-250615
 DOUBAO_LLM_API_URL=https://ark.cn-beijing.volces.com/api/v3/chat/completions
-DOUBAO_LLM_MODEL=doubao-pro-32k-241115
-
-# OpenAI 兼容 API（可选）
-OPENAI_API_KEY=your_api_key
-OPENAI_BASE_URL=https://api.deepseek.com
+DOUBAO_MINI_LLM_MODEL=doubao-seed-2-0-mini-260215   # 默认运行模型
+DOUBAO_LLM_MODEL=doubao-pro-32k-241115          # 预留高阶/备份模型，默认不启用
 
 # 开发模式
 DEV_MODE=true
 ```
+
+### 本地密钥文件
+
+本地开发时请使用 `backend/secrets_api.py` 作为密钥配置源（例如 `DOUBAO_API_KEY`），并确保该文件不提交到仓库。
 
 ### 系统配置
 

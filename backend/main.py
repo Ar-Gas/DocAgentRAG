@@ -7,7 +7,15 @@ import logging
 import os
 from pathlib import Path
 
-from config import API_PREFIX, DATA_DIR, DOC_DIR, CHROMA_DB_PATH, FILE_TYPE_DIRS, DOUBAO_API_KEY, OPENAI_API_KEY
+from config import (
+    API_PREFIX,
+    DATA_DIR,
+    DOC_DIR,
+    CHROMA_DB_PATH,
+    FILE_TYPE_DIRS,
+    DOUBAO_API_KEY,
+    DOUBAO_DEFAULT_LLM_MODEL,
+)
 import config as _config
 from api import (
     router as api_router,
@@ -26,6 +34,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 # 7.1 初始化统一日志
 setup_logging()
+
+
+def sync_doubao_llm_availability(
+    doubao_api_key: str,
+    doubao_default_llm_model: str,
+    config_module,
+    logger_instance,
+) -> bool:
+    if not doubao_api_key:
+        logger_instance.warning("未配置 DOUBAO_API_KEY，智能检索将降级为 hybrid 模式，分类功能不可用。")
+        config_module.LLM_AVAILABLE = False
+        return False
+
+    config_module.LLM_AVAILABLE = True
+    logger_instance.info(f"LLM provider: Doubao, model: {doubao_default_llm_model}")
+    return True
 
 
 def check_and_rebuild_chunks():
@@ -129,14 +153,12 @@ async def lifespan(app: FastAPI):
         logger.info(f"创建文件类型目录：{type_path}")
     
     # 0.2 API Key 可用性检查
-    if not DOUBAO_API_KEY and not OPENAI_API_KEY:
-        logger.warning("未配置任何 LLM API Key（DOUBAO_API_KEY / OPENAI_API_KEY），"
-                       "智能检索将降级为 hybrid 模式，分类功能不可用。")
-        _config.LLM_AVAILABLE = False
-    else:
-        _config.LLM_AVAILABLE = True
-        provider = "Doubao" if DOUBAO_API_KEY else "OpenAI-compatible"
-        logger.info(f"LLM provider: {provider}")
+    sync_doubao_llm_availability(
+        doubao_api_key=DOUBAO_API_KEY,
+        doubao_default_llm_model=DOUBAO_DEFAULT_LLM_MODEL,
+        config_module=_config,
+        logger_instance=logger,
+    )
 
     logger.info("正在初始化 Chroma 客户端和加载模型...")
     chroma_client, chroma_collection = init_chroma_client()
