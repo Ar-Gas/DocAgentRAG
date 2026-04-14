@@ -6,5 +6,8 @@
   "preview_content": "Excel处理失败: Excel file format cannot be determined, you must specify an engine manually.",
   "full_content_length": 87,
   "created_at": 1771344296.5917385,
-  "created_at_iso": "2026-02-18T00:04:56.591738"
+  "created_at_iso": "2026-02-18T00:04:56.591738",
+  "classification_result": "数据文档-Excel表格",
+  "classification_time": "2026-03-24T09:02:17.756949",
+  "updated_at": "2026-03-24T09:02:17.756960"
 }

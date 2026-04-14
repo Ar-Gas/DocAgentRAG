@@ -10,11 +10,17 @@ from collections import defaultdict, Counter
 import jieba
 import jieba.analyse
 
+from app.infra.metadata_store import get_metadata_store
 from .storage import get_all_documents, get_document_info
 from .classifier import CATEGORY_KEYWORDS, EXTENSION_CATEGORY
 from config import EXTENSION_TO_DIR
 
 logger = logging.getLogger(__name__)
+
+
+def _metadata_store():
+    from config import DATA_DIR
+    return get_metadata_store(data_dir=DATA_DIR)
 
 MEANINGLESS_PATTERNS = [
     r'^[.\-_~*#=]+$',
@@ -230,16 +236,10 @@ class MultiLevelClassifier:
     def save_classification_tree(self, tree: Dict[str, Any], output_path: Optional[str] = None) -> str:
         """保存分类树为JSON文件"""
         try:
+            _metadata_store().save_artifact("classification_tree", tree)
             if output_path is None:
                 from config import DATA_DIR
                 output_path = DATA_DIR / "classification_tree.json"
-
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(tree, f, ensure_ascii=False, indent=2)
-
             logger.info(f"分类树已保存: {output_path}")
             return str(output_path)
         except Exception as e:
@@ -249,16 +249,12 @@ class MultiLevelClassifier:
     def load_classification_tree(self, input_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """加载分类树"""
         try:
-            if input_path is None:
-                from config import DATA_DIR
-                input_path = DATA_DIR / "classification_tree.json"
-
-            input_path = Path(input_path)
-            if not input_path.exists():
-                return None
-
-            with open(input_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            if input_path is not None:
+                input_path = Path(input_path)
+                if input_path.exists():
+                    with open(input_path, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+            return _metadata_store().load_artifact("classification_tree")
         except Exception as e:
             logger.error(f"加载分类树失败: {str(e)}")
             return None

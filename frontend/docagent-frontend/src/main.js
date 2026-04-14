@@ -1,16 +1,49 @@
 import { createApp } from 'vue'
 import App from './App.vue'
-import ElementPlus from 'element-plus'
+import {
+  ElButton,
+  ElDatePicker,
+  ElDrawer,
+  ElEmpty,
+  ElIcon,
+  ElInput,
+  ElOption,
+  ElSelect,
+  ElSkeleton,
+  ElSlider,
+  ElSwitch,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+  ElUpload,
+  vLoading
+} from 'element-plus'
 import 'element-plus/dist/index.css'
-import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import '@/assets/styles/global.scss'
+import router from '@/router'
 
 const app = createApp(App)
 
-// 注册所有Element Plus图标
-for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
-  app.component(key, component)
-}
+;[
+  ElButton,
+  ElDatePicker,
+  ElDrawer,
+  ElEmpty,
+  ElIcon,
+  ElInput,
+  ElOption,
+  ElSelect,
+  ElSkeleton,
+  ElSlider,
+  ElSwitch,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+  ElUpload
+].forEach((component) => {
+  app.component(component.name, component)
+})
 
-app.use(ElementPlus)
+app.directive('loading', vLoading)
+app.use(router)
 app.mount('#app')

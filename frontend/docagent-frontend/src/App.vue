@@ -1,194 +1,263 @@
 <template>
-  <div class="app-container">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <h1>📄 办公文档智能分类与检索系统</h1>
-      <p>支持文档上传、智能分类、向量检索、扫描版PDF OCR</p>
-    </div>
-
-    <div class="page-container">
-      <!-- 顶部操作区：上传 + 搜索 -->
-      <div class="top-section">
-        <FileUpload @upload-success="handleUploadSuccess" />
-        <SearchBox 
-          :stats="stats" 
-          @search-result="handleSearchResult"
-          @search-query="handleSearchQuery"
-          @refresh-stats="loadStats"
-        />
+  <div class="app-shell">
+    <aside class="shell-sidebar">
+      <!-- Logo -->
+      <div class="sidebar-brand">
+        <div class="brand-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <rect x="2" y="2" width="7" height="9" rx="1.5" fill="currentColor" opacity="0.9"/>
+            <rect x="11" y="2" width="7" height="5" rx="1.5" fill="currentColor" opacity="0.6"/>
+            <rect x="11" y="9" width="7" height="9" rx="1.5" fill="currentColor" opacity="0.75"/>
+            <rect x="2" y="13" width="7" height="5" rx="1.5" fill="currentColor" opacity="0.5"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">DocAgent</span>
+          <span class="brand-sub">智能文档工作台</span>
+        </div>
       </div>
 
-      <!-- 分类标签页 -->
-      <el-tabs v-model="activeTab" class="classification-tabs">
-        <el-tab-pane label="旧版分类" name="old">
-          <ClassificationPanel 
-            :document-list="documentList"
-            @classify-all-success="handleOperateSuccess"
-          />
-        </el-tab-pane>
-        <el-tab-pane label="多级分类" name="new">
-          <MultiLevelClassification />
-        </el-tab-pane>
-      </el-tabs>
+      <!-- 导航 -->
+      <nav class="sidebar-nav">
+        <span class="nav-section-label">工作区</span>
+        <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" class="nav-link">
+          <el-icon class="nav-icon"><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+        </RouterLink>
+      </nav>
 
-      <!-- 文档列表 -->
-      <FileList 
-        :document-list="documentList"
-        :loading="loading"
-        @refresh="loadDocuments"
-        @operate-success="handleOperateSuccess"
-      />
+      <!-- 底部状态 -->
+      <div class="sidebar-footer">
+        <div class="system-status">
+          <span class="status-dot"></span>
+          <span>系统运行中</span>
+        </div>
+        <p class="footer-note">FastAPI · Vue 3 · ChromaDB</p>
+      </div>
+    </aside>
+
+    <div class="shell-body">
+      <header class="shell-topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">{{ currentPageTitle }}</h1>
+        </div>
+        <div class="topbar-right">
+          <span class="topbar-badge">AI 驱动 · 本地向量检索</span>
+        </div>
+      </header>
+
+      <main class="shell-content">
+        <RouterView />
+      </main>
     </div>
-
-    <!-- 检索结果弹窗 -->
-    <SearchResultDialog
-      v-model="showSearchDialog"
-      :query="searchQuery"
-      :initial-results="searchResults"
-      @search-updated="handleSearchUpdated"
-    />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-// 导入所有组件
-import FileUpload from '@/components/FileUpload.vue'
-import SearchBox from '@/components/SearchBox.vue'
-import FileList from '@/components/FileList.vue'
-import ClassificationPanel from '@/components/ClassificationPanel.vue'
-import MultiLevelClassification from '@/components/MultiLevelClassification.vue'
-import SearchResultDialog from '@/components/SearchResultDialog.vue'
-// 导入API
-import { api } from '@/api'
+import { computed } from 'vue'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { DataBoard, Document, Search } from '@element-plus/icons-vue'
 
-const activeTab = ref('new')
+const navItems = [
+  { to: '/',          label: '总览',     icon: DataBoard },
+  { to: '/documents', label: '文档管理', icon: Document  },
+  { to: '/search',    label: '智能检索', icon: Search    },
+]
 
-// 响应式数据
-const documentList = ref([])
-const searchResults = ref([])
-const searchQuery = ref('')
-const showSearchDialog = ref(false)
-const stats = ref(null)
-const loading = ref(false)
-
-// 加载文档列表
-const loadDocuments = async () => {
-  loading.value = true
-  try {
-    const res = await api.getDocumentList()
-    documentList.value = res.data?.items || []
-  } catch (error) {
-    console.error('加载文档列表失败', error)
-  } finally {
-    loading.value = false
-  }
-}
-
-// 加载统计信息
-const loadStats = async () => {
-  try {
-    const res = await api.getStats()
-    stats.value = res.data || res
-  } catch (error) {
-    console.error('加载统计信息失败', error)
-  }
-}
-
-// 上传成功后的回调
-const handleUploadSuccess = () => {
-  loadDocuments()
-  loadStats()
-}
-
-// 搜索结果回调 - 打开弹窗
-const handleSearchResult = (results) => {
-  searchResults.value = results
-  if (results.length > 0) {
-    showSearchDialog.value = true
-  }
-}
-
-// 搜索查询回调
-const handleSearchQuery = (query) => {
-  searchQuery.value = query
-}
-
-// 搜索更新回调
-const handleSearchUpdated = (results) => {
-  searchResults.value = results
-}
-
-// 操作成功后的回调（分类、删除、移动）
-const handleOperateSuccess = () => {
-  loadDocuments()
-  loadStats()
-}
-
-// 页面初始化加载数据
-onMounted(() => {
-  loadDocuments()
-  loadStats()
-})
+const route = useRoute()
+const pageTitleMap = { '/': '总览', '/documents': '文档管理', '/search': '智能检索' }
+const currentPageTitle = computed(() => pageTitleMap[route.path] || 'DocAgent')
 </script>
 
 <style scoped lang="scss">
-.app-container {
+.app-shell {
+  display: flex;
   min-height: 100vh;
-  padding-bottom: 40px;
 }
 
-.page-header {
-  text-align: center;
-  padding: 40px 20px 0;
-
-  h1 {
-    font-size: 36px;
-    font-weight: 700;
-    background: linear-gradient(135deg, #409eff 0%, #66b1ff 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    margin-bottom: 10px;
-  }
-
-  p {
-    font-size: 16px;
-    color: #909399;
-  }
+/* ── 侧边栏 ── */
+.shell-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: #0F172A;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
 }
 
-.page-container {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 40px 20px;
-}
-
-.top-section {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  margin-bottom: 20px;
-}
-
-.card-header {
+.sidebar-brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 20px;
-  font-size: 18px;
+  padding: 20px 16px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.brand-icon {
+  width: 36px;
+  height: 36px;
+  background: var(--blue-600);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.brand-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #F8FAFC;
+  letter-spacing: -0.01em;
+}
+
+.brand-sub {
+  font-size: 11px;
+  color: #64748B;
+  margin-top: 1px;
+}
+
+/* ── 导航 ── */
+.sidebar-nav {
+  flex: 1;
+  padding: 16px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-section-label {
+  font-size: 10px;
   font-weight: 600;
-  color: #303133;
-  
-  .el-icon {
-    font-size: 24px;
-    color: #409eff;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #475569;
+  padding: 0 8px;
+  margin-bottom: 6px;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: #94A3B8;
+  font-size: 13.5px;
+  font-weight: 500;
+  transition: background 0.12s, color 0.12s;
+  text-decoration: none;
+
+  .nav-icon { font-size: 16px; flex-shrink: 0; }
+
+  &:hover {
+    background: rgba(255,255,255,0.06);
+    color: #CBD5E1;
+  }
+
+  &.router-link-active {
+    background: rgba(37, 99, 235, 0.2);
+    color: #93C5FD;
+
+    .nav-icon { color: #60A5FA; }
   }
 }
 
-// 响应式适配
+/* ── 底部 ── */
+.sidebar-footer {
+  padding: 14px 16px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.system-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #64748B;
+  margin-bottom: 4px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22C55E;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
+  flex-shrink: 0;
+}
+
+.footer-note {
+  font-size: 11px;
+  color: #334155;
+}
+
+/* ── 主体 ── */
+.shell-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 顶栏 ── */
+.shell-topbar {
+  height: 52px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.page-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-strong);
+  letter-spacing: -0.01em;
+}
+
+.topbar-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--line);
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+/* ── 内容区 ── */
+.shell-content {
+  flex: 1;
+  padding: 20px 24px;
+  overflow-y: auto;
+}
+
+/* ── 响应式 ── */
 @media (max-width: 1024px) {
-  .top-section {
-    grid-template-columns: 1fr;
-  }
+  .shell-sidebar { width: 60px; }
+  .brand-text, .nav-link span, .nav-section-label,
+  .sidebar-footer .system-status span, .footer-note { display: none; }
+  .sidebar-brand { justify-content: center; padding: 16px 0; }
+  .sidebar-nav { align-items: center; }
+  .nav-link { justify-content: center; padding: 10px; }
+  .sidebar-footer { display: flex; justify-content: center; }
+  .system-status { margin: 0; }
 }
 </style>

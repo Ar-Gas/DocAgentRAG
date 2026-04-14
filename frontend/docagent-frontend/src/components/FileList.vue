@@ -1,103 +1,63 @@
 <template>
-  <div class="card list-card">
-    <div class="card-header">
-      <el-icon><Document /></el-icon>
-      <span>文档列表</span>
-      <el-button type="primary" link @click="handleRefresh">
-        <el-icon><Refresh /></el-icon>
-        刷新
+  <div class="shell-panel list-panel">
+    <div class="list-header">
+      <span class="list-title">文档列表</span>
+      <span class="list-count">共 {{ documentList.length }} 个文档</span>
+      <el-button type="primary" link size="small" @click="emit('refresh')">
+        <el-icon><Refresh /></el-icon>刷新
       </el-button>
     </div>
-    <el-table 
-      :data="documentList" 
-      style="width: 100%" 
-      v-loading="loading"
-      stripe
-    >
-      <el-table-column prop="filename" label="文件名" min-width="220">
+
+    <el-table :data="documentList" v-loading="loading" stripe>
+      <el-table-column prop="filename" label="文件名" min-width="240">
         <template #default="{ row }">
-          <div class="file-name">
+          <div
+            class="file-name-cell"
+            :class="{ clickable: row.file_available !== false, unavailable: row.file_available === false }"
+            @click="row.file_available !== false && emit('open-viewer', row)"
+          >
             <el-icon><Document /></el-icon>
-            {{ row.filename }}
+            <span>{{ row.filename }}</span>
+            <el-tag v-if="row.file_available === false" size="small" type="danger">原件缺失</el-tag>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="file_type" label="文件类型" width="100">
+
+      <el-table-column prop="file_type" label="类型" width="90">
         <template #default="{ row }">
           <el-tag size="small" type="info">{{ row.file_type }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="classification_result" label="分类结果" width="130">
+
+      <el-table-column label="分类" width="160">
         <template #default="{ row }">
           <el-tag v-if="row.classification_result" type="success" size="small">
             {{ row.classification_result }}
           </el-tag>
-          <el-tag v-else type="info" size="small">未分类</el-tag>
+          <el-tag v-else type="warning" size="small">未分类</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="created_at_iso" label="上传时间" width="180" />
-      <el-table-column label="操作" width="420" fixed="right">
+
+      <el-table-column prop="created_at_iso" label="上传时间" width="175" />
+
+      <el-table-column label="操作" width="160" fixed="right">
         <template #default="{ row }">
-          <el-button 
-            v-if="!row.classification_result"
-            type="primary" 
-            link 
-            size="small" 
-            @click="handleClassify(row)" 
-            :loading="row.classifying"
-          >
-            <el-icon><MagicStick /></el-icon>
-            分类
-          </el-button>
-          <el-button 
-            v-else
-            type="warning" 
-            link 
-            size="small" 
-            @click="handleReclassify(row)" 
-            :loading="row.reclassifying"
+          <el-button
+            type="primary"
+            link
+            size="small"
+            @click="handleReclassify(row)"
+            :loading="row._reclassifying"
           >
             <el-icon><RefreshRight /></el-icon>
             重新分类
           </el-button>
-          <el-button 
-            type="success" 
-            link 
-            size="small" 
-            @click="handleRechunk(row)" 
-            :loading="row.rechunking"
-          >
-            <el-icon><Refresh /></el-icon>
-            重新分片
-          </el-button>
-          <el-button 
-            v-if="row.classification_result"
-            type="info" 
-            link 
-            size="small" 
-            @click="handleClearClassification(row)" 
-            :loading="row.clearingClassification"
-          >
-            <el-icon><Close /></el-icon>
-            清除分类
-          </el-button>
-          <el-button 
-            type="success" 
-            link 
-            size="small" 
-            @click="handleCreateFolder(row)" 
-            :loading="row.creatingFolder" 
-            v-if="row.classification_result"
-          >
-            <el-icon><FolderAdd /></el-icon>
-            移动
-          </el-button>
-          <el-button 
-            type="danger" 
-            link 
-            size="small" 
-            @click="handleDelete(row)" 
-            :loading="row.deleting"
+          <el-button
+            type="danger"
+            link
+            size="small"
+            @click="handleDelete(row)"
+            :loading="row._deleting"
           >
             <el-icon><Delete /></el-icon>
             删除
@@ -110,154 +70,98 @@
 
 <script setup>
 import { ElMessage, ElMessageBox } from 'element-plus'
-import {
-  Document, Refresh, MagicStick, FolderAdd, Delete, RefreshRight, Close
-} from '@element-plus/icons-vue'
+import { Document, Refresh, RefreshRight, Delete } from '@element-plus/icons-vue'
 import { api } from '@/api'
 
-const props = defineProps({
-  documentList: {
-    type: Array,
-    default: () => []
-  },
-  loading: {
-    type: Boolean,
-    default: false
-  }
+defineProps({
+  documentList: { type: Array, default: () => [] },
+  loading: { type: Boolean, default: false }
 })
-const emit = defineEmits(['refresh', 'operate-success'])
-
-const handleRefresh = () => {
-  emit('refresh')
-}
-
-const handleClassify = async (row) => {
-  row.classifying = true
-  try {
-    await api.classifyDocument(row.id)
-    ElMessage.success('文档分类成功！')
-    emit('operate-success')
-  } catch (error) {
-    console.error('分类失败：', error)
-  } finally {
-    row.classifying = false
-  }
-}
+const emit = defineEmits(['refresh', 'operate-success', 'open-viewer'])
 
 const handleReclassify = async (row) => {
-  row.reclassifying = true
+  row._reclassifying = true
   try {
     const response = await api.reclassifyDocument(row.id)
-    ElMessage.success(`文档重新分类成功！新分类：${response.data.new_classification || '未知'}`)
+    const newClass = response.data?.new_classification || '无结果'
+    ElMessage.success(`重新分类完成：${newClass}`)
     emit('operate-success')
-  } catch (error) {
-    console.error('重新分类失败：', error)
+  } catch (_) {
+    // error already shown by interceptor
   } finally {
-    row.reclassifying = false
-  }
-}
-
-const handleClearClassification = async (row) => {
-  try {
-    await ElMessageBox.confirm(
-      `确定要清除文档 "${row.filename}" 的分类结果吗？`,
-      '清除分类',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-    
-    row.clearingClassification = true
-    await api.clearClassificationResult(row.id)
-    ElMessage.success('分类结果已清除！')
-    emit('operate-success')
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('清除分类失败：', error)
-    }
-  } finally {
-    row.clearingClassification = false
-  }
-}
-
-const handleCreateFolder = async (row) => {
-  row.creatingFolder = true
-  try {
-    await api.createFolder(row.id)
-    ElMessage.success('文件已移动到对应分类目录！')
-    emit('operate-success')
-  } catch (error) {
-    console.error('移动失败：', error)
-  } finally {
-    row.creatingFolder = false
+    row._reclassifying = false
   }
 }
 
 const handleDelete = async (row) => {
   try {
-    await ElMessageBox.confirm(
-      `确定要删除文档 "${row.filename}" 吗？删除后无法恢复！`,
-      '删除警告',
-      {
-        confirmButtonText: '确定删除',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-    
-    row.deleting = true
+    await ElMessageBox.confirm(`确定删除「${row.filename}」？此操作不可恢复。`, '删除确认', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    row._deleting = true
     await api.deleteDocument(row.id)
-    ElMessage.success('文档删除成功！')
+    ElMessage.success('已删除')
     emit('operate-success')
   } catch (error) {
     if (error !== 'cancel') {
-      console.error('删除失败：', error)
+      // error already shown by interceptor
     }
   } finally {
-    row.deleting = false
-  }
-}
-
-const handleRechunk = async (row) => {
-  try {
-    await ElMessageBox.confirm(
-      `确定要对文档 "${row.filename}" 进行重新分片吗？`,
-      '重新分片确认',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-    
-    row.rechunking = true
-    await api.rechunkDocument(row.id)
-    ElMessage.success('文档重新分片成功！')
-    emit('operate-success')
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('重新分片失败：', error)
-    }
-  } finally {
-    row.rechunking = false
+    row._deleting = false
   }
 }
 </script>
 
 <style scoped lang="scss">
-.list-card {
-  .card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+.list-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.list-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.list-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.list-count {
+  font-size: 12px;
+  color: var(--ink-muted);
+  flex: 1;
+}
+
+.file-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--ink-strong);
   }
-  
-  .file-name {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+
+  &.clickable {
+    cursor: pointer;
+    span { color: var(--blue-600); }
+    &:hover span { text-decoration: underline; }
+  }
+
+  &.unavailable {
+    cursor: not-allowed;
+    opacity: 0.72;
   }
 }
 </style>

@@ -28,6 +28,16 @@ except ImportError:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
 
+# LLM 可用性标志（启动时由 main.py 检查后设置）
+LLM_AVAILABLE: bool = bool(
+    os.getenv("DOUBAO_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+)
+try:
+    from api_secrets import DOUBAO_API_KEY as _ak  # noqa: F401
+    LLM_AVAILABLE = bool(_ak)
+except ImportError:
+    pass
+
 MAX_FILE_SIZE = 500 * 1024 * 1024
 MAX_TEXT_LENGTH = 10 * 1024 * 1024
 MAX_CHUNK_LENGTH = 500
@@ -63,7 +73,7 @@ EXTENSION_TO_DIR: Dict[str, str] = {
 FILE_TYPE_DIRS = ['pdf', 'word', 'excel', 'ppt', 'eml', 'txt', 'image']
 
 API_VERSION = "v1"
-API_PREFIX = "/api"
+API_PREFIX = "/api/v1"
 
 ERROR_CODES = {
     1001: "文档不存在",

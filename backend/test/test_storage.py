@@ -1,413 +1,207 @@
-#!/usr/bin/env python3
-import json
 import os
-import unittest
-from unittest import mock
-import tempfile
-import shutil
-from datetime import datetime
-import uuid
-from pathlib import Path
-
-# Add the backend directory to the path
 import sys
+import types
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.storage import (
-    save_document_info,
-    get_document_info,
-    save_classification_result,
-    get_classification_result,
-    get_all_documents,
-    init_chroma_client,
-    save_document_summary_for_classification,
-    save_document_to_chroma,
-    retrieve_from_chroma,
-    delete_document,
-    update_document_info,
-    get_documents_by_classification,
-    split_text_into_chunks,
-    BASE_DIR,
-    DATA_DIR,
-    DOC_DIR,
-    CHROMA_DB_PATH,
-    MODEL_DIR
-)
+import utils.storage as storage  # noqa: E402
+from app.infra import metadata_store as metadata_store_module  # noqa: E402
 
-class TestStorage(unittest.TestCase):
-    def setUp(self):
-        # Create a temporary directory for testing
-        self.temp_dir = tempfile.mkdtemp()
-        self.test_data_dir = Path(self.temp_dir) / "data"
-        self.test_data_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Mock the DATA_DIR and other paths
-        global DATA_DIR, DOC_DIR, CHROMA_DB_PATH
-        self.original_data_dir = DATA_DIR
-        self.original_doc_dir = DOC_DIR
-        self.original_chroma_db_path = CHROMA_DB_PATH
-        
-        # Override the paths for testing
-        DATA_DIR = self.test_data_dir
-        DOC_DIR = Path(self.temp_dir) / "doc"
-        CHROMA_DB_PATH = Path(self.temp_dir) / "chromadb"
-        
-        # Mock the _chroma_client to None before each test
-        from utils.storage import _chroma_client
-        self.original_chroma_client = _chroma_client
-        import utils.storage
-        utils.storage._chroma_client = None
-    
-    def tearDown(self):
-        # Restore original paths
-        global DATA_DIR, DOC_DIR, CHROMA_DB_PATH
-        DATA_DIR = self.original_data_dir
-        DOC_DIR = self.original_doc_dir
-        CHROMA_DB_PATH = self.original_chroma_db_path
-        
-        # Restore original chroma client
-        import utils.storage
-        utils.storage._chroma_client = self.original_chroma_client
-        
-        # Clean up temporary directory
-        shutil.rmtree(self.temp_dir)
-    
-    def test_save_document_info(self):
-        """Test saving document information to JSON"""
-        doc_info = {
-            "id": "test-doc-1",
-            "filename": "test.pdf",
-            "filepath": "/path/to/test.pdf",
+
+@pytest.fixture()
+def isolated_storage(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    doc_dir = tmp_path / "doc"
+    chroma_dir = tmp_path / "chromadb"
+    data_dir.mkdir()
+    doc_dir.mkdir()
+    chroma_dir.mkdir()
+
+    metadata_store_module._metadata_stores.clear()
+    monkeypatch.setattr(storage, "DATA_DIR", data_dir)
+    monkeypatch.setattr(storage, "DOC_DIR", doc_dir)
+    monkeypatch.setattr(storage, "CHROMA_DB_PATH", chroma_dir)
+    monkeypatch.setattr(storage, "_chroma_client", None)
+    monkeypatch.setattr(storage, "_chroma_collection", None)
+    yield storage
+    metadata_store_module._metadata_stores.clear()
+
+
+def test_document_info_and_classification_roundtrip(isolated_storage):
+    doc_info = {
+        "id": "doc-1",
+        "filename": "report.pdf",
+        "filepath": "/tmp/report.pdf",
+        "file_type": ".pdf",
+        "preview_content": "摘要",
+        "full_content_length": 12,
+        "created_at": 1710000000.0,
+        "created_at_iso": "2024-03-09T00:00:00",
+    }
+
+    assert isolated_storage.save_document_info(doc_info) is True
+    assert isolated_storage.get_document_info("doc-1")["filename"] == "report.pdf"
+
+    assert isolated_storage.save_classification_result("doc-1", "财务") is True
+    assert isolated_storage.get_classification_result("doc-1") == "财务"
+
+
+def test_get_all_documents_and_filter_by_classification(isolated_storage):
+    isolated_storage.save_document_info({"id": "doc-1", "filename": "a.pdf", "filepath": "/tmp/a.pdf", "classification_result": "财务"})
+    isolated_storage.save_document_info({"id": "doc-2", "filename": "b.docx", "filepath": "/tmp/b.docx", "classification_result": "法务"})
+    isolated_storage.save_document_info({"id": "doc-3", "filename": "c.txt", "filepath": "/tmp/c.txt", "classification_result": "财务"})
+
+    all_docs = isolated_storage.get_all_documents()
+    assert {item["id"] for item in all_docs} == {"doc-1", "doc-2", "doc-3"}
+
+    finance_docs = isolated_storage.get_documents_by_classification("财务")
+    assert {item["id"] for item in finance_docs} == {"doc-1", "doc-3"}
+
+
+def test_init_chroma_client_returns_client_and_collection(monkeypatch, isolated_storage):
+    client = Mock()
+    collection = Mock()
+    client.get_or_create_collection.return_value = collection
+
+    monkeypatch.setattr(storage, "doubao_multimodal_embed", lambda text: None)
+    monkeypatch.setattr(storage, "PersistentClient", lambda path: client)
+    monkeypatch.setattr(
+        storage.embedding_functions,
+        "SentenceTransformerEmbeddingFunction",
+        lambda model_name: object(),
+    )
+
+    initialized_client, initialized_collection = isolated_storage.init_chroma_client()
+
+    assert initialized_client is client
+    assert initialized_collection is collection
+
+
+def test_save_document_summary_for_classification_persists_content(monkeypatch, isolated_storage, tmp_path: Path):
+    source = tmp_path / "notes.txt"
+    source.write_text("项目会议纪要", encoding="utf-8")
+    monkeypatch.setattr(storage, "update_classification_tree_after_add", lambda doc_info: None)
+
+    document_id, doc_info = isolated_storage.save_document_summary_for_classification(
+        str(source),
+        full_content="项目会议纪要",
+        parser_name="text",
+    )
+
+    assert document_id
+    assert doc_info["filename"] == "notes.txt"
+    assert isolated_storage.get_document_content_record(document_id)["full_content"] == "项目会议纪要"
+
+
+def test_save_document_to_chroma_persists_segments(monkeypatch, isolated_storage, tmp_path: Path):
+    source = tmp_path / "notes.txt"
+    source.write_text("第一句。第二句。第三句。", encoding="utf-8")
+    isolated_storage.save_document_info(
+        {
+            "id": "doc-1",
+            "filename": "notes.txt",
+            "filepath": str(source),
+            "file_type": ".txt",
+            "created_at_iso": "2024-03-09T00:00:00",
+        }
+    )
+
+    collection = Mock()
+    monkeypatch.setattr(storage, "get_chroma_collection", lambda: collection)
+    monkeypatch.setattr(storage, "split_text_into_chunks", lambda text: ["第一句。", "第二句。", "第三句。"])
+
+    assert isolated_storage.save_document_to_chroma(str(source), document_id="doc-1", use_refiner=False) is True
+    assert collection.add.called is True
+    segments = isolated_storage.list_document_segments("doc-1")
+    assert len(segments) == 3
+
+
+def test_retrieve_from_chroma_and_delete_document(monkeypatch, isolated_storage):
+    isolated_storage.save_document_info({"id": "doc-1", "filename": "notes.txt", "filepath": "/tmp/notes.txt"})
+    isolated_storage.save_document_content_record("doc-1", "全文", preview_content="摘要")
+
+    collection = Mock()
+    collection.query.return_value = {"documents": [["Result 1"]]}
+    collection.get.return_value = {"ids": ["doc-1_chunk_0"]}
+    monkeypatch.setattr(storage, "get_chroma_collection", lambda: collection)
+    monkeypatch.setattr(storage, "update_classification_tree_after_delete", lambda document_id: None)
+
+    assert isolated_storage.retrieve_from_chroma("query") == {"documents": [["Result 1"]]}
+    assert isolated_storage.delete_document("doc-1") is True
+    collection.delete.assert_called_once_with(ids=["doc-1_chunk_0"])
+    assert isolated_storage.get_document_info("doc-1") is None
+
+
+def test_update_document_info_and_split_text_into_chunks(isolated_storage):
+    isolated_storage.save_document_info({"id": "doc-1", "filename": "old.txt", "filepath": "/tmp/old.txt"})
+
+    assert isolated_storage.update_document_info("doc-1", {"filename": "new.txt"}) is True
+    updated = isolated_storage.get_document_info("doc-1")
+    assert updated["filename"] == "new.txt"
+    assert updated.get("updated_at")
+
+    chunks = isolated_storage.split_text_into_chunks("这是第一句。这是第二句！这是第三句？", max_length=6, min_length=2)
+    assert len(chunks) == 3
+    assert chunks[0].endswith("。")
+
+    english_chunks = isolated_storage.split_text_into_chunks("This is one. This is two! This is three?", max_length=18, min_length=5)
+    assert len(english_chunks) >= 2
+
+
+def test_resolve_document_filepath_repairs_metadata_when_file_has_been_moved(monkeypatch, isolated_storage, tmp_path: Path):
+    classified_root = tmp_path / "classified_docs" / "学术论文-教育"
+    classified_root.mkdir(parents=True)
+    repaired_file = classified_root / "589ab58b599b4bd0aa4f381857a55b67.pdf"
+    repaired_file.write_text("pdf placeholder", encoding="utf-8")
+
+    missing_original = tmp_path / "doc" / "pdf" / "589ab58b599b4bd0aa4f381857a55b67.pdf"
+    isolated_storage.save_document_info(
+        {
+            "id": "doc-1",
+            "filename": "指导教师名册.pdf",
+            "filepath": str(missing_original),
             "file_type": ".pdf",
-            "preview_content": "Test content",
-            "full_content_length": 100,
-            "created_at": 1620000000.0,
-            "created_at_iso": "2021-05-03T12:00:00"
         }
-        
-        # Test successful save
-        result = save_document_info(doc_info)
-        self.assertTrue(result)
-        
-        # Verify the file was created
-        expected_file = DATA_DIR / "test-doc-1.json"
-        self.assertTrue(expected_file.exists())
-        
-        # Verify the content
-        with open(expected_file, 'r', encoding='utf-8') as f:
-            saved_info = json.load(f)
-        self.assertEqual(saved_info, doc_info)
-        
-    def test_get_document_info(self):
-        """Test getting document information from JSON"""
-        # Create a test document info file
-        doc_info = {
-            "id": "test-doc-1",
-            "filename": "test.pdf",
-            "filepath": "/path/to/test.pdf"
-        }
-        
-        # Save the document info
-        with open(DATA_DIR / "test-doc-1.json", 'w', encoding='utf-8') as f:
-            json.dump(doc_info, f)
-        
-        # Test getting existing document
-        result = get_document_info("test-doc-1")
-        self.assertEqual(result, doc_info)
-        
-        # Test getting non-existent document
-        result = get_document_info("non-existent-doc")
-        self.assertIsNone(result)
-    
-    def test_save_classification_result(self):
-        """Test saving classification result"""
-        # Create a test document info file
-        doc_info = {
-            "id": "test-doc-1",
-            "filename": "test.pdf",
-            "filepath": "/path/to/test.pdf"
-        }
-        
-        # Save the document info
-        with open(DATA_DIR / "test-doc-1.json", 'w', encoding='utf-8') as f:
-            json.dump(doc_info, f)
-        
-        # Test saving classification result
-        classification_result = "financial"
-        result = save_classification_result("test-doc-1", classification_result)
-        self.assertTrue(result)
-        
-        # Verify the classification result was saved
-        with open(DATA_DIR / "test-doc-1.json", 'r', encoding='utf-8') as f:
-            updated_info = json.load(f)
-        self.assertEqual(updated_info.get('classification_result'), classification_result)
-        self.assertIn('classification_time', updated_info)
-        
-        # Test saving classification result for non-existent document
-        result = save_classification_result("non-existent-doc", "financial")
-        self.assertFalse(result)
-    
-    def test_get_classification_result(self):
-        """Test getting classification result"""
-        # Create a test document info file with classification
-        doc_info = {
-            "id": "test-doc-1",
-            "filename": "test.pdf",
-            "filepath": "/path/to/test.pdf",
-            "classification_result": "financial"
-        }
-        
-        # Save the document info
-        with open(DATA_DIR / "test-doc-1.json", 'w', encoding='utf-8') as f:
-            json.dump(doc_info, f)
-        
-        # Test getting existing classification
-        result = get_classification_result("test-doc-1")
-        self.assertEqual(result, "financial")
-        
-        # Test getting classification for non-existent document
-        result = get_classification_result("non-existent-doc")
-        self.assertIsNone(result)
-    
-    def test_get_all_documents(self):
-        """Test getting all documents"""
-        # Create multiple test document info files
-        doc1 = {
-            "id": "test-doc-1",
-            "filename": "test1.pdf",
-            "filepath": "/path/to/test1.pdf"
-        }
-        
-        doc2 = {
-            "id": "test-doc-2",
-            "filename": "test2.pdf",
-            "filepath": "/path/to/test2.pdf"
-        }
-        
-        # Save the document info files
-        with open(DATA_DIR / "test-doc-1.json", 'w', encoding='utf-8') as f:
-            json.dump(doc1, f)
-        
-        with open(DATA_DIR / "test-doc-2.json", 'w', encoding='utf-8') as f:
-            json.dump(doc2, f)
-        
-        # Test getting all documents
-        result = get_all_documents()
-        self.assertEqual(len(result), 2)
-        self.assertIn(doc1, result)
-        self.assertIn(doc2, result)
-    
-    @mock.patch('utils.storage.embedding_functions.SentenceTransformerEmbeddingFunction')
-    @mock.patch('utils.storage.PersistentClient')
-    @mock.patch('utils.storage.MODEL_DIR')
-    def test_init_chroma_client(self, mock_model_dir, mock_client_class, mock_embedding_function):
-        """Test initializing Chroma client"""
-        # Set up mocks
-        mock_model_dir.exists.return_value = True
-        mock_client = mock.MagicMock()
-        mock_client_class.return_value = mock_client
-        mock_collection = mock.MagicMock()
-        mock_client.get_or_create_collection.return_value = mock_collection
-        
-        # Test initializing client
-        result = init_chroma_client()
-        self.assertEqual(result, mock_client)
-        
-        # Verify the client was created with the correct path
-        mock_client_class.assert_called_once()
-        call_args = mock_client_class.call_args
-        self.assertEqual(call_args.kwargs['path'], str(CHROMA_DB_PATH))
-        
-        # Test that the client is cached
-        second_result = init_chroma_client()
-        self.assertEqual(second_result, mock_client)
-        # Should only be called once
-        mock_client_class.assert_called_once()
-    
-    @mock.patch('utils.storage.process_document')
-    @mock.patch('utils.storage.process_pdf')
-    @mock.patch('utils.storage.process_word')
-    @mock.patch('utils.storage.process_excel')
-    @mock.patch('utils.storage.process_email')
-    @mock.patch('utils.storage.process_ppt')
-    @mock.patch('utils.storage.save_document_info')
-    @mock.patch('os.path.getmtime')
-    def test_save_document_summary_for_classification(self, mock_getmtime, mock_save_doc, mock_process_ppt, mock_process_email, mock_process_excel, mock_process_word, mock_process_pdf, mock_process_doc):
-        """Test saving document summary for classification"""
-        # Set up mocks
-        mock_getmtime.return_value = 1620000000.0
-        mock_save_doc.return_value = True
-        
-        # Test PDF file (单个处理器返回字符串)
-        mock_process_pdf.return_value = "PDF content"
-        doc_id, doc_info = save_document_summary_for_classification("test.pdf")
-        self.assertIsNotNone(doc_id)
-        self.assertIsNotNone(doc_info)
-        mock_process_pdf.assert_called_once_with("test.pdf")
-        
-        # Test Word file
-        mock_process_pdf.reset_mock()
-        mock_process_word.return_value = "Word content"
-        doc_id, doc_info = save_document_summary_for_classification("test.docx")
-        self.assertIsNotNone(doc_id)
-        self.assertIsNotNone(doc_info)
-        mock_process_word.assert_called_once_with("test.docx")
-        
-        # Test Excel file
-        mock_process_word.reset_mock()
-        mock_process_excel.return_value = "Excel content"
-        doc_id, doc_info = save_document_summary_for_classification("test.xlsx")
-        self.assertIsNotNone(doc_id)
-        self.assertIsNotNone(doc_info)
-        mock_process_excel.assert_called_once_with("test.xlsx")
-        
-        # Test email file
-        mock_process_excel.reset_mock()
-        mock_process_email.return_value = "Email content"
-        doc_id, doc_info = save_document_summary_for_classification("test.eml")
-        self.assertIsNotNone(doc_id)
-        self.assertIsNotNone(doc_info)
-        mock_process_email.assert_called_once_with("test.eml")
-        
-        # Test PPT file
-        mock_process_email.reset_mock()
-        mock_process_ppt.return_value = "PPT content"
-        doc_id, doc_info = save_document_summary_for_classification("test.pptx")
-        self.assertIsNotNone(doc_id)
-        self.assertIsNotNone(doc_info)
-        mock_process_ppt.assert_called_once_with("test.pptx")
-        
-        # Test other file types (process_document 返回元组)
-        mock_process_ppt.reset_mock()
-        mock_process_doc.return_value = (True, "Other content")  # ===================== 修复：返回元组 =====================
-        doc_id, doc_info = save_document_summary_for_classification("test.txt")
-        self.assertIsNotNone(doc_id)
-        self.assertIsNotNone(doc_info)
-        mock_process_doc.assert_called_once_with("test.txt")
-    
-    @mock.patch('utils.storage.split_text_into_chunks')
-    @mock.patch('utils.storage.init_chroma_client')
-    @mock.patch('utils.storage.process_document')
-    def test_save_document_to_chroma(self, mock_process_doc, mock_init_client, mock_split_chunks):
-        """Test saving document to Chroma"""
-        # Set up mocks
-        mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_collection = mock.MagicMock()
-        mock_client.get_or_create_collection.return_value = mock_collection
-        mock_client.get_collection.return_value = mock_collection
-        
-        # ===================== 修复：process_document 返回元组 =====================
-        mock_process_doc.return_value = (True, "Test content. More content.")
-        # 模拟分片结果
-        mock_split_chunks.return_value = ["Test content", "More content"]
-        
-        # Test saving document
-        result = save_document_to_chroma("test.txt")
-        self.assertTrue(result)
-        
-        # Verify the collection was called with chunks
-        mock_collection.add.assert_called_once()
-        call_args = mock_collection.add.call_args
-        self.assertIn('documents', call_args.kwargs)
-        self.assertIn('metadatas', call_args.kwargs)
-        self.assertIn('ids', call_args.kwargs)
-    
-    @mock.patch('utils.storage.init_chroma_client')
-    def test_retrieve_from_chroma(self, mock_init_client):
-        """Test retrieving from Chroma"""
-        # Set up mocks
-        mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
-        mock_results = {"documents": [["Result 1", "Result 2"]]}
-        mock_collection.query.return_value = mock_results
-        
-        # Test retrieval
-        results = retrieve_from_chroma("test query")
-        self.assertEqual(results, mock_results)
-        mock_collection.query.assert_called_once_with(query_texts=["test query"], n_results=5)
-    
-    @mock.patch('utils.storage.init_chroma_client')
-    @mock.patch('os.path.exists')
-    def test_delete_document(self, mock_exists, mock_init_client):
-        """Test deleting document"""
-        # Set up mocks
-        mock_exists.return_value = True
-        mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
-        mock_collection.get.return_value = {"ids": ["chunk1", "chunk2"]}
-        
-        # Test deletion
-        result = delete_document("test-doc-1")
-        self.assertTrue(result)
-        # Check Chroma delete operation
-        mock_collection.delete.assert_called_once_with(ids=["chunk1", "chunk2"])
-    
-    @mock.patch('utils.storage.get_document_info')
-    @mock.patch('utils.storage.save_document_info')
-    def test_update_document_info(self, mock_save_doc, mock_get_doc):
-        """Test updating document information"""
-        # Set up mocks
-        existing_doc = {
-            "id": "test-doc-1",
-            "filename": "old_name.pdf",
-            "filepath": "/path/to/old_name.pdf"
-        }
-        mock_get_doc.return_value = existing_doc
-        mock_save_doc.return_value = True
-        
-        # Test update
-        updated_info = {"filename": "new_name.pdf", "filepath": "/path/to/new_name.pdf"}
-        result = update_document_info("test-doc-1", updated_info)
-        self.assertTrue(result)
-        
-        # Verify save was called with updated info
-        mock_save_doc.assert_called_once()
-        saved_doc = mock_save_doc.call_args[0][0]
-        self.assertEqual(saved_doc["filename"], "new_name.pdf")
-        self.assertEqual(saved_doc["filepath"], "/path/to/new_name.pdf")
-        self.assertIn('updated_at', saved_doc)
-    
-    @mock.patch('utils.storage.get_all_documents')
-    def test_get_documents_by_classification(self, mock_get_all):
-        """Test getting documents by classification"""
-        # Set up mocks
-        mock_get_all.return_value = [
-            {"id": "doc1", "classification_result": "financial"},
-            {"id": "doc2", "classification_result": "legal"},
-            {"id": "doc3", "classification_result": "financial"}
-        ]
-        
-        # Test getting financial documents
-        result = get_documents_by_classification("financial")
-        self.assertEqual(len(result), 2)
-        for doc in result:
-            self.assertEqual(doc["classification_result"], "financial")
-    
-    def test_split_text_into_chunks(self):
-        """Test splitting text into chunks"""
-        # 测试中文标点分割
-        text = "这是第一句话。这是第二句话！这是第三句话？"
-        chunks = split_text_into_chunks(text, max_length=20, min_length=5)
-        self.assertEqual(len(chunks), 3)
-        
-        # 测试英文标点分割
-        text = "This is sentence 1. This is sentence 2! This is sentence 3?"
-        chunks = split_text_into_chunks(text, max_length=30, min_length=10)
-        self.assertEqual(len(chunks), 3)
-        
-        # 测试无标点分割
-        text = "这是一段很长很长很长很长很长很长很长的无标点文本"
-        chunks = split_text_into_chunks(text, max_length=10, min_length=5)
-        self.assertGreater(len(chunks), 1)
-        
-        # 测试空文本
-        chunks = split_text_into_chunks("")
-        self.assertEqual(len(chunks), 0)
+    )
 
-if __name__ == '__main__':
-    unittest.main()
+    monkeypatch.setattr(storage, "BASE_DIR", tmp_path)
+
+    resolved = isolated_storage.resolve_document_filepath("doc-1")
+
+    assert resolved == str(repaired_file.resolve())
+    assert isolated_storage.get_document_info("doc-1")["filepath"] == str(repaired_file.resolve())
+
+
+def test_resolve_document_filepath_handles_inaccessible_original_path(monkeypatch, isolated_storage, tmp_path: Path):
+    test_root = tmp_path / "test" / "test_date"
+    test_root.mkdir(parents=True)
+    repaired_file = test_root / "sample.pdf"
+    repaired_file.write_text("pdf placeholder", encoding="utf-8")
+
+    inaccessible_path = "/root/autodl-tmp/DocAgentRAG/backend/test/test_date/sample.pdf"
+    isolated_storage.save_document_info(
+        {
+            "id": "doc-2",
+            "filename": "sample.pdf",
+            "filepath": inaccessible_path,
+            "file_type": ".pdf",
+        }
+    )
+
+    monkeypatch.setattr(storage, "BASE_DIR", tmp_path)
+    original_exists = Path.exists
+
+    def fake_exists(path_obj):
+        if str(path_obj) == inaccessible_path:
+            raise PermissionError("permission denied")
+        return original_exists(path_obj)
+
+    monkeypatch.setattr(storage.Path, "exists", fake_exists, raising=False)
+
+    resolved = isolated_storage.resolve_document_filepath("doc-2")
+
+    assert resolved == str(repaired_file.resolve())

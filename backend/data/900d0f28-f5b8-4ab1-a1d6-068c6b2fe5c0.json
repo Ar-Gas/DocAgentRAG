@@ -9,12 +9,15 @@
   "created_at_iso": "2026-02-22T02:31:18.465442",
   "classification_result": "书籍-编程技术",
   "classification_time": "2026-02-22T21:12:14.457895",
-  "updated_at": "2026-02-22T23:24:09.703819",
+  "updated_at": "2026-03-24T08:53:11.371943",
   "chunk_info": {
     "chunk_count": 183,
     "chunk_size": 500,
     "use_refiner": true,
-    "chunked_at": "2026-02-22T23:24:09.703215",
+    "chunked_at": "2026-03-24T08:53:11.377642",
     "full_content_hash": "728b1809a3c1b799eacbb7132605f1aa"
-  }
+  },
+  "extraction_status": "ready",
+  "parser_name": "pdf",
+  "extraction_error": null
 }

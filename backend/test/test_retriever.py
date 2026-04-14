@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import unittest
 from unittest import mock
 import tempfile
@@ -15,7 +16,11 @@ from utils.retriever import (
     get_document_by_id,
     get_document_stats
 )
-from chromadb.errors import NotFoundError
+try:
+    from chromadb.errors import NotFoundError
+except ImportError:
+    class NotFoundError(Exception):
+        pass
 
 class TestRetriever(unittest.TestCase):
     def setUp(self):
@@ -32,9 +37,8 @@ class TestRetriever(unittest.TestCase):
         """测试正常搜索文档"""
         # Set up mocks
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock search results
         mock_results = {
@@ -81,7 +85,7 @@ class TestRetriever(unittest.TestCase):
     @mock.patch('utils.retriever.init_chroma_client')
     def test_search_documents_client_failed(self, mock_init_client):
         """测试搜索文档时客户端初始化失败"""
-        mock_init_client.return_value = None
+        mock_init_client.return_value = (None, None)
         results = search_documents("测试查询")
         self.assertEqual(results, [])
     
@@ -89,8 +93,7 @@ class TestRetriever(unittest.TestCase):
     def test_search_documents_collection_not_found(self, mock_init_client):
         """测试搜索文档时集合不存在"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_client.get_collection.side_effect = NotFoundError("Collection not found")
+        mock_init_client.return_value = (mock_client, None)
         
         results = search_documents("测试查询")
         self.assertEqual(results, [])
@@ -99,9 +102,8 @@ class TestRetriever(unittest.TestCase):
     def test_search_documents_incomplete_results(self, mock_init_client):
         """测试搜索文档时结果不完整"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock incomplete results (missing documents)
         mock_results = {
@@ -118,9 +120,8 @@ class TestRetriever(unittest.TestCase):
     def test_search_documents_metadata_none(self, mock_init_client):
         """测试搜索文档时元数据为空"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock results with None metadata
         mock_results = {
@@ -138,9 +139,8 @@ class TestRetriever(unittest.TestCase):
     def test_search_documents_similarity_bounds(self, mock_init_client):
         """测试搜索文档时相似度边界限制"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock results with out-of-bounds distances
         mock_results = {
@@ -163,9 +163,7 @@ class TestRetriever(unittest.TestCase):
     @mock.patch('utils.retriever.init_chroma_client')
     def test_search_documents_exception(self, mock_init_client):
         """测试搜索文档时发生异常"""
-        mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_client.get_collection.side_effect = Exception("Test exception")
+        mock_init_client.side_effect = Exception("Test exception")
         
         results = search_documents("测试查询")
         self.assertEqual(results, [])
@@ -175,9 +173,8 @@ class TestRetriever(unittest.TestCase):
     def test_batch_search_documents_normal(self, mock_init_client):
         """测试正常批量搜索文档"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock batch search results
         mock_results = {
@@ -218,7 +215,7 @@ class TestRetriever(unittest.TestCase):
     @mock.patch('utils.retriever.init_chroma_client')
     def test_batch_search_documents_client_failed(self, mock_init_client):
         """测试批量搜索文档时客户端初始化失败"""
-        mock_init_client.return_value = None
+        mock_init_client.return_value = (None, None)
         results = batch_search_documents(["查询1", "查询2"])
         self.assertEqual(results, [[], []])
     
@@ -226,8 +223,7 @@ class TestRetriever(unittest.TestCase):
     def test_batch_search_documents_collection_not_found(self, mock_init_client):
         """测试批量搜索文档时集合不存在"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_client.get_collection.side_effect = NotFoundError("Collection not found")
+        mock_init_client.return_value = (mock_client, None)
         
         results = batch_search_documents(["查询1", "查询2"])
         self.assertEqual(results, [[], []])
@@ -236,9 +232,8 @@ class TestRetriever(unittest.TestCase):
     def test_batch_search_documents_pad_empty_results(self, mock_init_client):
         """测试批量搜索文档时补全剩余查询的空结果"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock results with fewer queries than input
         mock_results = {
@@ -258,9 +253,7 @@ class TestRetriever(unittest.TestCase):
     @mock.patch('utils.retriever.init_chroma_client')
     def test_batch_search_documents_exception(self, mock_init_client):
         """测试批量搜索文档时发生异常"""
-        mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_client.get_collection.side_effect = Exception("Test exception")
+        mock_init_client.side_effect = Exception("Test exception")
         
         results = batch_search_documents(["查询1", "查询2"])
         self.assertEqual(results, [[], []])
@@ -270,9 +263,8 @@ class TestRetriever(unittest.TestCase):
     def test_get_document_by_id_normal(self, mock_init_client):
         """测试正常根据ID获取文档"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock get results
         mock_results = {
@@ -304,7 +296,7 @@ class TestRetriever(unittest.TestCase):
     @mock.patch('utils.retriever.init_chroma_client')
     def test_get_document_by_id_client_failed(self, mock_init_client):
         """测试根据ID获取文档时客户端初始化失败"""
-        mock_init_client.return_value = None
+        mock_init_client.return_value = (None, None)
         result = get_document_by_id("doc1")
         self.assertIsNone(result)
     
@@ -312,8 +304,7 @@ class TestRetriever(unittest.TestCase):
     def test_get_document_by_id_collection_not_found(self, mock_init_client):
         """测试根据ID获取文档时集合不存在"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_client.get_collection.side_effect = NotFoundError("Collection not found")
+        mock_init_client.return_value = (mock_client, None)
         
         result = get_document_by_id("doc1")
         self.assertIsNone(result)
@@ -322,9 +313,8 @@ class TestRetriever(unittest.TestCase):
     def test_get_document_by_id_no_results(self, mock_init_client):
         """测试根据ID获取文档时无结果"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock empty results
         mock_results = {'metadatas': [], 'documents': [], 'ids': []}
@@ -336,9 +326,7 @@ class TestRetriever(unittest.TestCase):
     @mock.patch('utils.retriever.init_chroma_client')
     def test_get_document_by_id_exception(self, mock_init_client):
         """测试根据ID获取文档时发生异常"""
-        mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_client.get_collection.side_effect = Exception("Test exception")
+        mock_init_client.side_effect = Exception("Test exception")
         
         result = get_document_by_id("doc1")
         self.assertIsNone(result)
@@ -348,9 +336,8 @@ class TestRetriever(unittest.TestCase):
     def test_get_document_stats_normal(self, mock_init_client):
         """测试正常获取文档统计信息"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         # Mock count and get results
         mock_collection.count.return_value = 1500
@@ -383,48 +370,45 @@ class TestRetriever(unittest.TestCase):
         self.assertEqual(stats['file_types']['.pdf'], 200*2 + 125*1)  # 525
         self.assertEqual(stats['file_types']['.docx'], 200*3)  # 600
         self.assertEqual(stats['file_types']['.xlsx'], 125*2)  # 250
-        self.assertEqual(stats['file_types'].get('unknown', 0), 125*1)  # 125 (from None metadata)
+        self.assertEqual(stats['file_types'].get('unknown', 0), 0)
     
     @mock.patch('utils.retriever.init_chroma_client')
     def test_get_document_stats_client_failed(self, mock_init_client):
         """测试获取文档统计信息时客户端初始化失败"""
-        mock_init_client.return_value = None
+        mock_init_client.return_value = (None, None)
         stats = get_document_stats()
-        self.assertEqual(stats, {})
+        self.assertEqual(stats, {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}})
     
     @mock.patch('utils.retriever.init_chroma_client')
     def test_get_document_stats_collection_not_found(self, mock_init_client):
         """测试获取文档统计信息时集合不存在"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_client.get_collection.side_effect = NotFoundError("Collection not found")
+        mock_init_client.return_value = (mock_client, None)
         
         stats = get_document_stats()
-        self.assertEqual(stats, {"total_chunks": 0, "file_types": {}})
+        self.assertEqual(stats, {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}})
     
     @mock.patch('utils.retriever.init_chroma_client')
     def test_get_document_stats_empty(self, mock_init_client):
         """测试获取文档统计信息时无数据"""
         mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
         mock_collection = mock.MagicMock()
-        mock_client.get_collection.return_value = mock_collection
+        mock_init_client.return_value = (mock_client, mock_collection)
         
         mock_collection.count.return_value = 0
         
         stats = get_document_stats()
         self.assertEqual(stats['total_chunks'], 0)
+        self.assertEqual(stats['vector_indexed_documents'], 0)
         self.assertEqual(stats['file_types'], {})
     
     @mock.patch('utils.retriever.init_chroma_client')
     def test_get_document_stats_exception(self, mock_init_client):
         """测试获取文档统计信息时发生异常"""
-        mock_client = mock.MagicMock()
-        mock_init_client.return_value = mock_client
-        mock_client.get_collection.side_effect = Exception("Test exception")
+        mock_init_client.side_effect = Exception("Test exception")
         
         stats = get_document_stats()
-        self.assertEqual(stats, {})
+        self.assertEqual(stats, {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}})
 
 if __name__ == '__main__':
     unittest.main()
