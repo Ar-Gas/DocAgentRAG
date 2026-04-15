@@ -3,6 +3,7 @@
     <SearchToolbar
       v-model="filters"
       :stats="stats"
+      :departments="departments"
       :categories="categories"
       :loading="searchLoading"
       :can-summarize="workspace.documents.length > 0"
@@ -96,7 +97,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import ClassificationReportDrawer from '@/components/ClassificationReportDrawer.vue'
 import DocumentReader from '@/components/DocumentReader.vue'
@@ -112,6 +113,9 @@ const WORKSPACE_RETRIEVAL_VERSION = import.meta.env.VITE_WORKSPACE_RETRIEVAL_VER
 const createDefaultFilters = () => ({
   query: '',
   mode: 'hybrid',
+  visibility_scope: '',
+  department_id: '',
+  business_category_id: '',
   limit: 12,
   alpha: 0.5,
   use_rerank: false,
@@ -120,7 +124,6 @@ const createDefaultFilters = () => ({
   expansion_method: 'llm',
   file_types: [],
   filename: '',
-  classification: '',
   date_range: []
 })
 
@@ -134,7 +137,9 @@ const emptyWorkspace = () => ({
 
 const filters = ref(createDefaultFilters())
 const stats = ref({})
-const categories = ref([])
+const departments = ref([])
+const systemCategories = ref([])
+const departmentCategories = ref([])
 const topicTree = ref({ topics: [], total_documents: 0 })
 const workspace = ref(emptyWorkspace())
 const selectedDocumentId = ref('')
@@ -164,6 +169,9 @@ const buildSearchRequest = () => ({
   query: filters.value.query?.trim() || '',
   mode: filters.value.mode,
   retrieval_version: WORKSPACE_RETRIEVAL_VERSION,
+  visibility_scope: filters.value.visibility_scope || null,
+  department_id: filters.value.department_id || null,
+  business_category_id: filters.value.business_category_id || null,
   limit: filters.value.limit,
   alpha: filters.value.alpha,
   use_rerank: filters.value.use_rerank,
@@ -172,17 +180,50 @@ const buildSearchRequest = () => ({
   expansion_method: filters.value.expansion_method,
   file_types: filters.value.file_types || [],
   filename: filters.value.filename?.trim() || null,
-  classification: filters.value.classification || null,
   date_from: filters.value.date_range?.[0] || null,
   date_to: filters.value.date_range?.[1] || null,
   group_by_document: true
+})
+
+const categories = computed(() => {
+  const merged = [...systemCategories.value, ...departmentCategories.value]
+  const seen = new Set()
+
+  return merged.filter((category) => {
+    const id = String(category?.id || '').trim()
+    if (!id || seen.has(id)) {
+      return false
+    }
+    seen.add(id)
+    return true
+  })
+})
+
+const selectedDepartmentName = computed(() => {
+  const department = departments.value.find(
+    (item) => String(item.id) === String(filters.value.department_id || ''),
+  )
+  return department?.name || ''
+})
+
+const selectedCategoryName = computed(() => {
+  const category = categories.value.find(
+    (item) => String(item.id) === String(filters.value.business_category_id || ''),
+  )
+  return category?.name || ''
 })
 
 const buildWorkspaceLabel = () => {
   const parts = [
     filters.value.query,
     filters.value.filename,
-    filters.value.classification,
+    filters.value.visibility_scope === 'public'
+      ? '公共文档'
+      : filters.value.visibility_scope === 'department'
+        ? '部门文档'
+        : '',
+    selectedDepartmentName.value,
+    selectedCategoryName.value,
     (filters.value.file_types || []).join(' ')
   ].filter(Boolean).join(' / ')
   return parts || '当前检索结果'
@@ -191,17 +232,29 @@ const buildWorkspaceLabel = () => {
 const loadWorkspaceChrome = async () => {
   topicLoading.value = true
   try {
-    const [statsRes, categoriesRes, topicRes] = await Promise.all([
+    const [statsRes, departmentsRes, systemCategoriesRes, topicRes] = await Promise.all([
       api.getStats(),
-      api.getCategories(),
+      api.getDepartments(),
+      api.getSystemCategories(),
       api.getTopicTree()
     ])
     stats.value = statsRes.data || {}
-    categories.value = categoriesRes.data?.categories || []
+    departments.value = departmentsRes.data || []
+    systemCategories.value = systemCategoriesRes.data || []
     topicTree.value = topicRes.data || { topics: [], total_documents: 0 }
   } finally {
     topicLoading.value = false
   }
+}
+
+const loadDepartmentCategories = async (departmentId) => {
+  if (!departmentId) {
+    departmentCategories.value = []
+    return
+  }
+
+  const response = await api.getDepartmentCategories(departmentId)
+  departmentCategories.value = response.data || []
 }
 
 const loadDocumentReader = async (documentId, anchorBlockId = null) => {
@@ -315,6 +368,7 @@ const rebuildTopicTree = async () => {
 
 const resetWorkspace = () => {
   filters.value = createDefaultFilters()
+  departmentCategories.value = []
   workspace.value = emptyWorkspace()
   selectedDocumentId.value = ''
   readerPayload.value = null
@@ -327,6 +381,21 @@ const resetWorkspace = () => {
 onMounted(() => {
   loadWorkspaceChrome()
 })
+
+watch(
+  () => filters.value.department_id,
+  async (departmentId) => {
+    await loadDepartmentCategories(departmentId)
+    if (
+      filters.value.business_category_id &&
+      !categories.value.some(
+        (category) => String(category.id) === String(filters.value.business_category_id),
+      )
+    ) {
+      filters.value.business_category_id = ''
+    }
+  },
+)
 </script>
 
 <style scoped lang="scss">

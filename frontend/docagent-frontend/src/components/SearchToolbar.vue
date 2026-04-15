@@ -75,18 +75,48 @@
       </label>
 
       <label class="field-block">
+        <span>一级分类</span>
+        <el-select
+          :model-value="form.visibility_scope"
+          clearable
+          placeholder="全部可见文档"
+          @update:model-value="updateField('visibility_scope', $event || '')"
+        >
+          <el-option label="公共文档" value="public" />
+          <el-option label="部门文档" value="department" />
+        </el-select>
+      </label>
+
+      <label class="field-block">
+        <span>归属部门</span>
+        <el-select
+          :model-value="form.department_id"
+          clearable
+          placeholder="全部部门"
+          @update:model-value="updateField('department_id', $event || '')"
+        >
+          <el-option
+            v-for="department in departments"
+            :key="department.id"
+            :label="department.name"
+            :value="department.id"
+          />
+        </el-select>
+      </label>
+
+      <label class="field-block">
         <span>业务分类</span>
         <el-select
-          :model-value="form.classification"
+          :model-value="form.business_category_id"
           clearable
-          placeholder="全部分类"
-          @update:model-value="updateField('classification', $event)"
+          placeholder="全部业务分类"
+          @update:model-value="updateField('business_category_id', $event || '')"
         >
           <el-option
             v-for="category in categories"
-            :key="category"
-            :label="category"
-            :value="category"
+            :key="category.id"
+            :label="formatCategoryLabel(category)"
+            :value="category.id"
           />
         </el-select>
       </label>
@@ -170,6 +200,10 @@ const props = defineProps({
     type: Object,
     default: () => ({})
   },
+  departments: {
+    type: Array,
+    default: () => []
+  },
   categories: {
     type: Array,
     default: () => []
@@ -229,6 +263,11 @@ const modeMeta = computed(() => {
 
 const modeTitle = computed(() => modeMeta.value.title)
 const modeDescription = computed(() => modeMeta.value.description)
+
+const formatCategoryLabel = (category) => {
+  const scopeLabel = category?.scope_type === 'department' ? '部门' : '公共'
+  return `${category?.name || category?.id || '未命名分类'} · ${scopeLabel}`
+}
 
 const updateField = (field, value) => {
   emit('update:modelValue', {
@@ -322,7 +361,7 @@ const updateAlpha = (value) => {
 
 .filter-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 

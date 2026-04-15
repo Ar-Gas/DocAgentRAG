@@ -68,9 +68,19 @@ export const api = {
   getRoles: () => request.get('/roles'),
   getUsers: (page = 1, pageSize = 10) => request.get('/users', { params: { page, page_size: pageSize } }),
 
-  uploadFile: (file, onProgress) => {
+  uploadFile: (file, metadata = {}, onProgress) => {
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('visibility_scope', metadata.visibility_scope || 'department')
+    formData.append('owner_department_id', metadata.owner_department_id || '')
+    formData.append(
+      'shared_department_ids',
+      JSON.stringify(metadata.shared_department_ids || []),
+    )
+    formData.append('business_category_id', metadata.business_category_id || '')
+    formData.append('role_restriction', metadata.role_restriction || '')
+    formData.append('confidentiality_level', metadata.confidentiality_level || 'internal')
+    formData.append('document_status', metadata.document_status || 'draft')
     return request.post('/documents/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 300000,
@@ -100,6 +110,14 @@ export const api = {
   },
   getCategories: () => {
     return request.get('/classification/categories')
+  },
+  getSystemCategories: () => {
+    return request.get('/categories/system')
+  },
+  getDepartmentCategories: (departmentId) => {
+    return request.get('/categories/department', {
+      params: { department_id: departmentId },
+    })
   },
   getTopicTree: () => {
     return request.get('/classification/topic-tree')

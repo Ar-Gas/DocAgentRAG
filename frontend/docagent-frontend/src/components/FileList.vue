@@ -38,6 +38,32 @@
         </template>
       </el-table-column>
 
+      <el-table-column label="治理范围" min-width="180">
+        <template #default="{ row }">
+          <div class="governance-cell">
+            <el-tag size="small" :type="row.visibility_scope === 'public' ? 'success' : 'info'">
+              {{ row.visibility_scope === 'public' ? '公共文档' : '部门文档' }}
+            </el-tag>
+            <span>{{ row.owner_department_name || row.owner_department_id || '未归属' }}</span>
+          </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="业务分类" min-width="180">
+        <template #default="{ row }">
+          <span>{{ row.business_category_name || row.business_category_id || '待整理' }}</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="密级 / 状态" min-width="160">
+        <template #default="{ row }">
+          <div class="governance-cell">
+            <span>{{ toConfidentialityLabel(row.confidentiality_level) }}</span>
+            <span>{{ toStatusLabel(row.document_status) }}</span>
+          </div>
+        </template>
+      </el-table-column>
+
       <el-table-column prop="created_at_iso" label="上传时间" width="175" />
 
       <el-table-column label="操作" width="160" fixed="right">
@@ -78,6 +104,24 @@ defineProps({
   loading: { type: Boolean, default: false }
 })
 const emit = defineEmits(['refresh', 'operate-success', 'open-viewer'])
+
+const toConfidentialityLabel = (level) => {
+  const dictionary = {
+    internal: '内部',
+    confidential: '机密',
+    restricted: '严格机密',
+  }
+  return dictionary[level] || '内部'
+}
+
+const toStatusLabel = (status) => {
+  const dictionary = {
+    draft: '草稿',
+    published: '已发布',
+    archived: '已归档',
+  }
+  return dictionary[status] || '草稿'
+}
 
 const handleReclassify = async (row) => {
   row._reclassifying = true
@@ -163,5 +207,13 @@ const handleDelete = async (row) => {
     cursor: not-allowed;
     opacity: 0.72;
   }
+}
+
+.governance-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ink-muted);
 }
 </style>

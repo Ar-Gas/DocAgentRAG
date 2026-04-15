@@ -27,6 +27,15 @@
               {{ document.filename }}
             </span>
             <span class="classification">{{ document.classification_result || '未分类' }}</span>
+            <div class="governance-row">
+              <span class="governance-badge">{{ toVisibilityLabel(document.visibility_scope) }}</span>
+              <span v-if="document.business_category_name || document.business_category_id" class="governance-badge is-blue">
+                {{ document.business_category_name || document.business_category_id }}
+              </span>
+              <span v-if="document.owner_department_name || document.owner_department_id" class="governance-badge is-gray">
+                {{ document.owner_department_name || document.owner_department_id }}
+              </span>
+            </div>
           </div>
           <div class="card-right">
             <div class="card-badges">
@@ -147,6 +156,7 @@ watch(
 )
 
 const toPercent = (value) => `${((value || 0) * 100).toFixed(1)}%`
+const toVisibilityLabel = (scope) => (scope === 'public' ? '公共文档' : '部门文档')
 
 // 先按 block_id 去重，再按内容前 80 字符去重
 const deduplicatedBlocks = (document) => {
@@ -252,6 +262,36 @@ const highlightSnippet = (text, query) =>
 .classification {
   font-size: 11px;
   color: var(--ink-muted);
+}
+
+.governance-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.governance-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: #166534;
+  border: 1px solid #BBF7D0;
+  background: #F0FDF4;
+
+  &.is-blue {
+    color: #1D4ED8;
+    border-color: #BFDBFE;
+    background: #EFF6FF;
+  }
+
+  &.is-gray {
+    color: var(--ink-muted);
+    border-color: var(--line);
+    background: var(--bg-subtle);
+  }
 }
 
 .card-right {

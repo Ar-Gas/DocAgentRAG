@@ -5,6 +5,9 @@ const apiMocks = vi.hoisted(() => ({
   workspaceSearch: vi.fn(),
   getStats: vi.fn(),
   getCategories: vi.fn(),
+  getDepartments: vi.fn(),
+  getSystemCategories: vi.fn(),
+  getDepartmentCategories: vi.fn(),
   getTopicTree: vi.fn(),
   summarizeResults: vi.fn(),
   generateClassificationTable: vi.fn(),
@@ -61,6 +64,9 @@ describe('SearchPage', () => {
     })
     apiMocks.getStats.mockResolvedValue({ data: {} })
     apiMocks.getCategories.mockResolvedValue({ data: { categories: [] } })
+    apiMocks.getDepartments.mockResolvedValue({ data: [] })
+    apiMocks.getSystemCategories.mockResolvedValue({ data: [] })
+    apiMocks.getDepartmentCategories.mockResolvedValue({ data: [] })
     apiMocks.getTopicTree.mockResolvedValue({ data: { topics: [], total_documents: 0 } })
     apiMocks.summarizeResults.mockResolvedValue({ data: null })
     apiMocks.generateClassificationTable.mockResolvedValue({ data: null })
@@ -100,5 +106,21 @@ describe('SearchPage', () => {
       retrieval_version: 'legacy',
     }), expect.any(Object))
     expect(apiMocks.workspaceSearch).not.toHaveBeenCalled()
+  })
+
+  it('includes visibility and department filters in workspace search requests', async () => {
+    const wrapper = await mountSearchPage('block')
+
+    wrapper.vm.filters.visibility_scope = 'department'
+    wrapper.vm.filters.department_id = 'dept-fin'
+    wrapper.vm.filters.business_category_id = 'cat-budget'
+    await wrapper.find('.go').trigger('click')
+    await flushPromises()
+
+    expect(apiMocks.workspaceSearch).toHaveBeenCalledWith(expect.objectContaining({
+      visibility_scope: 'department',
+      department_id: 'dept-fin',
+      business_category_id: 'cat-budget',
+    }))
   })
 })
