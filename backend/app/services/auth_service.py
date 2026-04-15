@@ -15,6 +15,14 @@ class AuthService:
         digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
         return f"{salt.hex()}${digest.hex()}"
 
+    def _to_public_user(self, user: dict) -> dict:
+        return {
+            "id": user["id"],
+            "username": user["username"],
+            "display_name": user["display_name"],
+            "role_code": user["role_code"],
+        }
+
     def verify_password(self, password: str, password_hash: str) -> bool:
         try:
             salt_hex, digest_hex = password_hash.split("$", 1)
@@ -68,7 +76,7 @@ class AuthService:
         user = self.store.get_user(session["user_id"])
         if not user or user.get("status") != "enabled":
             return None
-        return user
+        return self._to_public_user(user)
 
     def logout(self, token: str) -> None:
         self.store.delete_auth_session(token)

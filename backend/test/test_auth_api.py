@@ -7,6 +7,48 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api.auth as auth_api  # noqa: E402
 import api.dependencies as api_dependencies  # noqa: E402
+from app.services.auth_service import AuthService  # noqa: E402
+
+
+INTERNAL_USER_FIELDS = {
+    "password_hash",
+    "status",
+    "primary_department_id",
+    "last_login_at",
+    "external_identity_id",
+    "created_at",
+    "updated_at",
+}
+
+
+class FakeAuthStore:
+    def __init__(self, user: dict):
+        self.user = dict(user)
+        self.sessions = {}
+
+    def get_user_by_username(self, username: str):
+        if username == self.user.get("username"):
+            return dict(self.user)
+        return None
+
+    def create_auth_session(self, user_id: str, token: str, expires_at: str):
+        self.sessions[token] = {"token": token, "user_id": user_id, "expires_at": expires_at}
+        return token
+
+    def touch_user_last_login(self, user_id: str, last_login_at: str):
+        if user_id == self.user.get("id"):
+            self.user["last_login_at"] = last_login_at
+
+    def get_auth_session(self, token: str):
+        return self.sessions.get(token)
+
+    def get_user(self, user_id: str):
+        if user_id == self.user.get("id"):
+            return dict(self.user)
+        return None
+
+    def delete_auth_session(self, token: str):
+        self.sessions.pop(token, None)
 
 
 def test_login_api_returns_token_and_user_payload(monkeypatch):
@@ -97,3 +139,72 @@ def test_change_password_calls_service(monkeypatch):
     assert body["code"] == 200
     assert body["message"] == "密码修改成功"
     mock_change_password.assert_called_once_with("user-1", "old123", "new123")
+
+
+def test_login_api_hides_internal_user_fields(monkeypatch):
+    raw_user = {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "employee",
+        "status": "enabled",
+        "primary_department_id": "dept-1",
+        "last_login_at": "2026-04-15T00:00:00",
+        "external_identity_id": None,
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-04-15T00:00:00",
+    }
+    store = FakeAuthStore(raw_user)
+    service = AuthService(store=store)
+    store.user["password_hash"] = service.hash_password("secret123")
+    monkeypatch.setattr(auth_api, "auth_service", service)
+
+    body = asyncio.run(
+        auth_api.login(auth_api.LoginRequest(username="alice", password="secret123"))
+    )
+    user = body["data"]["user"]
+
+    assert body["code"] == 200
+    assert user == {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "employee",
+    }
+    assert not (INTERNAL_USER_FIELDS & set(user.keys()))
+
+
+def test_me_api_hides_internal_user_fields_from_dependency(monkeypatch):
+    raw_user = {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "employee",
+        "password_hash": "salt$hash",
+        "status": "enabled",
+        "primary_department_id": "dept-1",
+        "last_login_at": "2026-04-15T00:00:00",
+        "external_identity_id": None,
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-04-15T00:00:00",
+    }
+    store = FakeAuthStore(raw_user)
+    service = AuthService(store=store)
+    store.create_auth_session(
+        user_id="user-1",
+        token="token-1",
+        expires_at="2099-01-01T00:00:00",
+    )
+    monkeypatch.setattr(api_dependencies, "auth_service", service)
+
+    current_user = asyncio.run(api_dependencies.require_authenticated_user("Bearer token-1"))
+    body = asyncio.run(auth_api.me(current_user=current_user))
+
+    assert body["code"] == 200
+    assert body["data"] == {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "employee",
+    }
+    assert not (INTERNAL_USER_FIELDS & set(body["data"].keys()))
