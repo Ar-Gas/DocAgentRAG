@@ -137,7 +137,7 @@ def test_workspace_search_groups_results_and_applies_filters(monkeypatch):
 
     assert captured == {
         "query": "预算",
-        "limit": 15,
+        "limit": 45,
         "alpha": 0.35,
         "use_rerank": False,
         "file_types": ["pdf"],
@@ -366,6 +366,55 @@ def test_search_filters_hidden_documents_for_current_user(monkeypatch):
     assert [item["document_id"] for item in payload["results"]] == ["doc-visible"]
 
 
+def test_search_backfills_visible_results_past_hidden_page_budget(monkeypatch):
+    service = RetrievalService()
+    requested_limits = []
+
+    def fake_search_documents(query, limit=10, use_rerank=False, file_types=None):
+        requested_limits.append(limit)
+        return [
+            {"document_id": "doc-hidden", "filename": "salary.xlsx"},
+            {"document_id": "doc-visible", "filename": "budget.pdf"},
+        ]
+
+    monkeypatch.setattr(retrieval_service_module, "search_documents", fake_search_documents)
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-visible",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-fin",
+                "shared_department_ids": [],
+            },
+            {
+                "id": "doc-hidden",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-hr",
+                "shared_department_ids": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "authorization_service",
+        Mock(list_visible_document_ids=lambda current_user, documents: {"doc-visible"}),
+        raising=False,
+    )
+
+    payload = service.search(
+        "预算",
+        limit=1,
+        use_rerank=False,
+        current_user={"id": "user-1", "role_code": "employee"},
+    )
+
+    assert payload["total"] == 1
+    assert [item["document_id"] for item in payload["results"]] == ["doc-visible"]
+    assert requested_limits == [50]
+
+
 def test_get_document_chunks_rejects_hidden_document(monkeypatch):
     service = RetrievalService()
     monkeypatch.setattr(
@@ -557,6 +606,97 @@ def test_workspace_search_metadata_fallback_count_excludes_hidden_documents(monk
 
     assert payload["meta"]["metadata_fallback_used"] is True
     assert payload["meta"]["metadata_fallback_count"] == 1
+
+
+def test_workspace_search_metadata_fallback_count_respects_governance_filters(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+    service = RetrievalService()
+    monkeypatch.setattr(service, "_run_workspace_query_search", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        service,
+        "_search_workspace_metadata",
+        lambda **kwargs: [
+            {
+                "document_id": "doc-target",
+                "filename": "budget.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.91,
+                "content_snippet": "预算审批",
+                "chunk_index": 0,
+            },
+            {
+                "document_id": "doc-other-category",
+                "filename": "procurement.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.89,
+                "content_snippet": "采购立项",
+                "chunk_index": 0,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-target",
+                "filename": "budget.pdf",
+                "file_type": ".pdf",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-fin",
+                "shared_department_ids": [],
+                "business_category_id": "cat-budget",
+            },
+            {
+                "id": "doc-other-category",
+                "filename": "procurement.pdf",
+                "file_type": ".pdf",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-fin",
+                "shared_department_ids": [],
+                "business_category_id": "cat-procurement",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "budget.pdf" if document_id == "doc-target" else "procurement.pdf",
+            "file_type": ".pdf",
+            "created_at_iso": "2026-04-15T10:00:00",
+            "visibility_scope": "department",
+            "owner_department_id": "dept-fin",
+            "shared_department_ids": [],
+            "business_category_id": "cat-budget" if document_id == "doc-target" else "cat-procurement",
+        },
+    )
+    monkeypatch.setattr(retrieval_service_module, "get_document_content_record", lambda document_id: {})
+    monkeypatch.setattr(retrieval_service_module, "list_document_segments", lambda document_id: [])
+    monkeypatch.setattr(
+        service,
+        "authorization_service",
+        Mock(
+            list_visible_document_ids=lambda current_user, documents: {
+                str(doc.get("id"))
+                for doc in documents
+                if doc.get("id")
+            }
+        ),
+        raising=False,
+    )
+
+    payload = service.workspace_search(
+        query="预算",
+        mode="hybrid",
+        business_category_id="cat-budget",
+        current_user={"id": "user-1", "role_code": "employee"},
+    )
+
+    assert payload["meta"]["metadata_fallback_used"] is True
+    assert payload["meta"]["metadata_fallback_count"] == 1
+    assert [item["document_id"] for item in payload["results"]] == ["doc-target"]
 
 
 def test_workspace_search_block_mode_returns_documents_and_compatibility_results(monkeypatch):
@@ -890,6 +1030,104 @@ def test_workspace_search_stream_rerank_updates_documents_payload(monkeypatch):
     reranked_payload = json.loads(reranked_frames[0].split("data: ", 1)[1])
     assert reranked_payload["documents"][0]["document_id"] == "doc-2"
     assert reranked_payload["results"][0]["document_id"] == "doc-2"
+
+
+def test_smart_search_total_candidates_excludes_hidden_documents(monkeypatch):
+    service = RetrievalService()
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "hybrid_search",
+        lambda **kwargs: [
+            {
+                "document_id": "doc-hidden",
+                "filename": "salary.xlsx",
+                "file_type": ".xlsx",
+                "similarity": 0.98,
+                "content_snippet": "薪酬保密",
+                "chunk_index": 0,
+            },
+            {
+                "document_id": "doc-visible",
+                "filename": "budget.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.92,
+                "content_snippet": "预算审批",
+                "chunk_index": 0,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-visible",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-fin",
+                "shared_department_ids": [],
+            },
+            {
+                "id": "doc-hidden",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-hr",
+                "shared_department_ids": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "authorization_service",
+        Mock(list_visible_document_ids=lambda current_user, documents: {"doc-visible"}),
+        raising=False,
+    )
+    monkeypatch.setattr(smart_retrieval_module, "is_llm_available", lambda: False)
+
+    payload = service.smart(
+        query="预算",
+        limit=1,
+        use_query_expansion=False,
+        use_llm_rerank=False,
+        expansion_method="keyword",
+        current_user={"id": "user-1", "role_code": "employee"},
+    )
+
+    assert payload["total"] == 1
+    assert payload["meta"]["total_candidates"] == 1
+    assert [item["document_id"] for item in payload["results"]] == ["doc-visible"]
+
+
+def test_smart_multimodal_retrieval_uses_search_func_for_candidates(monkeypatch):
+    monkeypatch.setattr(smart_retrieval_module, "is_llm_available", lambda: False)
+
+    captured = {}
+
+    def search_func(query, limit=10):
+        captured["query"] = query
+        captured["limit"] = limit
+        return [
+            {
+                "document_id": "doc-visible",
+                "filename": "budget.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.92,
+                "content_snippet": "预算审批",
+                "chunk_index": 0,
+            }
+        ]
+
+    results, meta = smart_retrieval_module.smart_multimodal_retrieval(
+        query="预算",
+        search_func=search_func,
+        limit=2,
+        image_url="https://example.com/demo.png",
+        use_query_expansion=False,
+        use_llm_rerank=False,
+        expansion_method="keyword",
+    )
+
+    assert captured == {"query": "预算", "limit": 4}
+    assert meta["total_candidates"] == 1
+    assert [item["document_id"] for item in results] == ["doc-visible"]
 
 
 def test_workspace_search_block_mode_forwards_filename_filter(monkeypatch):

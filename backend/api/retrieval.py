@@ -373,13 +373,16 @@ async def multimodal_search_upload_api(
             raise BusinessException(code=3002, detail=f"图片处理失败: {str(e)}")
     
     try:
-        results = multimodal_search(
-            query=query,
-            image_path=image_path,
-            limit=limit,
-            file_types=file_type_list
+        results = retrieval_service.collect_visible_results(
+            lambda fetch_limit: multimodal_search(
+                query=query,
+                image_path=image_path,
+                limit=fetch_limit,
+                file_types=file_type_list,
+            ),
+            limit,
+            current_user,
         )
-        results = retrieval_service.filter_result_items_for_user(results, current_user)
         
         logger.info(f"多模态检索(上传)完成: query='{query[:50] if query else ''}', "
                     f"has_image={bool(image)}, results={len(results)}")
@@ -544,15 +547,18 @@ async def hybrid_multimodal_search_api(
     
     alpha = max(0.0, min(1.0, request.alpha))
     
-    results = hybrid_multimodal_search(
-        query=request.query,
-        image_url=request.image_url,
-        limit=request.limit,
-        alpha=alpha,
-        use_rerank=request.use_rerank,
-        file_types=request.file_types
+    results = retrieval_service.collect_visible_results(
+        lambda fetch_limit: hybrid_multimodal_search(
+            query=request.query,
+            image_url=request.image_url,
+            limit=fetch_limit,
+            alpha=alpha,
+            use_rerank=request.use_rerank,
+            file_types=request.file_types,
+        ),
+        request.limit,
+        current_user,
     )
-    results = retrieval_service.filter_result_items_for_user(results, current_user)
     
     logger.info(f"混合多模态检索完成: query='{request.query[:50] if request.query else ''}', "
                 f"has_image={bool(request.image_url)}, alpha={alpha}, results={len(results)}")
@@ -614,14 +620,18 @@ async def smart_multimodal_search_api(
     
     try:
         def search_wrapper(q, limit=10):
-            return hybrid_multimodal_search(
-                query=q,
-                image_url=image_url,
-                image_path=image_path,
-                limit=limit,
-                alpha=0.5,
-                use_rerank=False,
-                file_types=file_type_list
+            return retrieval_service.collect_visible_results(
+                lambda fetch_limit: hybrid_multimodal_search(
+                    query=q,
+                    image_url=image_url,
+                    image_path=image_path,
+                    limit=fetch_limit,
+                    alpha=0.5,
+                    use_rerank=False,
+                    file_types=file_type_list,
+                ),
+                limit,
+                current_user,
             )
         
         results, meta_info = smart_multimodal_retrieval(

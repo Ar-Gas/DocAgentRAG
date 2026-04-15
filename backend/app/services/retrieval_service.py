@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from config import DOUBAO_API_KEY, DOUBAO_DEFAULT_LLM_MODEL
 from app.services.authorization_service import AuthorizationService
@@ -7,7 +7,6 @@ from app.services.errors import AppServiceError
 from utils.logger import get_logger, log_retrieval
 from utils.search_cache import get_search_cache
 from utils.retriever import (
-    batch_search_documents,
     get_document_by_id,
     get_ready_block_document_ids,
     get_query_parser,
@@ -35,6 +34,9 @@ from utils.storage import (
 
 
 class RetrievalService:
+    _MAX_VISIBLE_RESULT_FETCH = 1000
+    _VISIBLE_RESULT_FETCH_FLOOR = 50
+
     def __init__(self):
         self.authorization_service = AuthorizationService()
 
@@ -47,8 +49,16 @@ class RetrievalService:
         current_user: dict | None = None,
     ) -> Dict:
         self._ensure_query(query)
-        results = search_documents(query, limit=limit, use_rerank=use_rerank, file_types=file_types)
-        results = self.filter_result_items_for_user(results, current_user)
+        results = self.collect_visible_results(
+            lambda fetch_limit: search_documents(
+                query,
+                limit=fetch_limit,
+                use_rerank=use_rerank,
+                file_types=file_types,
+            ),
+            limit,
+            current_user,
+        )
         return {"query": query, "total": len(results), "results": results}
 
     def hybrid(
@@ -61,8 +71,17 @@ class RetrievalService:
         current_user: dict | None = None,
     ) -> Dict:
         self._ensure_query(query)
-        results = hybrid_search(query=query, limit=limit, alpha=alpha, use_rerank=use_rerank, file_types=file_types)
-        results = self.filter_result_items_for_user(results, current_user)
+        results = self.collect_visible_results(
+            lambda fetch_limit: hybrid_search(
+                query=query,
+                limit=fetch_limit,
+                alpha=alpha,
+                use_rerank=use_rerank,
+                file_types=file_types,
+            ),
+            limit,
+            current_user,
+        )
         return {"query": query, "total": len(results), "alpha": alpha, "results": results}
 
     def keyword(
@@ -73,8 +92,15 @@ class RetrievalService:
         current_user: dict | None = None,
     ) -> Dict:
         self._ensure_query(query)
-        results = keyword_search(query=query, limit=limit, file_types=file_types)
-        results = self.filter_result_items_for_user(results, current_user)
+        results = self.collect_visible_results(
+            lambda fetch_limit: keyword_search(
+                query=query,
+                limit=fetch_limit,
+                file_types=file_types,
+            ),
+            limit,
+            current_user,
+        )
         return {"query": query, "total": len(results), "results": results}
 
     def smart(
@@ -86,16 +112,25 @@ class RetrievalService:
         expansion_method: str,
         file_types: Optional[List[str]] = None,
         current_user: dict | None = None,
+        visible_document_ids: set[str] | None = None,
     ) -> Dict:
         self._ensure_query(query)
+        scoped_visible_document_ids = (
+            visible_document_ids if visible_document_ids is not None else self._visible_document_ids(current_user)
+        )
 
         def search_wrapper(expanded_query: str, limit: int = 10):
-            return hybrid_search(
-                query=expanded_query,
-                limit=limit,
-                alpha=0.5,
-                use_rerank=False,
-                file_types=file_types,
+            return self.collect_visible_results(
+                lambda fetch_limit: hybrid_search(
+                    query=expanded_query,
+                    limit=fetch_limit,
+                    alpha=0.5,
+                    use_rerank=False,
+                    file_types=file_types,
+                ),
+                limit,
+                current_user,
+                visible_document_ids=scoped_visible_document_ids,
             )
 
         results, meta_info = smart_retrieval(
@@ -106,7 +141,7 @@ class RetrievalService:
             use_llm_rerank=use_llm_rerank,
             expansion_method=expansion_method,
         )
-        results = self.filter_result_items_for_user(results, current_user)
+        results = self._filter_items_by_document_ids(results, scoped_visible_document_ids)[:limit]
         return {
             "query": query,
             "total": len(results),
@@ -122,10 +157,17 @@ class RetrievalService:
     def batch(self, queries: List[str], limit: int, current_user: dict | None = None) -> Dict:
         if not queries:
             raise AppServiceError(3002, "查询列表不能为空")
-        results = batch_search_documents(queries, limit=limit)
         filtered_results = [
-            self.filter_result_items_for_user(result_items, current_user)
-            for result_items in results
+            self.collect_visible_results(
+                lambda fetch_limit, query=query: search_documents(
+                    query,
+                    limit=fetch_limit,
+                    use_rerank=False,
+                ),
+                limit,
+                current_user,
+            )
+            for query in queries
         ]
         return {
             "total_queries": len(queries),
@@ -228,8 +270,16 @@ class RetrievalService:
     ) -> Dict:
         if not query and not image_url:
             raise AppServiceError(3002, "查询文本和图片URL至少需要提供一个")
-        results = multimodal_search(query=query, image_url=image_url, limit=limit, file_types=file_types)
-        results = self.filter_result_items_for_user(results, current_user)
+        results = self.collect_visible_results(
+            lambda fetch_limit: multimodal_search(
+                query=query,
+                image_url=image_url,
+                limit=fetch_limit,
+                file_types=file_types,
+            ),
+            limit,
+            current_user,
+        )
         return {"query": query, "has_image": bool(image_url), "total": len(results), "results": results}
 
     def search_highlight(
@@ -243,15 +293,25 @@ class RetrievalService:
         current_user: dict | None = None,
     ) -> Dict:
         self._ensure_query(query)
-        results, meta_info = search_with_highlight(
-            query=query,
-            search_type=search_type,
-            limit=limit,
-            alpha=alpha,
-            use_rerank=use_rerank,
-            file_types=file_types,
+        meta_info: Dict[str, Any] = {}
+
+        def fetch_highlighted_results(fetch_limit: int) -> List[Dict[str, Any]]:
+            nonlocal meta_info
+            raw_results, meta_info = search_with_highlight(
+                query=query,
+                search_type=search_type,
+                limit=fetch_limit,
+                alpha=alpha,
+                use_rerank=use_rerank,
+                file_types=file_types,
+            )
+            return raw_results
+
+        results = self.collect_visible_results(
+            fetch_highlighted_results,
+            limit,
+            current_user,
         )
-        results = self.filter_result_items_for_user(results, current_user)
         return {
             "query": query,
             "search_type": search_type,
@@ -438,13 +498,17 @@ class RetrievalService:
                 use_llm_rerank=use_llm_rerank,
                 expansion_method=expansion_method,
                 file_types=normalized_file_types,
+                current_user=current_user,
+                visible_document_ids=visible_document_ids,
             )
             fallback_results = self._search_workspace_metadata(
                 query=normalized_query,
                 file_types=normalized_file_types,
                 limit=normalized_limit * 2,
             )
-            visible_fallback_count = len(self.filter_result_items_for_user(fallback_results, current_user))
+            visible_fallback_count = len(
+                self._filter_items_by_document_ids(fallback_results, visible_document_ids)
+            )
             raw_results = self._merge_workspace_results(raw_results, fallback_results)
             if fallback_results:
                 meta = {
@@ -584,11 +648,38 @@ class RetrievalService:
         use_llm_rerank: bool,
         expansion_method: str,
         file_types: List[str],
+        current_user: dict | None,
+        visible_document_ids: set[str],
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         if mode == "keyword":
-            return keyword_search(query=query, limit=limit, file_types=file_types), {}
+            return (
+                self.collect_visible_results(
+                    lambda fetch_limit: keyword_search(
+                        query=query,
+                        limit=fetch_limit,
+                        file_types=file_types,
+                    ),
+                    limit,
+                    current_user,
+                    visible_document_ids=visible_document_ids,
+                ),
+                {},
+            )
         if mode == "vector":
-            return search_documents(query, limit=limit, use_rerank=use_rerank, file_types=file_types), {}
+            return (
+                self.collect_visible_results(
+                    lambda fetch_limit: search_documents(
+                        query,
+                        limit=fetch_limit,
+                        use_rerank=use_rerank,
+                        file_types=file_types,
+                    ),
+                    limit,
+                    current_user,
+                    visible_document_ids=visible_document_ids,
+                ),
+                {},
+            )
         if mode == "smart":
             result = self.smart(
                 query=query,
@@ -597,15 +688,25 @@ class RetrievalService:
                 use_llm_rerank=use_llm_rerank,
                 expansion_method=expansion_method,
                 file_types=file_types,
+                current_user=current_user,
+                visible_document_ids=visible_document_ids,
             )
             return result.get("results", []), result.get("meta", {})
-        return hybrid_search(
-            query=query,
-            limit=limit,
-            alpha=alpha,
-            use_rerank=use_rerank,
-            file_types=file_types,
-        ), {"alpha": alpha}
+        return (
+            self.collect_visible_results(
+                lambda fetch_limit: hybrid_search(
+                    query=query,
+                    limit=fetch_limit,
+                    alpha=alpha,
+                    use_rerank=use_rerank,
+                    file_types=file_types,
+                ),
+                limit,
+                current_user,
+                visible_document_ids=visible_document_ids,
+            ),
+            {"alpha": alpha},
+        )
 
     def _build_metadata_only_results(self) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
@@ -860,6 +961,44 @@ class RetrievalService:
     ) -> List[Dict[str, Any]]:
         visible_document_ids = self._visible_document_ids(current_user)
         return self._filter_items_by_document_ids(results, visible_document_ids)
+
+    def collect_visible_results(
+        self,
+        fetch_page: Callable[[int], List[Dict[str, Any]]],
+        limit: int,
+        current_user: dict | None,
+        *,
+        visible_document_ids: set[str] | None = None,
+    ) -> List[Dict[str, Any]]:
+        scoped_visible_document_ids = (
+            visible_document_ids if visible_document_ids is not None else self._visible_document_ids(current_user)
+        )
+        if limit <= 0 or not scoped_visible_document_ids:
+            return []
+
+        fetch_limit = min(
+            self._MAX_VISIBLE_RESULT_FETCH,
+            max(
+                limit,
+                limit * 3,
+                self._VISIBLE_RESULT_FETCH_FLOOR if limit <= 5 else 0,
+            ),
+        )
+        previous_raw_count = -1
+
+        while True:
+            raw_results = list(fetch_page(fetch_limit) or [])
+            filtered_results = self._filter_items_by_document_ids(raw_results, scoped_visible_document_ids)
+            if len(filtered_results) >= limit:
+                return filtered_results[:limit]
+            if (
+                len(raw_results) < fetch_limit
+                or fetch_limit >= self._MAX_VISIBLE_RESULT_FETCH
+                or len(raw_results) == previous_raw_count
+            ):
+                return filtered_results[:limit]
+            previous_raw_count = len(raw_results)
+            fetch_limit = min(self._MAX_VISIBLE_RESULT_FETCH, fetch_limit * 2)
 
     @staticmethod
     def _filter_items_by_document_ids(
