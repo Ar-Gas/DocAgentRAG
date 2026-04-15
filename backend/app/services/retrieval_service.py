@@ -9,7 +9,6 @@ from utils.search_cache import get_search_cache
 from utils.retriever import (
     batch_search_documents,
     get_document_by_id,
-    get_document_stats,
     get_ready_block_document_ids,
     get_query_parser,
     hybrid_search,
@@ -39,22 +38,55 @@ class RetrievalService:
     def __init__(self):
         self.authorization_service = AuthorizationService()
 
-    def search(self, query: str, limit: int, use_rerank: bool, file_types: Optional[List[str]] = None) -> Dict:
+    def search(
+        self,
+        query: str,
+        limit: int,
+        use_rerank: bool,
+        file_types: Optional[List[str]] = None,
+        current_user: dict | None = None,
+    ) -> Dict:
         self._ensure_query(query)
         results = search_documents(query, limit=limit, use_rerank=use_rerank, file_types=file_types)
+        results = self.filter_result_items_for_user(results, current_user)
         return {"query": query, "total": len(results), "results": results}
 
-    def hybrid(self, query: str, limit: int, alpha: float, use_rerank: bool, file_types: Optional[List[str]] = None) -> Dict:
+    def hybrid(
+        self,
+        query: str,
+        limit: int,
+        alpha: float,
+        use_rerank: bool,
+        file_types: Optional[List[str]] = None,
+        current_user: dict | None = None,
+    ) -> Dict:
         self._ensure_query(query)
         results = hybrid_search(query=query, limit=limit, alpha=alpha, use_rerank=use_rerank, file_types=file_types)
+        results = self.filter_result_items_for_user(results, current_user)
         return {"query": query, "total": len(results), "alpha": alpha, "results": results}
 
-    def keyword(self, query: str, limit: int, file_types: Optional[List[str]] = None) -> Dict:
+    def keyword(
+        self,
+        query: str,
+        limit: int,
+        file_types: Optional[List[str]] = None,
+        current_user: dict | None = None,
+    ) -> Dict:
         self._ensure_query(query)
         results = keyword_search(query=query, limit=limit, file_types=file_types)
+        results = self.filter_result_items_for_user(results, current_user)
         return {"query": query, "total": len(results), "results": results}
 
-    def smart(self, query: str, limit: int, use_query_expansion: bool, use_llm_rerank: bool, expansion_method: str, file_types: Optional[List[str]] = None) -> Dict:
+    def smart(
+        self,
+        query: str,
+        limit: int,
+        use_query_expansion: bool,
+        use_llm_rerank: bool,
+        expansion_method: str,
+        file_types: Optional[List[str]] = None,
+        current_user: dict | None = None,
+    ) -> Dict:
         self._ensure_query(query)
 
         def search_wrapper(expanded_query: str, limit: int = 10):
@@ -74,6 +106,7 @@ class RetrievalService:
             use_llm_rerank=use_llm_rerank,
             expansion_method=expansion_method,
         )
+        results = self.filter_result_items_for_user(results, current_user)
         return {
             "query": query,
             "total": len(results),
@@ -86,19 +119,32 @@ class RetrievalService:
             },
         }
 
-    def batch(self, queries: List[str], limit: int) -> Dict:
+    def batch(self, queries: List[str], limit: int, current_user: dict | None = None) -> Dict:
         if not queries:
             raise AppServiceError(3002, "查询列表不能为空")
         results = batch_search_documents(queries, limit=limit)
+        filtered_results = [
+            self.filter_result_items_for_user(result_items, current_user)
+            for result_items in results
+        ]
         return {
             "total_queries": len(queries),
             "batch_results": [
-                {"query": query, "total": len(results[index]) if index < len(results) else 0, "results": results[index] if index < len(results) else []}
+                {
+                    "query": query,
+                    "total": len(filtered_results[index]) if index < len(filtered_results) else 0,
+                    "results": filtered_results[index] if index < len(filtered_results) else [],
+                }
                 for index, query in enumerate(queries)
             ],
         }
 
-    def get_document_chunks(self, document_id: str) -> Dict:
+    def get_document_chunks(self, document_id: str, *, current_user: dict | None = None) -> Dict:
+        doc_info = get_document_info(document_id) or {}
+        if not doc_info:
+            raise AppServiceError(1001, f"文档ID: {document_id}")
+        if not self.authorization_service.can_view_document(current_user or {}, doc_info):
+            raise AppServiceError(401, "无权限查看该文档")
         result = get_document_by_id(document_id)
         if not result:
             raise AppServiceError(1001, f"文档ID: {document_id}")
@@ -120,20 +166,30 @@ class RetrievalService:
             ],
         }
 
-    def stats(self) -> Dict:
-        stats = get_document_stats()
-        all_docs = get_all_documents()
+    def stats(self, current_user: dict | None = None) -> Dict:
+        visible_documents = self._visible_documents(current_user)
         segment_document_ids = {
             doc.get("id")
-            for doc in all_docs
+            for doc in visible_documents
             if doc.get("id") and list_document_segments(doc.get("id"))
         }
+        vector_indexed_documents = 0
+        total_chunks = 0
+        file_types: Dict[str, int] = {}
+        for doc in visible_documents:
+            file_type = str(doc.get("file_type") or "")
+            if file_type:
+                file_types[file_type] = file_types.get(file_type, 0) + 1
+            indexed = get_document_by_id(str(doc.get("id")))
+            if indexed:
+                vector_indexed_documents += 1
+                total_chunks += len(indexed.get("chunks") or [])
         return {
-            "total_documents": len(all_docs),
-            "vector_indexed_documents": stats.get("vector_indexed_documents", 0),
+            "total_documents": len(visible_documents),
+            "vector_indexed_documents": vector_indexed_documents,
             "segment_documents": len(segment_document_ids),
-            "total_chunks": stats.get("total_chunks", 0),
-            "file_types": stats.get("file_types", {}),
+            "total_chunks": total_chunks,
+            "file_types": file_types,
         }
 
     def expand_query(self, query: str, method: str) -> Dict:
@@ -162,13 +218,30 @@ class RetrievalService:
             "default_model": DOUBAO_DEFAULT_LLM_MODEL,
         }
 
-    def multimodal(self, query: str, image_url: Optional[str], limit: int, file_types: Optional[List[str]] = None) -> Dict:
+    def multimodal(
+        self,
+        query: str,
+        image_url: Optional[str],
+        limit: int,
+        file_types: Optional[List[str]] = None,
+        current_user: dict | None = None,
+    ) -> Dict:
         if not query and not image_url:
             raise AppServiceError(3002, "查询文本和图片URL至少需要提供一个")
         results = multimodal_search(query=query, image_url=image_url, limit=limit, file_types=file_types)
+        results = self.filter_result_items_for_user(results, current_user)
         return {"query": query, "has_image": bool(image_url), "total": len(results), "results": results}
 
-    def search_highlight(self, query: str, search_type: str, limit: int, alpha: float, use_rerank: bool, file_types: Optional[List[str]] = None) -> Dict:
+    def search_highlight(
+        self,
+        query: str,
+        search_type: str,
+        limit: int,
+        alpha: float,
+        use_rerank: bool,
+        file_types: Optional[List[str]] = None,
+        current_user: dict | None = None,
+    ) -> Dict:
         self._ensure_query(query)
         results, meta_info = search_with_highlight(
             query=query,
@@ -178,6 +251,7 @@ class RetrievalService:
             use_rerank=use_rerank,
             file_types=file_types,
         )
+        results = self.filter_result_items_for_user(results, current_user)
         return {
             "query": query,
             "search_type": search_type,
@@ -186,9 +260,12 @@ class RetrievalService:
             "results": results,
         }
 
-    def summarize_results(self, query: str, results: List[Dict]) -> Dict:
+    def summarize_results(self, query: str, results: List[Dict], current_user: dict | None = None) -> Dict:
         self._ensure_query(query)
-        return summarize_retrieval_results(query, results)
+        return summarize_retrieval_results(
+            query,
+            self.filter_result_items_for_user(results, current_user),
+        )
 
     def regroup_workspace_payload(
         self,
@@ -343,6 +420,7 @@ class RetrievalService:
 
         raw_results: List[Dict[str, Any]] = []
         meta: Dict[str, Any] = {}
+        visible_fallback_count = 0
         if normalized_query:
             raw_results, meta = self._run_workspace_query_search(
                 query=normalized_query,
@@ -360,12 +438,13 @@ class RetrievalService:
                 file_types=normalized_file_types,
                 limit=normalized_limit * 2,
             )
+            visible_fallback_count = len(self.filter_result_items_for_user(fallback_results, current_user))
             raw_results = self._merge_workspace_results(raw_results, fallback_results)
             if fallback_results:
                 meta = {
                     **meta,
                     "metadata_fallback_used": True,
-                    "metadata_fallback_count": len(fallback_results),
+                    "metadata_fallback_count": visible_fallback_count,
                 }
         else:
             raw_results = self._build_metadata_only_results()
@@ -449,6 +528,7 @@ class RetrievalService:
         return {
             "id": actor.get("id"),
             "role_code": actor.get("role_code"),
+            "department_id": actor.get("department_id"),
             "primary_department_id": actor.get("primary_department_id"),
             "department_ids": sorted(str(item) for item in (actor.get("department_ids") or []) if item),
             "collaborative_department_ids": sorted(
@@ -750,6 +830,34 @@ class RetrievalService:
             "segment_count": len(segments),
             "current_segment": current_segment,
         }
+
+    def _visible_documents(self, current_user: dict | None) -> List[Dict[str, Any]]:
+        documents = [doc for doc in get_all_documents() if doc.get("id")]
+        visible_document_ids = self.authorization_service.list_visible_document_ids(current_user or {}, documents)
+        return [
+            doc
+            for doc in documents
+            if str(doc.get("id")) in visible_document_ids
+        ]
+
+    def _visible_document_ids(self, current_user: dict | None) -> set[str]:
+        return {
+            str(doc.get("id"))
+            for doc in self._visible_documents(current_user)
+            if doc.get("id")
+        }
+
+    def filter_result_items_for_user(
+        self,
+        results: List[Dict[str, Any]],
+        current_user: dict | None,
+    ) -> List[Dict[str, Any]]:
+        visible_document_ids = self._visible_document_ids(current_user)
+        return [
+            item
+            for item in (results or [])
+            if str(item.get("document_id") or "") in visible_document_ids
+        ]
 
     @staticmethod
     def _matches_governance_filters(

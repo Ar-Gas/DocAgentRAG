@@ -147,7 +147,8 @@ async def search_document_api(
     query: str = Query(..., description="检索关键词/句子"),
     limit: int = Query(10, ge=1, le=100, description="返回结果数量"),
     use_rerank: bool = Query(False, description="是否使用重排序提升结果质量"),
-    file_types: str = Query(None, description="文件类型过滤，逗号分隔，如 'pdf,docx'")
+    file_types: str = Query(None, description="文件类型过滤，逗号分隔，如 'pdf,docx'"),
+    current_user: dict = Depends(require_authenticated_user),
 ):
     file_type_list = [ft.strip().lstrip('.') for ft in file_types.split(',') if ft.strip()] if file_types else None
     if file_type_list:
@@ -155,44 +156,63 @@ async def search_document_api(
         if invalid:
             raise BusinessException(code=400, detail=f"不支持的文件类型: {invalid}")
     try:
-        result = retrieval_service.search(query, limit, use_rerank, file_type_list)
+        result = retrieval_service.search(query, limit, use_rerank, file_type_list, current_user=current_user)
         logger.info(f"语义检索完成: query='{query[:50]}...', results={result['total']}, rerank={use_rerank}, filters={file_type_list}")
         return success(data=result)
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
 
 @router.post("/hybrid-search", summary="混合检索（向量+BM25关键词）")
-async def hybrid_search_api(request: HybridSearchRequest):
+async def hybrid_search_api(
+    request: HybridSearchRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     try:
         alpha = max(0.0, min(1.0, request.alpha))
-        result = retrieval_service.hybrid(request.query, request.limit, alpha, request.use_rerank, request.file_types)
+        result = retrieval_service.hybrid(
+            request.query,
+            request.limit,
+            alpha,
+            request.use_rerank,
+            request.file_types,
+            current_user=current_user,
+        )
         logger.info(f"混合检索完成: query='{request.query[:50]}...', alpha={alpha}, results={result['total']}")
         return success(data=result)
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
 
 @router.post("/batch-search", summary="批量查询语义检索")
-async def batch_search_document_api(request: BatchSearchRequest):
+async def batch_search_document_api(
+    request: BatchSearchRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     try:
-        result = retrieval_service.batch(request.queries, request.limit)
+        result = retrieval_service.batch(request.queries, request.limit, current_user=current_user)
         logger.info(f"批量检索完成: queries={len(request.queries)}")
         return success(data=result)
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
 
 @router.get("/document/{document_id}", summary="根据ID获取文档全部分片")
-async def get_document_chunks(document_id: str):
+async def get_document_chunks(
+    document_id: str,
+    current_user: dict = Depends(require_authenticated_user),
+):
     try:
-        return success(data=retrieval_service.get_document_chunks(document_id))
+        return success(data=retrieval_service.get_document_chunks(document_id, current_user=current_user))
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
 
 @router.get("/stats", summary="获取文档库统计信息")
-async def get_document_stats_api():
-    return success(data=retrieval_service.stats())
+async def get_document_stats_api(current_user: dict = Depends(require_authenticated_user)):
+    return success(data=retrieval_service.stats(current_user=current_user))
 
 @router.post("/smart-search", summary="智能检索（查询扩展+多查询+LLM重排序）")
-async def smart_search_api(request: SmartSearchRequest):
+async def smart_search_api(
+    request: SmartSearchRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     try:
         result = retrieval_service.smart(
             request.query,
@@ -201,6 +221,7 @@ async def smart_search_api(request: SmartSearchRequest):
             request.use_llm_rerank,
             request.expansion_method,
             request.file_types,
+            current_user=current_user,
         )
         logger.info(
             "智能检索完成: query='%s...', expansions=%s, results=%s",
@@ -283,7 +304,10 @@ class HybridMultimodalSearchRequest(BaseModel):
 
 
 @router.post("/multimodal-search", summary="多模态检索（文本+图片）")
-async def multimodal_search_api(request: MultimodalSearchRequest):
+async def multimodal_search_api(
+    request: MultimodalSearchRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     """
     多模态检索：支持文本+图片联合查询
     
@@ -299,7 +323,13 @@ async def multimodal_search_api(request: MultimodalSearchRequest):
     - file_types: 文件类型过滤
     """
     try:
-        result = retrieval_service.multimodal(request.query, request.image_url, request.limit, request.file_types)
+        result = retrieval_service.multimodal(
+            request.query,
+            request.image_url,
+            request.limit,
+            request.file_types,
+            current_user=current_user,
+        )
         logger.info(f"多模态检索完成: query='{request.query[:50] if request.query else ''}', has_image={bool(request.image_url)}, results={result['total']}")
         return success(data=result)
     except AppServiceError as exc:
@@ -311,7 +341,8 @@ async def multimodal_search_upload_api(
     query: str = Form(default=""),
     image: UploadFile = File(default=None),
     limit: int = Form(default=10),
-    file_types: str = Form(default=None)
+    file_types: str = Form(default=None),
+    current_user: dict = Depends(require_authenticated_user),
 ):
     """
     多模态检索：通过上传图片进行检索
@@ -348,6 +379,7 @@ async def multimodal_search_upload_api(
             limit=limit,
             file_types=file_type_list
         )
+        results = retrieval_service.filter_result_items_for_user(results, current_user)
         
         logger.info(f"多模态检索(上传)完成: query='{query[:50] if query else ''}', "
                     f"has_image={bool(image)}, results={len(results)}")
@@ -371,9 +403,17 @@ class KeywordSearchRequest(BaseModel):
 
 
 @router.post("/keyword-search", summary="精确关键词检索（BM25）")
-async def keyword_search_api(request: KeywordSearchRequest):
+async def keyword_search_api(
+    request: KeywordSearchRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     try:
-        result = retrieval_service.keyword(request.query, request.limit, request.file_types)
+        result = retrieval_service.keyword(
+            request.query,
+            request.limit,
+            request.file_types,
+            current_user=current_user,
+        )
         logger.info(f"关键词检索完成: query='{request.query[:50]}...', results={result['total']}")
         return success(data=result)
     except AppServiceError as exc:
@@ -395,7 +435,10 @@ class SummarizeResultsRequest(BaseModel):
 
 
 @router.post("/search-with-highlight", summary="带关键词高亮的检索")
-async def search_with_highlight_api(request: SearchWithHighlightRequest):
+async def search_with_highlight_api(
+    request: SearchWithHighlightRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     """
     带关键词高亮的检索功能
     
@@ -420,6 +463,7 @@ async def search_with_highlight_api(request: SearchWithHighlightRequest):
             request.alpha,
             request.use_rerank,
             request.file_types,
+            current_user=current_user,
         )
         logger.info(f"带高亮检索完成: query='{request.query[:50]}...', type={search_type}, results={result['total']}")
         return success(data=result)
@@ -428,9 +472,16 @@ async def search_with_highlight_api(request: SearchWithHighlightRequest):
 
 
 @router.post("/summarize-results", summary="对检索结果生成总结")
-async def summarize_results_api(request: SummarizeResultsRequest):
+async def summarize_results_api(
+    request: SummarizeResultsRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     try:
-        result = retrieval_service.summarize_results(request.query, request.results)
+        result = retrieval_service.summarize_results(
+            request.query,
+            request.results,
+            current_user=current_user,
+        )
         return success(data=result)
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
@@ -473,7 +524,10 @@ async def get_search_types():
 
 
 @router.post("/hybrid-multimodal-search", summary="混合多模态检索")
-async def hybrid_multimodal_search_api(request: HybridMultimodalSearchRequest):
+async def hybrid_multimodal_search_api(
+    request: HybridMultimodalSearchRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     """
     混合多模态检索：向量检索 + BM25关键词检索，支持图片输入
     
@@ -498,6 +552,7 @@ async def hybrid_multimodal_search_api(request: HybridMultimodalSearchRequest):
         use_rerank=request.use_rerank,
         file_types=request.file_types
     )
+    results = retrieval_service.filter_result_items_for_user(results, current_user)
     
     logger.info(f"混合多模态检索完成: query='{request.query[:50] if request.query else ''}', "
                 f"has_image={bool(request.image_url)}, alpha={alpha}, results={len(results)}")
@@ -520,7 +575,8 @@ async def smart_multimodal_search_api(
     use_query_expansion: bool = Form(default=True),
     use_llm_rerank: bool = Form(default=True),
     expansion_method: str = Form(default='llm'),
-    file_types: str = Form(default=None)
+    file_types: str = Form(default=None),
+    current_user: dict = Depends(require_authenticated_user),
 ):
     """
     智能多模态检索：完整的 Query Expansion + Multi-Query Retrieval + LLM Reranking
@@ -578,6 +634,7 @@ async def smart_multimodal_search_api(
             use_llm_rerank=use_llm_rerank,
             expansion_method=expansion_method
         )
+        results = retrieval_service.filter_result_items_for_user(results, current_user)
         
         logger.info(f"智能多模态检索完成: query='{query[:50] if query else ''}', "
                     f"has_image={bool(image_url or image)}, results={len(results)}")

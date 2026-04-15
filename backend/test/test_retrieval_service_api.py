@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api.retrieval as retrieval_api  # noqa: E402
 import api.classification as classification_api  # noqa: E402
+import api.dependencies as api_dependencies  # noqa: E402
 import app.services.retrieval_service as retrieval_service_module  # noqa: E402
 import app.services.topic_tree_service as topic_tree_service_module  # noqa: E402
 from app.services.retrieval_service import RetrievalService  # noqa: E402
@@ -282,6 +283,280 @@ def test_workspace_search_api_returns_service_payload(monkeypatch):
         business_category_id=None,
         current_user=current_user,
     )
+
+
+def test_legacy_retrieval_routes_require_authenticated_user():
+    route_dependencies = {}
+    for route in retrieval_api.router.routes:
+        if not hasattr(route, "dependant"):
+            continue
+        route_dependencies[route.path] = {
+            dependency.call for dependency in route.dependant.dependencies
+        }
+
+    for path in [
+        "/search",
+        "/hybrid-search",
+        "/batch-search",
+        "/document/{document_id}",
+        "/stats",
+        "/smart-search",
+        "/keyword-search",
+        "/search-with-highlight",
+        ]:
+        assert api_dependencies.require_authenticated_user in route_dependencies[path]
+
+
+def test_topic_tree_routes_require_authenticated_user():
+    route_dependencies = {}
+    for route in classification_api.router.routes:
+        if not hasattr(route, "dependant"):
+            continue
+        route_dependencies[route.path] = {
+            dependency.call for dependency in route.dependant.dependencies
+        }
+
+    assert api_dependencies.require_authenticated_user in route_dependencies["/topic-tree"]
+    assert api_dependencies.require_authenticated_user in route_dependencies["/topic-tree/build"]
+
+
+def test_search_filters_hidden_documents_for_current_user(monkeypatch):
+    service = RetrievalService()
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_documents",
+        lambda *args, **kwargs: [
+            {"document_id": "doc-visible", "filename": "budget.pdf"},
+            {"document_id": "doc-hidden", "filename": "salary.xlsx"},
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-visible",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-fin",
+                "shared_department_ids": [],
+            },
+            {
+                "id": "doc-hidden",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-hr",
+                "shared_department_ids": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "authorization_service",
+        Mock(list_visible_document_ids=lambda current_user, documents: {"doc-visible"}),
+        raising=False,
+    )
+
+    payload = service.search(
+        "预算",
+        limit=10,
+        use_rerank=False,
+        current_user={"id": "user-1", "role_code": "employee"},
+    )
+
+    assert payload["total"] == 1
+    assert [item["document_id"] for item in payload["results"]] == ["doc-visible"]
+
+
+def test_get_document_chunks_rejects_hidden_document(monkeypatch):
+    service = RetrievalService()
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "visibility_scope": "department",
+            "owner_department_id": "dept-hr",
+            "shared_department_ids": [],
+        },
+    )
+    monkeypatch.setattr(
+        service.authorization_service,
+        "can_view_document",
+        lambda current_user, document: False,
+    )
+
+    with unittest.TestCase().assertRaises(retrieval_service_module.AppServiceError):
+        service.get_document_chunks(
+            "doc-hidden",
+            current_user={"id": "user-1", "role_code": "employee"},
+        )
+
+
+def test_workspace_search_cache_key_includes_department_context(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+    service = RetrievalService()
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "hybrid_search",
+        lambda **kwargs: [
+            {
+                "document_id": "doc-fin",
+                "filename": "finance.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.95,
+                "content_snippet": "财务预算",
+                "chunk_index": 0,
+            },
+            {
+                "document_id": "doc-hr",
+                "filename": "hr.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.94,
+                "content_snippet": "人事预算",
+                "chunk_index": 0,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-fin",
+                "filename": "finance.pdf",
+                "file_type": ".pdf",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-fin",
+                "shared_department_ids": [],
+            },
+            {
+                "id": "doc-hr",
+                "filename": "hr.pdf",
+                "file_type": ".pdf",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-hr",
+                "shared_department_ids": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "finance.pdf" if document_id == "doc-fin" else "hr.pdf",
+            "file_type": ".pdf",
+            "created_at_iso": "2026-04-15T10:00:00",
+            "visibility_scope": "department",
+            "owner_department_id": "dept-fin" if document_id == "doc-fin" else "dept-hr",
+            "shared_department_ids": [],
+        },
+    )
+    monkeypatch.setattr(retrieval_service_module, "get_document_content_record", lambda document_id: {})
+    monkeypatch.setattr(retrieval_service_module, "list_document_segments", lambda document_id: [])
+    monkeypatch.setattr(
+        service,
+        "authorization_service",
+        Mock(
+            list_visible_document_ids=lambda current_user, documents: (
+                {"doc-fin"} if current_user.get("department_id") == "dept-fin" else {"doc-hr"}
+            )
+        ),
+        raising=False,
+    )
+
+    finance_payload = service.workspace_search(
+        query="预算",
+        mode="hybrid",
+        current_user={"id": "user-1", "role_code": "employee", "department_id": "dept-fin"},
+    )
+    hr_payload = service.workspace_search(
+        query="预算",
+        mode="hybrid",
+        current_user={"id": "user-1", "role_code": "employee", "department_id": "dept-hr"},
+    )
+
+    assert [item["document_id"] for item in finance_payload["results"]] == ["doc-fin"]
+    assert [item["document_id"] for item in hr_payload["results"]] == ["doc-hr"]
+
+
+def test_workspace_search_metadata_fallback_count_excludes_hidden_documents(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+    service = RetrievalService()
+    monkeypatch.setattr(service, "_run_workspace_query_search", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        service,
+        "_search_workspace_metadata",
+        lambda **kwargs: [
+            {
+                "document_id": "doc-visible",
+                "filename": "budget.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.91,
+                "content_snippet": "预算审批",
+                "chunk_index": 0,
+            },
+            {
+                "document_id": "doc-hidden",
+                "filename": "salary.xlsx",
+                "file_type": ".xlsx",
+                "similarity": 0.89,
+                "content_snippet": "薪酬保密",
+                "chunk_index": 0,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-visible",
+                "filename": "budget.pdf",
+                "file_type": ".pdf",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-fin",
+                "shared_department_ids": [],
+            },
+            {
+                "id": "doc-hidden",
+                "filename": "salary.xlsx",
+                "file_type": ".xlsx",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-hr",
+                "shared_department_ids": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "budget.pdf" if document_id == "doc-visible" else "salary.xlsx",
+            "file_type": ".pdf" if document_id == "doc-visible" else ".xlsx",
+            "created_at_iso": "2026-04-15T10:00:00",
+            "visibility_scope": "department",
+            "owner_department_id": "dept-fin" if document_id == "doc-visible" else "dept-hr",
+            "shared_department_ids": [],
+        },
+    )
+    monkeypatch.setattr(retrieval_service_module, "get_document_content_record", lambda document_id: {})
+    monkeypatch.setattr(retrieval_service_module, "list_document_segments", lambda document_id: [])
+    monkeypatch.setattr(
+        service,
+        "authorization_service",
+        Mock(list_visible_document_ids=lambda current_user, documents: {"doc-visible"}),
+        raising=False,
+    )
+
+    payload = service.workspace_search(
+        query="预算",
+        mode="hybrid",
+        current_user={"id": "user-1", "role_code": "employee"},
+    )
+
+    assert payload["meta"]["metadata_fallback_used"] is True
+    assert payload["meta"]["metadata_fallback_count"] == 1
 
 
 def test_workspace_search_block_mode_returns_documents_and_compatibility_results(monkeypatch):
@@ -716,21 +991,23 @@ def test_workspace_search_returns_document_results_with_evidence(monkeypatch):
 def test_stats_include_document_and_index_counts(monkeypatch):
     monkeypatch.setattr(
         retrieval_service_module,
-        "get_document_stats",
-        lambda: {
-            "total_chunks": 7,
-            "vector_indexed_documents": 2,
-            "file_types": {".pdf": 5, ".docx": 2},
-        },
+        "get_all_documents",
+        lambda: [
+            {"id": "doc-1", "filename": "a.pdf", "file_type": ".pdf"},
+            {"id": "doc-2", "filename": "b.docx", "file_type": ".docx"},
+            {"id": "doc-3", "filename": "c.txt", "file_type": ".txt"},
+        ],
     )
     monkeypatch.setattr(
         retrieval_service_module,
-        "get_all_documents",
-        lambda: [
-            {"id": "doc-1", "filename": "a.pdf"},
-            {"id": "doc-2", "filename": "b.docx"},
-            {"id": "doc-3", "filename": "c.txt"},
-        ],
+        "get_document_by_id",
+        lambda document_id: (
+            {"chunks": ["chunk-a", "chunk-b", "chunk-c"]}
+            if document_id == "doc-1"
+            else {"chunks": ["chunk-d", "chunk-e", "chunk-f", "chunk-g"]}
+            if document_id == "doc-2"
+            else None
+        ),
     )
     monkeypatch.setattr(
         retrieval_service_module,
@@ -744,13 +1021,13 @@ def test_stats_include_document_and_index_counts(monkeypatch):
     )
 
     service = RetrievalService()
-    payload = service.stats()
+    payload = service.stats(current_user={"id": "user-1", "role_code": "system_admin"})
 
     assert payload["total_documents"] == 3
     assert payload["vector_indexed_documents"] == 2
     assert payload["segment_documents"] == 2
     assert payload["total_chunks"] == 7
-    assert payload["file_types"] == {".pdf": 5, ".docx": 2}
+    assert payload["file_types"] == {".pdf": 1, ".docx": 1, ".txt": 1}
 
 
 def test_topic_tree_service_filters_hidden_documents(monkeypatch):

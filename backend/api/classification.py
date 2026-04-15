@@ -90,9 +90,13 @@ async def build_multi_level_classification(request: MultiLevelClassificationRequ
 
 
 @router.post("/topic-tree/build", summary="重建动态语义主题树")
-async def build_topic_tree(request: TopicTreeBuildRequest):
+async def build_topic_tree(
+    request: TopicTreeBuildRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     try:
-        tree = classification_service.build_topic_tree(request.force_rebuild)
+        classification_service.build_topic_tree(request.force_rebuild)
+        tree = classification_service.get_topic_tree(current_user=current_user)
         return success(data=tree, message="动态主题树构建成功")
     except Exception as e:
         logger.error(f"构建动态主题树失败: {str(e)}")
