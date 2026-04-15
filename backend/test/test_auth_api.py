@@ -389,3 +389,71 @@ def test_auth_logout_request_parses_authorization_once(monkeypatch):
     assert payload["message"] == "退出成功"
     assert stub.logged_out == ["token-1"]
     assert parse_call_count["count"] == 1
+
+
+def test_login_api_records_login_success_audit_with_ip(monkeypatch):
+    login_payload = {
+        "token": "token-1",
+        "expires_at": "2026-04-16T00:00:00",
+        "user": {
+            "id": "user-1",
+            "username": "alice",
+            "display_name": "Alice",
+            "role_code": "employee",
+            "primary_department_id": "dept-fin",
+        },
+    }
+    mock_login = Mock(return_value=login_payload)
+    mock_record = Mock(return_value="audit-1")
+    request = Mock(client=Mock(host="203.0.113.10"))
+    monkeypatch.setattr(auth_api.auth_service, "login", mock_login)
+    monkeypatch.setattr(auth_api, "audit_service", Mock(record=mock_record), raising=False)
+
+    body = asyncio.run(
+        auth_api.login(
+            auth_api.LoginRequest(username="alice", password="secret123"),
+            http_request=request,
+        )
+    )
+
+    assert body["code"] == 200
+    mock_record.assert_called_once_with(
+        action_type="login_success",
+        target_type="auth",
+        target_id="alice",
+        result="success",
+        user=login_payload["user"],
+        ip_address="203.0.113.10",
+        metadata={"username": "alice"},
+    )
+
+
+def test_login_api_records_login_failure_audit_with_ip(monkeypatch):
+    mock_login = Mock(side_effect=auth_api.AppServiceError(4001, "用户名或密码错误"))
+    mock_record = Mock(return_value="audit-1")
+    request = Mock(client=Mock(host="198.51.100.20"))
+    monkeypatch.setattr(auth_api.auth_service, "login", mock_login)
+    monkeypatch.setattr(auth_api, "audit_service", Mock(record=mock_record), raising=False)
+
+    try:
+        asyncio.run(
+            auth_api.login(
+                auth_api.LoginRequest(username="alice", password="bad-password"),
+                http_request=request,
+            )
+        )
+    except auth_api.BusinessException as exc:
+        assert exc.code == 4001
+        assert exc.message == "用户名或密码错误"
+    else:
+        raise AssertionError("login should raise business exception")
+
+    mock_record.assert_called_once_with(
+        action_type="login_failure",
+        target_type="auth",
+        target_id="alice",
+        result="failure",
+        user=None,
+        ip_address="198.51.100.20",
+        metadata={"username": "alice", "error_code": 4001},
+    )

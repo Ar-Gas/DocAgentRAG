@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Depends
+import logging
+
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from app.services.audit_service import audit_service
 from app.services.errors import AppServiceError
 from api import BusinessException, success
 from api.dependencies import (
@@ -10,6 +13,7 @@ from api.dependencies import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class LoginRequest(BaseModel):
@@ -23,13 +27,45 @@ class ChangePasswordRequest(BaseModel):
 
 
 @router.post("/login")
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, http_request: Request = None):
+    ip_address = None
+    if http_request is not None and getattr(http_request, "client", None) is not None:
+        ip_address = getattr(http_request.client, "host", None)
+
     try:
+        login_result = auth_service.login(request.username, request.password)
+        try:
+            audit_service.record(
+                action_type="login_success",
+                target_type="auth",
+                target_id=request.username,
+                result="success",
+                user=login_result.get("user"),
+                ip_address=ip_address,
+                metadata={"username": request.username},
+            )
+        except Exception:
+            logger.exception("记录登录成功审计日志失败")
         return success(
-            data=auth_service.login(request.username, request.password),
+            data=login_result,
             message="登录成功",
         )
     except AppServiceError as exc:
+        try:
+            audit_service.record(
+                action_type="login_failure",
+                target_type="auth",
+                target_id=request.username,
+                result="failure",
+                user=None,
+                ip_address=ip_address,
+                metadata={
+                    "username": request.username,
+                    "error_code": exc.code,
+                },
+            )
+        except Exception:
+            logger.exception("记录登录失败审计日志失败")
         raise BusinessException(code=exc.code, message=exc.detail)
 
 
