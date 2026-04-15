@@ -4,14 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const apiMocks = vi.hoisted(() => ({
   workspaceSearch: vi.fn(),
   getStats: vi.fn(),
-  getCategories: vi.fn(),
   getDepartments: vi.fn(),
   getSystemCategories: vi.fn(),
   getDepartmentCategories: vi.fn(),
-  getTopicTree: vi.fn(),
-  summarizeResults: vi.fn(),
-  generateClassificationTable: vi.fn(),
-  buildTopicTree: vi.fn(),
   getDocumentReader: vi.fn(),
 }))
 
@@ -26,14 +21,16 @@ vi.mock('@/api', () => ({
 const STUBS = {
   SearchToolbar: {
     props: ['modelValue'],
-    emits: ['update:modelValue', 'search', 'reset', 'summarize', 'generate-report', 'rebuild-topics'],
-    template: '<button class="go" @click="$emit(\'search\')">go</button>',
+    emits: ['update:modelValue', 'search', 'reset'],
+    template: `
+      <div>
+        <button class="go" @click="$emit('search')">go</button>
+        <button class="reset" @click="$emit('reset')">reset</button>
+      </div>
+    `,
   },
   DocumentResultList: { template: '<div class="result-list-stub" />' },
   DocumentReader: { template: '<div class="reader-stub" />' },
-  SummaryDrawer: { template: '<div class="summary-drawer-stub" />' },
-  ClassificationReportDrawer: { template: '<div class="classification-drawer-stub" />' },
-  TopicTreePanel: { template: '<div class="topic-tree-stub" />' },
   DocumentViewerModal: { template: '<div class="viewer-modal-stub" />' },
 }
 
@@ -64,14 +61,9 @@ describe('SearchPage', () => {
       },
     })
     apiMocks.getStats.mockResolvedValue({ data: {} })
-    apiMocks.getCategories.mockResolvedValue({ data: { categories: [] } })
     apiMocks.getDepartments.mockResolvedValue({ data: [] })
     apiMocks.getSystemCategories.mockResolvedValue({ data: [] })
     apiMocks.getDepartmentCategories.mockResolvedValue({ data: [] })
-    apiMocks.getTopicTree.mockResolvedValue({ data: { topics: [], total_documents: 0 } })
-    apiMocks.summarizeResults.mockResolvedValue({ data: null })
-    apiMocks.generateClassificationTable.mockResolvedValue({ data: null })
-    apiMocks.buildTopicTree.mockResolvedValue({ data: { topics: [], total_documents: 0 } })
     apiMocks.getDocumentReader.mockResolvedValue({ data: null })
     workspaceSearchStream.mockClear()
   })
@@ -79,6 +71,15 @@ describe('SearchPage', () => {
   afterEach(() => {
     vi.clearAllMocks()
     vi.unstubAllEnvs()
+  })
+
+  it('loads the reduced search chrome without semantic dependencies', async () => {
+    await mountSearchPage('block')
+
+    expect(apiMocks.getStats).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getDepartments).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getSystemCategories).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getDepartmentCategories).not.toHaveBeenCalled()
   })
 
   it('uses sync workspace search for block smart requests', async () => {
@@ -124,4 +125,29 @@ describe('SearchPage', () => {
       business_category_id: 'cat-budget',
     }))
   }, SEARCH_PAGE_TEST_TIMEOUT)
+
+  it('resets the current workspace without semantic drawer state', async () => {
+    const wrapper = await mountSearchPage('block')
+
+    wrapper.vm.filters.query = '预算'
+    wrapper.vm.filters.department_id = 'dept-fin'
+    wrapper.vm.workspace = {
+      results: [],
+      documents: [{ document_id: 'doc-1' }],
+      total_results: 1,
+      total_documents: 1,
+      applied_filters: {},
+    }
+    wrapper.vm.selectedDocumentId = 'doc-1'
+    wrapper.vm.readerPayload = { filename: 'budget.pdf' }
+
+    await wrapper.find('.reset').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.vm.filters.query).toBe('')
+    expect(wrapper.vm.filters.department_id).toBe('')
+    expect(wrapper.vm.workspace.documents).toEqual([])
+    expect(wrapper.vm.selectedDocumentId).toBe('')
+    expect(wrapper.vm.readerPayload).toBeNull()
+  })
 })

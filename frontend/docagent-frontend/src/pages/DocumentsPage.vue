@@ -20,9 +20,6 @@
         </article>
       </div>
     </div>
-
-    <UploadPage @upload-success="loadDocuments" />
-
     <FileList
       :document-list="documentList"
       :loading="loading"
@@ -46,7 +43,6 @@
 import { computed, onMounted, ref } from 'vue'
 import FileList from '@/components/FileList.vue'
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
-import UploadPage from '@/pages/UploadPage.vue'
 import { api } from '@/api'
 
 const documentList = ref([])

@@ -34,9 +34,17 @@ describe('App shell', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('工作台')
-    expect(wrapper.text()).toContain('上传文档')
-    expect(wrapper.text()).not.toContain('用户管理')
-    expect(wrapper.text()).not.toContain('审计日志')
+    const navItems = wrapper.findAll('.nav-link').map((link) => link.text())
+
+    expect(wrapper.find('.page-title').text()).toBe('全局目录')
+    expect(wrapper.find('.page-subtitle').text()).toBe(
+      '以权限目录为主线，统一收口全局目录、具体检索、台账与管理后台。',
+    )
+    expect(navItems).toEqual(
+      expect.arrayContaining(['全局目录', '具体检索', '上传文档', '文档台账']),
+    )
+    expect(navItems).not.toContain('工作台')
+    expect(navItems).not.toContain('用户管理')
+    expect(navItems).not.toContain('审计日志')
   })
 })

@@ -110,7 +110,6 @@ const workspace = ref(emptyWorkspace())
 const selectedDocumentId = ref('')
 const readerPayload = ref(null)
 const searchLoading = ref(false)
-const isReranking = ref(false)
 const readerLoading = ref(false)
 
 // 原文预览状态
@@ -214,7 +213,6 @@ const _applyWorkspaceResult = async (data) => {
 const executeSearch = async () => {
   if (_cancelStream) { _cancelStream(); _cancelStream = null }
   searchLoading.value = true
-  isReranking.value = false
 
   const req = buildSearchRequest()
 
@@ -222,20 +220,16 @@ const executeSearch = async () => {
     _cancelStream = workspaceSearchStream(req, {
       async onResults(data) {
         searchLoading.value = false
-        isReranking.value = true
         await _applyWorkspaceResult(data)
       },
       async onReranked(data) {
-        isReranking.value = false
         await _applyWorkspaceResult(data)
       },
       onDone() {
         searchLoading.value = false
-        isReranking.value = false
       },
       onError(err) {
         searchLoading.value = false
-        isReranking.value = false
         console.error('Smart search SSE error:', err)
       },
     })
