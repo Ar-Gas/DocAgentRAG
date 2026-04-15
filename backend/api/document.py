@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 from urllib.parse import quote
 
@@ -59,22 +60,33 @@ async def upload_document(
     file: UploadFile = File(...),
     visibility_scope: str = Form("department"),
     owner_department_id: str | None = Form(None),
-    shared_department_ids: List[str] = Form(default=[]),
+    shared_department_ids: str = Form(default="[]"),
     business_category_id: str | None = Form(None),
     role_restriction: str | None = Form(None),
-    is_public_restricted: bool = Form(False),
     confidentiality_level: str = Form("internal"),
     document_status: str = Form("draft"),
     current_user: dict = Depends(require_authenticated_user),
 ):
     try:
+        parsed_shared_department_ids: List[str] = []
+        try:
+            parsed = json.loads(shared_department_ids or "[]")
+            if isinstance(parsed, list):
+                parsed_shared_department_ids = [str(item).strip() for item in parsed if str(item).strip()]
+        except Exception:
+            raise AppServiceError(2001, "shared_department_ids 必须是 JSON 数组字符串")
+
+        derived_is_public_restricted = (
+            visibility_scope == "public"
+            and bool(parsed_shared_department_ids or role_restriction)
+        )
         governance_metadata = {
             "visibility_scope": visibility_scope,
             "owner_department_id": owner_department_id,
-            "shared_department_ids": shared_department_ids,
+            "shared_department_ids": parsed_shared_department_ids,
             "business_category_id": business_category_id,
             "role_restriction": role_restriction,
-            "is_public_restricted": is_public_restricted,
+            "is_public_restricted": derived_is_public_restricted,
             "confidentiality_level": confidentiality_level,
             "document_status": document_status,
         }

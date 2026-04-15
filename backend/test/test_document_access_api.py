@@ -95,10 +95,9 @@ def test_upload_forwards_governance_fields_and_actor_context(monkeypatch):
             file=upload,
             visibility_scope="public",
             owner_department_id="dept-fin",
-            shared_department_ids=["dept-fin", "dept-ops"],
+            shared_department_ids='["dept-fin", "dept-ops"]',
             business_category_id="cat-budget",
             role_restriction="employee",
-            is_public_restricted=True,
             confidentiality_level="confidential",
             document_status="published",
             current_user=current_user,
@@ -225,11 +224,27 @@ def test_document_service_applies_governance_defaults_with_actor_context():
     assert normalized["visibility_scope"] == "department"
     assert normalized["owner_department_id"] == "dept-fin"
     assert normalized["shared_department_ids"] == []
-    assert normalized["business_category_id"] is None
+    assert normalized["business_category_id"] == "cat-pending"
     assert normalized["role_restriction"] is None
     assert normalized["is_public_restricted"] is False
     assert normalized["confidentiality_level"] == "internal"
     assert normalized["document_status"] == "draft"
+
+
+def test_document_service_derives_public_restriction_when_not_explicit():
+    service = DocumentService()
+
+    normalized = service._apply_governance_defaults(
+        {
+            "id": "doc-1",
+            "visibility_scope": "public",
+            "shared_department_ids": ["dept-fin"],
+            "role_restriction": None,
+        },
+        current_user={"id": "user-1", "primary_department_id": "dept-fin"},
+    )
+
+    assert normalized["is_public_restricted"] is True
 
 
 def test_document_service_list_documents_filters_visible_documents(monkeypatch):

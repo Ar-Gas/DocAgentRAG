@@ -79,6 +79,14 @@ class DocumentService:
                 return False
         return default
 
+    @staticmethod
+    def _derive_is_public_restricted(
+        visibility_scope: str,
+        shared_department_ids: List[str],
+        role_restriction: Optional[str],
+    ) -> bool:
+        return visibility_scope == "public" and bool(shared_department_ids or role_restriction)
+
     def _apply_governance_defaults(self, doc_info: Dict, current_user: Optional[Dict] = None) -> Dict:
         normalized = dict(doc_info or {})
 
@@ -91,15 +99,25 @@ class DocumentService:
 
         normalized["visibility_scope"] = str(normalized.get("visibility_scope") or "department")
         normalized["owner_department_id"] = str(owner_department_id) if owner_department_id else None
-        normalized["shared_department_ids"] = self._normalize_shared_department_ids(
+        normalized_shared_department_ids = self._normalize_shared_department_ids(
             normalized.get("shared_department_ids")
         )
-        normalized["business_category_id"] = normalized.get("business_category_id")
+        normalized["shared_department_ids"] = normalized_shared_department_ids
+        normalized["business_category_id"] = normalized.get("business_category_id") or "cat-pending"
         normalized["role_restriction"] = normalized.get("role_restriction")
-        normalized["is_public_restricted"] = self._normalize_boolean(
-            normalized.get("is_public_restricted"),
-            default=False,
+
+        derived_is_public_restricted = self._derive_is_public_restricted(
+            visibility_scope=normalized["visibility_scope"],
+            shared_department_ids=normalized_shared_department_ids,
+            role_restriction=normalized["role_restriction"],
         )
+        if "is_public_restricted" in normalized and normalized.get("is_public_restricted") is not None:
+            normalized["is_public_restricted"] = self._normalize_boolean(
+                normalized.get("is_public_restricted"),
+                default=derived_is_public_restricted,
+            )
+        else:
+            normalized["is_public_restricted"] = derived_is_public_restricted
         normalized["confidentiality_level"] = str(
             normalized.get("confidentiality_level") or "internal"
         )
