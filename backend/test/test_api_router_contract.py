@@ -12,4 +12,5 @@ def test_removed_semantic_routes_are_absent_from_root_router():
     assert "/retrieval/llm-status" not in paths
     assert "/retrieval/summarize-results" not in paths
     assert "/retrieval/smart-search" not in paths
+    assert "/retrieval/smart-multimodal-search" not in paths
     assert "/retrieval/workspace-search-stream" not in paths

@@ -14,9 +14,6 @@ from utils.retriever import (
     multimodal_search,
     hybrid_multimodal_search,
 )
-from utils.smart_retrieval import (
-    smart_multimodal_retrieval,
-)
 from api import success, BusinessException
 from api.dependencies import require_authenticated_user
 
@@ -121,7 +118,7 @@ def _process_search_results(results: dict) -> List[dict]:
     search_results.sort(key=lambda x: x['similarity'], reverse=True)
     return search_results
 
-@router.get("/search", summary="单查询语义检索")
+@router.get("/search", summary="单查询检索")
 async def search_document_api(
     query: str = Query(..., description="检索关键词/句子"),
     limit: int = Query(10, ge=1, le=100, description="返回结果数量"),
@@ -136,7 +133,13 @@ async def search_document_api(
             raise BusinessException(code=400, detail=f"不支持的文件类型: {invalid}")
     try:
         result = retrieval_service.search(query, limit, use_rerank, file_type_list, current_user=current_user)
-        logger.info(f"语义检索完成: query='{query[:50]}...', results={result['total']}, rerank={use_rerank}, filters={file_type_list}")
+        logger.info(
+            "检索完成: query='%s...', results=%s, rerank=%s, filters=%s",
+            query[:50],
+            result["total"],
+            use_rerank,
+            file_type_list,
+        )
         return success(data=result)
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
@@ -161,7 +164,7 @@ async def hybrid_search_api(
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
 
-@router.post("/batch-search", summary="批量查询语义检索")
+@router.post("/batch-search", summary="批量查询检索")
 async def batch_search_document_api(
     request: BatchSearchRequest,
     current_user: dict = Depends(require_authenticated_user),
@@ -381,11 +384,10 @@ async def search_with_highlight_api(
     
     search_type 选项：
     - keyword: 精确关键词检索
-    - vector: 向量语义检索
+    - vector: 向量检索
     - hybrid: 混合检索（向量+关键词）
-    - smart: 智能检索（需要LLM）
     """
-    valid_types = ['keyword', 'vector', 'hybrid', 'smart']
+    valid_types = ['keyword', 'vector', 'hybrid']
     search_type = request.search_type if request.search_type in valid_types else 'hybrid'
     try:
         result = retrieval_service.search_highlight(
@@ -418,8 +420,8 @@ async def get_search_types():
             },
             {
                 "type": "vector",
-                "name": "向量语义检索",
-                "description": "使用向量嵌入进行语义相似度匹配，适合语义相近的查询",
+                "name": "向量检索",
+                "description": "使用向量相似度匹配内容接近的资料，适合制度问答和背景检索",
                 "supports_highlight": True
             },
             {
@@ -428,12 +430,6 @@ async def get_search_types():
                 "description": "结合向量检索和关键词检索，可调节权重",
                 "supports_highlight": True,
                 "has_alpha": True
-            },
-            {
-                "type": "smart",
-                "name": "智能检索",
-                "description": "使用LLM进行查询扩展和多查询融合，需要配置LLM",
-                "supports_highlight": True
             }
         ]
     })
@@ -484,96 +480,3 @@ async def hybrid_multimodal_search_api(
         "results": results
     })
 
-
-@router.post("/smart-multimodal-search", summary="智能多模态检索")
-async def smart_multimodal_search_api(
-    query: str = Form(default=""),
-    image_url: str = Form(default=None),
-    image: UploadFile = File(default=None),
-    limit: int = Form(default=10),
-    use_query_expansion: bool = Form(default=True),
-    use_llm_rerank: bool = Form(default=True),
-    expansion_method: str = Form(default='llm'),
-    file_types: str = Form(default=None),
-    current_user: dict = Depends(require_authenticated_user),
-):
-    """
-    智能多模态检索：完整的 Query Expansion + Multi-Query Retrieval + LLM Reranking
-    
-    支持图片URL或上传图片文件
-    
-    参数：
-    - query: 查询文本
-    - image_url: 图片URL（可选）
-    - image: 上传的图片文件（可选）
-    - limit: 返回结果数量
-    - use_query_expansion: 是否启用查询扩展
-    - use_llm_rerank: 是否启用LLM重排序
-    - expansion_method: 扩展方法 ('llm' 或 'keyword')
-    - file_types: 文件类型过滤，逗号分隔
-    """
-    if not query and not image_url and not image:
-        raise BusinessException(code=3002, detail="查询文本、图片URL和上传图片至少需要提供一个")
-    
-    file_type_list = None
-    if file_types:
-        file_type_list = [ft.strip().lstrip('.') for ft in file_types.split(',') if ft.strip()]
-    
-    image_path = None
-    if image:
-        try:
-            suffix = os.path.splitext(image.filename)[1] if image.filename else '.jpg'
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                content = await image.read()
-                tmp.write(content)
-                image_path = tmp.name
-        except Exception as e:
-            logger.error(f"保存上传图片失败: {str(e)}")
-            raise BusinessException(code=3002, detail=f"图片处理失败: {str(e)}")
-    
-    try:
-        def search_wrapper(q, limit=10):
-            return retrieval_service.collect_visible_results(
-                lambda fetch_limit: hybrid_multimodal_search(
-                    query=q,
-                    image_url=image_url,
-                    image_path=image_path,
-                    limit=fetch_limit,
-                    alpha=0.5,
-                    use_rerank=False,
-                    file_types=file_type_list,
-                ),
-                limit,
-                current_user,
-            )
-        
-        results, meta_info = smart_multimodal_retrieval(
-            query=query,
-            search_func=search_wrapper,
-            limit=limit,
-            image_url=image_url,
-            image_path=image_path,
-            use_query_expansion=use_query_expansion,
-            use_llm_rerank=use_llm_rerank,
-            expansion_method=expansion_method
-        )
-        results = retrieval_service.filter_result_items_for_user(results, current_user)
-        
-        logger.info(f"智能多模态检索完成: query='{query[:50] if query else ''}', "
-                    f"has_image={bool(image_url or image)}, results={len(results)}")
-        
-        return success(data={
-            "query": query,
-            "has_image": bool(image_url or image),
-            "total": len(results),
-            "results": results,
-            "meta": {
-                "expanded_queries": meta_info.get('expanded_queries', [query]),
-                "expansion_method": meta_info.get('expansion_method'),
-                "rerank_method": meta_info.get('rerank_method'),
-                "total_candidates": meta_info.get('total_candidates', 0)
-            }
-        })
-    finally:
-        if image_path and os.path.exists(image_path):
-            os.unlink(image_path)

@@ -312,6 +312,40 @@ def test_legacy_retrieval_routes_require_authenticated_user():
         assert api_dependencies.require_authenticated_user in route_dependencies[path]
 
 
+def test_search_with_highlight_falls_back_to_hybrid_for_removed_smart_type(monkeypatch):
+    captured = {}
+
+    def fake_search_highlight(query, search_type, limit, alpha, use_rerank, file_types, current_user=None):
+        captured["query"] = query
+        captured["search_type"] = search_type
+        return {
+            "query": query,
+            "search_type": search_type,
+            "total": 0,
+            "results": [],
+        }
+
+    monkeypatch.setattr(retrieval_api.retrieval_service, "search_highlight", fake_search_highlight)
+
+    body = asyncio.run(
+        retrieval_api.search_with_highlight_api(
+            retrieval_api.SearchWithHighlightRequest(query="预算", search_type="smart"),
+            current_user={"id": "user-1", "role_code": "employee"},
+        )
+    )
+
+    assert body["code"] == 200
+    assert captured["query"] == "预算"
+    assert captured["search_type"] == "hybrid"
+
+
+def test_search_types_omit_removed_smart_mode():
+    body = asyncio.run(retrieval_api.get_search_types())
+
+    assert body["code"] == 200
+    assert [item["type"] for item in body["data"]["search_types"]] == ["keyword", "vector", "hybrid"]
+
+
 def test_search_filters_hidden_documents_for_current_user(monkeypatch):
     service = RetrievalService()
     monkeypatch.setattr(

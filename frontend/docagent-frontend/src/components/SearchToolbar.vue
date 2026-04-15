@@ -191,7 +191,7 @@ const modeMeta = computed(() => {
     },
     vector: {
       title: '向量检索',
-      description: '优先匹配语义接近内容，适合制度问答和概念性查询。'
+      description: '优先匹配内容接近的资料，适合制度问答和背景检索。'
     },
     keyword: {
       title: '关键词检索',
