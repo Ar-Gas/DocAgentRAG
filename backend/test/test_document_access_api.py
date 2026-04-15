@@ -70,6 +70,58 @@ def test_document_list_forwards_current_user_and_returns_governed_fields(monkeyp
     mock_list_documents.assert_called_once_with(1, 10, current_user=current_user)
 
 
+def test_document_list_builds_directory_name_maps_once_per_request(monkeypatch):
+    current_user = {"id": "user-1", "role_code": "employee", "department_ids": ["dept-fin"]}
+    mock_list_documents = Mock(
+        return_value={
+            "items": [
+                {
+                    "id": "doc-1",
+                    "filename": "budget.pdf",
+                    "file_type": ".pdf",
+                    "visibility_scope": "department",
+                    "owner_department_id": "dept-fin",
+                    "business_category_id": "cat-budget",
+                },
+                {
+                    "id": "doc-2",
+                    "filename": "policy.pdf",
+                    "file_type": ".pdf",
+                    "visibility_scope": "public",
+                    "owner_department_id": None,
+                    "business_category_id": "cat-policy",
+                },
+            ],
+            "total": 2,
+            "page": 1,
+            "page_size": 10,
+            "total_pages": 1,
+        }
+    )
+    calls = {"count": 0}
+
+    def fake_directory_name_maps():
+        calls["count"] += 1
+        return (
+            {"dept-fin": "财务部"},
+            {"cat-budget": "预算管理", "cat-policy": "制度流程"},
+        )
+
+    monkeypatch.setattr(document_api.document_service, "list_documents", mock_list_documents)
+    monkeypatch.setattr(document_api, "_directory_name_maps", fake_directory_name_maps)
+
+    body = asyncio.run(
+        document_api.get_document_list(
+            page=1,
+            page_size=10,
+            current_user=current_user,
+        )
+    )
+
+    assert body["code"] == 200
+    assert calls["count"] == 1
+
+
 def test_upload_forwards_governance_fields_and_actor_context(monkeypatch):
     current_user = {"id": "user-1", "role_code": "employee", "primary_department_id": "dept-fin"}
     mock_upload = Mock(

@@ -50,8 +50,14 @@ def _directory_name_maps() -> tuple[dict[str, str], dict[str, str]]:
     return department_map, category_map
 
 
-def _build_document_response(doc_info: dict) -> dict:
-    department_map, category_map = _directory_name_maps()
+def _build_document_response(
+    doc_info: dict,
+    *,
+    department_map: dict[str, str] | None = None,
+    category_map: dict[str, str] | None = None,
+) -> dict:
+    if department_map is None or category_map is None:
+        department_map, category_map = _directory_name_maps()
     owner_department_id = doc_info.get("owner_department_id")
     business_category_id = doc_info.get("business_category_id")
     return {
@@ -136,7 +142,11 @@ async def get_document_list(
     current_user: dict = Depends(require_authenticated_user),
 ):
     page_data = document_service.list_documents(page, page_size, current_user=current_user)
-    items = [_build_document_response(doc) for doc in page_data["items"]]
+    department_map, category_map = _directory_name_maps()
+    items = [
+        _build_document_response(doc, department_map=department_map, category_map=category_map)
+        for doc in page_data["items"]
+    ]
     return paginated(items=items, total=page_data["total"], page=page, page_size=page_size)
 
 

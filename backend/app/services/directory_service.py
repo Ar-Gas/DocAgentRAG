@@ -31,12 +31,31 @@ class DirectoryService:
         return normalized or None
 
     @staticmethod
-    def _enabled_categories(categories: list[dict]) -> list[dict]:
+    def _workspace_categories(
+        categories: list[dict],
+        *,
+        visible_category_ids: set[str],
+    ) -> list[dict]:
         return [
             item
             for item in categories or []
             if str(item.get("status") or "enabled") == "enabled"
+            or str(item.get("id") or "") in visible_category_ids
         ]
+
+    @staticmethod
+    def _visible_category_ids(
+        documents: list[dict],
+        *,
+        visible_document_ids: set[str],
+    ) -> set[str]:
+        category_ids: set[str] = set()
+        for document in documents:
+            document_id = str(document.get("id") or "")
+            category_id = str(document.get("business_category_id") or "")
+            if document_id and document_id in visible_document_ids and category_id:
+                category_ids.add(category_id)
+        return category_ids
 
     @staticmethod
     def _scope_key(
@@ -416,13 +435,36 @@ class DirectoryService:
             if item.get("id")
         }
 
-        public_categories = self._enabled_categories(
-            self.category_service.store.list_business_categories(scope_type="system")
+        all_public_categories = self.category_service.store.list_business_categories(scope_type="system")
+        all_department_categories = self.category_service.store.list_business_categories(scope_type="department")
+        all_category_map = {
+            str(item.get("id") or ""): item
+            for item in [*all_public_categories, *all_department_categories]
+            if item.get("id")
+        }
+
+        documents = [
+            self._enrich_document(
+                document,
+                department_map=department_map,
+                category_map=all_category_map,
+            )
+            for document in get_all_documents()
+        ]
+        visible_document_ids = self.authorization_service.list_visible_document_ids(current_user, documents)
+        visible_category_ids = self._visible_category_ids(
+            documents,
+            visible_document_ids=visible_document_ids,
         )
-        department_categories = self._enabled_categories(
-            self.category_service.store.list_business_categories(scope_type="department")
+        public_categories = self._workspace_categories(
+            all_public_categories,
+            visible_category_ids=visible_category_ids,
         )
-        category_map = {
+        department_categories = self._workspace_categories(
+            all_department_categories,
+            visible_category_ids=visible_category_ids,
+        )
+        workspace_category_map = {
             str(item.get("id") or ""): item
             for item in [*public_categories, *department_categories]
             if item.get("id")
@@ -434,19 +476,9 @@ class DirectoryService:
             business_category_id=business_category_id,
             accessible_department_ids=accessible_department_ids,
             department_map=department_map,
-            category_map=category_map,
+            category_map=workspace_category_map,
             current_user=current_user,
         )
-
-        documents = [
-            self._enrich_document(
-                document,
-                department_map=department_map,
-                category_map=category_map,
-            )
-            for document in get_all_documents()
-        ]
-        visible_document_ids = self.authorization_service.list_visible_document_ids(current_user, documents)
 
         tree = [
             self._build_public_tree_node(public_categories),
@@ -457,7 +489,7 @@ class DirectoryService:
             department_id=normalized_department_id,
             business_category_id=normalized_business_category_id,
             department_map=department_map,
-            category_map=category_map,
+            category_map=workspace_category_map,
         )
         response = DirectoryWorkspaceResponse(
             current_scope=current_scope,
@@ -466,7 +498,7 @@ class DirectoryService:
                 department_id=normalized_department_id,
                 business_category_id=normalized_business_category_id,
                 department_map=department_map,
-                category_map=category_map,
+                category_map=workspace_category_map,
             ),
             tree=tree,
             folders=self._folders(
