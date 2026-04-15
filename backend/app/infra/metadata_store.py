@@ -865,9 +865,14 @@ class DocumentMetadataStore:
             )
         return {"admin_username": "admin", "pending_department_id": pending_department_id}
 
-    def upsert_user(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def upsert_user(
+        self,
+        payload: Dict[str, Any],
+        *,
+        reuse_existing_username: bool = True,
+    ) -> Dict[str, Any]:
         now = datetime.now().isoformat()
-        existing = self.get_user_by_username(payload["username"])
+        existing = self.get_user_by_username(payload["username"]) if reuse_existing_username else None
         user_id = existing["id"] if existing else payload.get("id") or f"user-{uuid.uuid4().hex}"
         created_at = payload.get("created_at") or (existing["created_at"] if existing else now)
         with self._connect() as connection:

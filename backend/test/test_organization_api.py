@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -9,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api as api_module  # noqa: E402
 import api.organization as organization_api  # noqa: E402
+from app.infra.metadata_store import DocumentMetadataStore  # noqa: E402
 from app.services.errors import AppServiceError  # noqa: E402
 from app.services.organization_service import OrganizationService  # noqa: E402
 
@@ -172,3 +174,56 @@ def test_create_user_rejects_duplicate_username():
     store.upsert_user.assert_not_called()
     store.replace_user_department_memberships.assert_not_called()
     auth_service.hash_password.assert_not_called()
+
+
+def test_create_user_rejects_duplicate_username_when_insert_hits_unique_constraint(
+    tmp_path: Path,
+    monkeypatch,
+):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    store.upsert_user(
+        {
+            "id": "user-existing",
+            "username": "alice",
+            "password_hash": "hash-existing",
+            "display_name": "Alice Existing",
+            "status": "enabled",
+            "primary_department_id": "dept-fin",
+            "role_code": "employee",
+        }
+    )
+    auth_service = Mock()
+    auth_service.hash_password.return_value = "hashed"
+    service = OrganizationService(store=store, auth_service=auth_service)
+    original_get_user_by_username = store.get_user_by_username
+    lookup_state = {"skipped_once": False}
+
+    def simulate_race(username: str):
+        if username == "alice" and not lookup_state["skipped_once"]:
+            lookup_state["skipped_once"] = True
+            return None
+        return original_get_user_by_username(username)
+
+    monkeypatch.setattr(store, "get_user_by_username", simulate_race)
+
+    with pytest.raises(AppServiceError) as exc_info:
+        service.create_user(
+            {
+                "username": "alice",
+                "password": "Secret@123",
+                "display_name": "Alice Duplicate",
+                "role_code": "employee",
+                "primary_department_id": "dept-fin",
+                "collaborative_department_ids": [],
+                "status": "enabled",
+            },
+            current_user={"id": "user-admin", "role_code": "system_admin"},
+        )
+
+    assert exc_info.value.code == 2001
+    assert "用户名已存在" in str(exc_info.value.detail)
+    assert auth_service.hash_password.called is True
+    assert store.get_user_by_username("alice")["display_name"] == "Alice Existing"

@@ -1,3 +1,5 @@
+import sqlite3
+
 from app.infra.metadata_store import get_metadata_store
 from app.services.auth_service import AuthService
 from app.services.errors import AppServiceError
@@ -55,17 +57,21 @@ class OrganizationService:
             (payload or {}).get("collaborative_department_ids"),
         )
 
-        user = self.store.upsert_user(
-            {
-                "id": (payload or {}).get("id"),
-                "username": username,
-                "password_hash": self.auth_service.hash_password(password),
-                "display_name": display_name,
-                "status": str((payload or {}).get("status") or "enabled"),
-                "primary_department_id": primary_department_id,
-                "role_code": role_code,
-            }
-        )
+        try:
+            user = self.store.upsert_user(
+                {
+                    "id": (payload or {}).get("id"),
+                    "username": username,
+                    "password_hash": self.auth_service.hash_password(password),
+                    "display_name": display_name,
+                    "status": str((payload or {}).get("status") or "enabled"),
+                    "primary_department_id": primary_department_id,
+                    "role_code": role_code,
+                },
+                reuse_existing_username=False,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise AppServiceError(2001, "用户名已存在") from exc
         self.store.replace_user_department_memberships(
             user["id"],
             primary_department_id,
