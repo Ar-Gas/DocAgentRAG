@@ -21,20 +21,22 @@ vi.mock('element-plus', () => ({
   ElMessage: { error: vi.fn() },
 }))
 
-describe('api topic tree helpers', () => {
+describe('api surface helpers', () => {
   beforeEach(() => {
     requestMock.get.mockClear()
     requestMock.post.mockClear()
     requestMock.patch.mockClear()
   })
 
-  it('posts topic tree rebuilds to the build endpoint', async () => {
+  it('does not expose removed semantic helpers after the cutover', async () => {
     vi.resetModules()
     const { api } = await import('@/api')
 
-    api.buildTopicTree(true)
-
-    expect(requestMock.post).toHaveBeenCalledWith('/classification/topic-tree/build', { force_rebuild: true })
+    expect(api.getTopicTree).toBeUndefined()
+    expect(api.buildTopicTree).toBeUndefined()
+    expect(api.generateClassificationTable).toBeUndefined()
+    expect(api.summarizeResults).toBeUndefined()
+    expect(api.reclassifyDocument).toBeUndefined()
   })
 
   it('posts governed upload metadata as multipart fields', async () => {
@@ -90,6 +92,7 @@ describe('api topic tree helpers', () => {
     api.createSystemCategory({ name: '制度流程', sort_order: 1 })
     api.createDepartmentCategory({ name: '预算管理', department_id: 'dept-fin' })
     api.updateCategory('cat-budget', { status: 'disabled' })
+    api.getDirectoryWorkspace({ department_id: 'dept-fin', query: 'budget' })
     api.getAuditLogs({ target_type: 'document', result: 'success' })
 
     expect(requestMock.post).toHaveBeenCalledWith('/categories/system', {
@@ -102,6 +105,9 @@ describe('api topic tree helpers', () => {
     })
     expect(requestMock.patch).toHaveBeenCalledWith('/categories/cat-budget', {
       status: 'disabled',
+    })
+    expect(requestMock.get).toHaveBeenCalledWith('/directory/workspace', {
+      params: { department_id: 'dept-fin', query: 'budget' },
     })
     expect(requestMock.get).toHaveBeenCalledWith('/audit-logs', {
       params: { target_type: 'document', result: 'success' },

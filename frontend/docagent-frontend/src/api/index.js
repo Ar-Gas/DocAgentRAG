@@ -66,9 +66,11 @@ export const api = {
   changePassword: (payload) => request.post('/auth/change-password', payload),
   getDepartments: () => request.get('/departments'),
   getRoles: () => request.get('/roles'),
-  getUsers: (page = 1, pageSize = 10) => request.get('/users', { params: { page, page_size: pageSize } }),
+  getUsers: (page = 1, pageSize = 10) =>
+    request.get('/users', { params: { page, page_size: pageSize } }),
   createUser: (payload) => request.post('/users', payload),
-
+  getDirectoryWorkspace: (params = {}) =>
+    request.get('/directory/workspace', { params }),
   uploadFile: (file, metadata = {}, onProgress) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -88,72 +90,26 @@ export const api = {
       onUploadProgress: onProgress,
     })
   },
-  getDocumentList: (page = 1, pageSize = 100) => {
-    return request.get('/documents/', { params: { page, page_size: pageSize } })
-  },
-  getDocumentContent: (documentId) => {
-    return request.get(`/documents/${documentId}/content`)
-  },
-  getDocumentReader: (documentId, query = '', anchorBlockId = null) => {
-    return request.get(`/documents/${documentId}/reader`, {
+  getDocumentList: (page = 1, pageSize = 100) =>
+    request.get('/documents/', { params: { page, page_size: pageSize } }),
+  getDocumentReader: (documentId, query = '', anchorBlockId = null) =>
+    request.get(`/documents/${documentId}/reader`, {
       params: { query, anchor_block_id: anchorBlockId },
-    })
-  },
-  deleteDocument: (documentId) => {
-    return request.delete(`/documents/${documentId}`)
-  },
-  rechunkDocument: (documentId, useRefiner = true) => {
-    return request.post(`/documents/${documentId}/rechunk`, { use_refiner: useRefiner })
-  },
-
-  reclassifyDocument: (documentId) => {
-    return request.post(`/classification/reclassify/${documentId}`)
-  },
-  getCategories: () => {
-    return request.get('/classification/categories')
-  },
-  getSystemCategories: () => {
-    return request.get('/categories/system')
-  },
-  getDepartmentCategories: (departmentId) => {
-    return request.get('/categories/department', {
+    }),
+  deleteDocument: (documentId) => request.delete(`/documents/${documentId}`),
+  updateDocument: (documentId, payload) =>
+    request.patch(`/documents/${documentId}`, payload),
+  getSystemCategories: () => request.get('/categories/system'),
+  getDepartmentCategories: (departmentId) =>
+    request.get('/categories/department', {
       params: { department_id: departmentId },
-    })
-  },
-  createSystemCategory: (payload) => {
-    return request.post('/categories/system', payload)
-  },
-  createDepartmentCategory: (payload) => {
-    return request.post('/categories/department', payload)
-  },
-  updateCategory: (categoryId, payload) => {
-    return request.patch(`/categories/${categoryId}`, payload)
-  },
-  getTopicTree: () => {
-    return request.get('/classification/topic-tree')
-  },
-  buildTopicTree: (forceRebuild = false) => {
-    return request.post('/classification/topic-tree/build', { force_rebuild: forceRebuild })
-  },
-  generateClassificationTable: (query, results = [], persist = false) => {
-    return request.post('/classification/tables/generate', { query, results, persist })
-  },
-
-  getDocumentFileBlob: (documentId) => {
-    return request.get(`/documents/${documentId}/file`, { responseType: 'blob' })
-  },
-  workspaceSearch: (payload) => {
-    return request.post('/retrieval/workspace-search', payload)
-  },
-  getStats: () => {
-    return request.get('/retrieval/stats')
-  },
-  summarizeResults: (query, results = []) => {
-    return request.post('/retrieval/summarize-results', { query, results })
-  },
-  getAuditLogs: (params = {}) => {
-    return request.get('/audit-logs', { params })
-  },
+    }),
+  createSystemCategory: (payload) => request.post('/categories/system', payload),
+  createDepartmentCategory: (payload) => request.post('/categories/department', payload),
+  updateCategory: (categoryId, payload) => request.patch(`/categories/${categoryId}`, payload),
+  workspaceSearch: (payload) => request.post('/retrieval/workspace-search', payload),
+  getStats: () => request.get('/retrieval/stats'),
+  getAuditLogs: (params = {}) => request.get('/audit-logs', { params }),
 }
 
 export function workspaceSearchStream(payload, { onResults, onReranked, onDone, onError } = {}) {

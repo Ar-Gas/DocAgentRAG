@@ -16,24 +16,13 @@ const routes = [
   },
   {
     path: '/',
-    name: 'dashboard',
+    name: 'directory-home',
     component: () => import('@/pages/DashboardPage.vue'),
     meta: {
       requiresAuth: true,
-      navLabel: '工作台',
-      title: '工作台',
+      navLabel: '全局目录',
+      title: '全局目录',
       navOrder: 10,
-    },
-  },
-  {
-    path: '/documents',
-    name: 'documents',
-    component: () => import('@/pages/DocumentsPage.vue'),
-    meta: {
-      requiresAuth: true,
-      navLabel: '上传文档',
-      title: '文档管理',
-      navOrder: 20,
     },
   },
   {
@@ -42,19 +31,31 @@ const routes = [
     component: () => import('@/pages/SearchPage.vue'),
     meta: {
       requiresAuth: true,
-      navLabel: '智能检索',
-      title: '智能检索',
+      navLabel: '具体检索',
+      title: '具体检索',
+      navOrder: 20,
+    },
+  },
+  {
+    path: '/upload',
+    name: 'upload',
+    component: () => import('@/pages/UploadPage.vue'),
+    meta: {
+      requiresAuth: true,
+      navLabel: '上传文档',
+      title: '上传文档',
       navOrder: 30,
     },
   },
   {
-    path: '/taxonomy',
-    name: 'taxonomy',
-    component: () => import('@/pages/TaxonomyPage.vue'),
+    path: '/documents',
+    name: 'documents',
+    component: () => import('@/pages/DocumentsPage.vue'),
     meta: {
       requiresAuth: true,
-      hideInNav: true,
-      title: '语义主题树',
+      navLabel: '文档台账',
+      title: '文档台账',
+      navOrder: 40,
     },
   },
   {
@@ -78,7 +79,7 @@ const routes = [
       roles: ['system_admin', 'department_admin'],
       navLabel: '分类管理',
       title: '分类管理',
-      navOrder: 40,
+      navOrder: 50,
     },
   },
   {

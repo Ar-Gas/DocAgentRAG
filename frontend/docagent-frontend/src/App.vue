@@ -44,7 +44,7 @@
       <header class="shell-topbar">
         <div class="topbar-left">
           <h1 class="page-title">{{ currentPageTitle }}</h1>
-          <p class="page-subtitle">按角色展示导航并统一收口登录态。</p>
+          <p class="page-subtitle">以权限目录为主线，统一收口全局目录、具体检索、台账与管理后台。</p>
         </div>
         <div class="topbar-right">
           <div class="user-chip">
@@ -67,7 +67,15 @@
 <script setup>
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
-import { DataBoard, Document, Search, UserFilled, Notebook, CollectionTag } from '@element-plus/icons-vue'
+import {
+  DataBoard,
+  Document,
+  Search,
+  UserFilled,
+  Notebook,
+  CollectionTag,
+  Upload,
+} from '@element-plus/icons-vue'
 
 import { api } from '@/api'
 import { canAccessRoles, sessionStore } from '@/stores/session'
@@ -76,9 +84,10 @@ const route = useRoute()
 const router = useRouter()
 
 const iconByRouteName = {
-  dashboard: DataBoard,
-  documents: Document,
+  'directory-home': DataBoard,
   search: Search,
+  upload: Upload,
+  documents: Document,
   'category-admin': CollectionTag,
   'user-admin': UserFilled,
   'audit-log': Notebook,
