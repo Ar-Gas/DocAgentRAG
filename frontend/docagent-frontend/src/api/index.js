@@ -97,8 +97,6 @@ export const api = {
       params: { query, anchor_block_id: anchorBlockId },
     }),
   deleteDocument: (documentId) => request.delete(`/documents/${documentId}`),
-  updateDocument: (documentId, payload) =>
-    request.patch(`/documents/${documentId}`, payload),
   getSystemCategories: () => request.get('/categories/system'),
   getDepartmentCategories: (departmentId) =>
     request.get('/categories/department', {

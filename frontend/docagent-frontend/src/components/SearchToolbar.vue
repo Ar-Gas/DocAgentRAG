@@ -176,11 +176,6 @@
       </div>
 
       <div class="action-group">
-        <el-button :disabled="!canSummarize" @click="emit('summarize')">
-          <el-icon><Document /></el-icon>LLM 总结
-        </el-button>
-        <el-button :disabled="!canGenerateReport" @click="emit('generate-report')">分类报告</el-button>
-        <el-button :loading="rebuildingTopics" @click="emit('rebuild-topics')">重建主题树</el-button>
         <el-button @click="emit('reset')">清空</el-button>
       </div>
     </div>
@@ -189,7 +184,6 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Document } from '@element-plus/icons-vue'
 
 const props = defineProps({
   modelValue: {
@@ -211,28 +205,13 @@ const props = defineProps({
   loading: {
     type: Boolean,
     default: false
-  },
-  canSummarize: {
-    type: Boolean,
-    default: false
-  },
-  canGenerateReport: {
-    type: Boolean,
-    default: false
-  },
-  rebuildingTopics: {
-    type: Boolean,
-    default: false
   }
 })
 
 const emit = defineEmits([
   'update:modelValue',
   'search',
-  'reset',
-  'summarize',
-  'generate-report',
-  'rebuild-topics'
+  'reset'
 ])
 
 const form = computed(() => props.modelValue || {})

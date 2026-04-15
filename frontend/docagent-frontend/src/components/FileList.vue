@@ -66,18 +66,8 @@
 
       <el-table-column prop="created_at_iso" label="上传时间" width="175" />
 
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column label="操作" width="96" fixed="right">
         <template #default="{ row }">
-          <el-button
-            type="primary"
-            link
-            size="small"
-            @click="handleReclassify(row)"
-            :loading="row._reclassifying"
-          >
-            <el-icon><RefreshRight /></el-icon>
-            重新分类
-          </el-button>
           <el-button
             type="danger"
             link
@@ -96,7 +86,7 @@
 
 <script setup>
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, Refresh, RefreshRight, Delete } from '@element-plus/icons-vue'
+import { Document, Refresh, Delete } from '@element-plus/icons-vue'
 import { api } from '@/api'
 
 defineProps({
@@ -121,20 +111,6 @@ const toStatusLabel = (status) => {
     archived: '已归档',
   }
   return dictionary[status] || '草稿'
-}
-
-const handleReclassify = async (row) => {
-  row._reclassifying = true
-  try {
-    const response = await api.reclassifyDocument(row.id)
-    const newClass = response.data?.new_classification || '无结果'
-    ElMessage.success(`重新分类完成：${newClass}`)
-    emit('operate-success')
-  } catch (_) {
-    // error already shown by interceptor
-  } finally {
-    row._reclassifying = false
-  }
 }
 
 const handleDelete = async (row) => {

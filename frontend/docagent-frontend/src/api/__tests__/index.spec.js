@@ -37,6 +37,7 @@ describe('api surface helpers', () => {
     expect(api.generateClassificationTable).toBeUndefined()
     expect(api.summarizeResults).toBeUndefined()
     expect(api.reclassifyDocument).toBeUndefined()
+    expect(api.updateDocument).toBeUndefined()
   })
 
   it('posts governed upload metadata as multipart fields', async () => {

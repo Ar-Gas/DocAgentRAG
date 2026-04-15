@@ -6,14 +6,8 @@
       :departments="departments"
       :categories="categories"
       :loading="searchLoading"
-      :can-summarize="workspace.documents.length > 0"
-      :can-generate-report="workspace.documents.length > 0"
-      :rebuilding-topics="rebuildingTopics"
       @search="executeSearch"
       @reset="resetWorkspace"
-      @summarize="openSummaryDrawer"
-      @generate-report="openClassificationDrawer"
-      @rebuild-topics="rebuildTopicTree"
     />
 
     <div class="workspace-grid">
@@ -36,7 +30,7 @@
         />
       </div>
 
-      <!-- 右列：检索概览 + 语义主题树 -->
+      <!-- 右列：检索概览 -->
       <div class="sidebar-stack">
         <section class="shell-panel insight-card">
           <p class="section-label">检索概览</p>
@@ -56,33 +50,8 @@
               : '先检索文档，点击列表中的文档卡片展开证据。' }}
           </p>
         </section>
-
-        <TopicTreePanel
-          :tree="topicTree"
-          :loading="topicLoading"
-          :rebuilding="rebuildingTopics"
-          :selected-document-id="selectedDocumentId"
-          :show-rebuild="true"
-          @select-document="selectDocument"
-          @rebuild="rebuildTopicTree"
-        />
       </div>
     </div>
-
-    <!-- 汇总抽屉 -->
-    <SummaryDrawer
-      v-model:visible="summaryVisible"
-      :summary="summary"
-      :loading="summaryLoading"
-      @select-document="selectDocument"
-    />
-
-    <!-- 分类报告抽屉 -->
-    <ClassificationReportDrawer
-      v-model:visible="classificationVisible"
-      :report="classificationReport"
-      :loading="classificationLoading"
-    />
 
     <!-- 原文预览模态框 -->
     <DocumentViewerModal
@@ -99,13 +68,10 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 
-import ClassificationReportDrawer from '@/components/ClassificationReportDrawer.vue'
 import DocumentReader from '@/components/DocumentReader.vue'
 import DocumentResultList from '@/components/DocumentResultList.vue'
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 import SearchToolbar from '@/components/SearchToolbar.vue'
-import SummaryDrawer from '@/components/SummaryDrawer.vue'
-import TopicTreePanel from '@/components/TopicTreePanel.vue'
 import { api, workspaceSearchStream } from '@/api'
 
 const WORKSPACE_RETRIEVAL_VERSION = import.meta.env.VITE_WORKSPACE_RETRIEVAL_VERSION || 'legacy'
@@ -140,21 +106,12 @@ const stats = ref({})
 const departments = ref([])
 const systemCategories = ref([])
 const departmentCategories = ref([])
-const topicTree = ref({ topics: [], total_documents: 0 })
 const workspace = ref(emptyWorkspace())
 const selectedDocumentId = ref('')
 const readerPayload = ref(null)
-const summary = ref(null)
-const classificationReport = ref(null)
 const searchLoading = ref(false)
 const isReranking = ref(false)
 const readerLoading = ref(false)
-const summaryLoading = ref(false)
-const classificationLoading = ref(false)
-const topicLoading = ref(false)
-const rebuildingTopics = ref(false)
-const summaryVisible = ref(false)
-const classificationVisible = ref(false)
 
 // 原文预览状态
 const viewerVisible = ref(false)
@@ -199,52 +156,15 @@ const categories = computed(() => {
   })
 })
 
-const selectedDepartmentName = computed(() => {
-  const department = departments.value.find(
-    (item) => String(item.id) === String(filters.value.department_id || ''),
-  )
-  return department?.name || ''
-})
-
-const selectedCategoryName = computed(() => {
-  const category = categories.value.find(
-    (item) => String(item.id) === String(filters.value.business_category_id || ''),
-  )
-  return category?.name || ''
-})
-
-const buildWorkspaceLabel = () => {
-  const parts = [
-    filters.value.query,
-    filters.value.filename,
-    filters.value.visibility_scope === 'public'
-      ? '公共文档'
-      : filters.value.visibility_scope === 'department'
-        ? '部门文档'
-        : '',
-    selectedDepartmentName.value,
-    selectedCategoryName.value,
-    (filters.value.file_types || []).join(' ')
-  ].filter(Boolean).join(' / ')
-  return parts || '当前检索结果'
-}
-
 const loadWorkspaceChrome = async () => {
-  topicLoading.value = true
-  try {
-    const [statsRes, departmentsRes, systemCategoriesRes, topicRes] = await Promise.all([
-      api.getStats(),
-      api.getDepartments(),
-      api.getSystemCategories(),
-      api.getTopicTree()
-    ])
-    stats.value = statsRes.data || {}
-    departments.value = departmentsRes.data || []
-    systemCategories.value = systemCategoriesRes.data || []
-    topicTree.value = topicRes.data || { topics: [], total_documents: 0 }
-  } finally {
-    topicLoading.value = false
-  }
+  const [statsRes, departmentsRes, systemCategoriesRes] = await Promise.all([
+    api.getStats(),
+    api.getDepartments(),
+    api.getSystemCategories(),
+  ])
+  stats.value = statsRes.data || {}
+  departments.value = departmentsRes.data || []
+  systemCategories.value = systemCategoriesRes.data || []
 }
 
 const loadDepartmentCategories = async (departmentId) => {
@@ -295,8 +215,6 @@ const executeSearch = async () => {
   if (_cancelStream) { _cancelStream(); _cancelStream = null }
   searchLoading.value = true
   isReranking.value = false
-  summary.value = null
-  classificationReport.value = null
 
   const req = buildSearchRequest()
 
@@ -332,50 +250,12 @@ const executeSearch = async () => {
   }
 }
 
-const openSummaryDrawer = async () => {
-  if (!workspace.value.documents.length) return
-  summaryVisible.value = true
-  summaryLoading.value = true
-  try {
-    const response = await api.summarizeResults(buildWorkspaceLabel(), workspace.value.documents.slice(0, 12))
-    summary.value = response.data || null
-  } finally {
-    summaryLoading.value = false
-  }
-}
-
-const openClassificationDrawer = async () => {
-  if (!workspace.value.documents.length) return
-  classificationVisible.value = true
-  classificationLoading.value = true
-  try {
-    const response = await api.generateClassificationTable(buildWorkspaceLabel(), workspace.value.documents.slice(0, 20), false)
-    classificationReport.value = response.data || null
-  } finally {
-    classificationLoading.value = false
-  }
-}
-
-const rebuildTopicTree = async () => {
-  rebuildingTopics.value = true
-  try {
-    const response = await api.buildTopicTree(true)
-    topicTree.value = response.data || { topics: [], total_documents: 0 }
-  } finally {
-    rebuildingTopics.value = false
-  }
-}
-
 const resetWorkspace = () => {
   filters.value = createDefaultFilters()
   departmentCategories.value = []
   workspace.value = emptyWorkspace()
   selectedDocumentId.value = ''
   readerPayload.value = null
-  summary.value = null
-  classificationReport.value = null
-  summaryVisible.value = false
-  classificationVisible.value = false
 }
 
 onMounted(() => {
@@ -419,7 +299,7 @@ watch(
   gap: 16px;
 }
 
-/* 右列：概览卡 + 主题树上下排列 */
+/* 右列：概览卡 */
 .sidebar-stack {
   display: flex;
   flex-direction: column;
