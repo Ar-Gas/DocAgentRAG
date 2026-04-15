@@ -26,14 +26,13 @@
             >
               {{ document.filename }}
             </span>
-            <span class="classification">{{ document.classification_result || '未分类' }}</span>
             <div class="governance-row">
               <span class="governance-badge">{{ toVisibilityLabel(document.visibility_scope) }}</span>
-              <span v-if="document.business_category_name || document.business_category_id" class="governance-badge is-blue">
-                {{ document.business_category_name || document.business_category_id }}
+              <span class="governance-badge is-blue">
+                业务分类：{{ document.business_category_name || document.business_category_id || '待整理' }}
               </span>
-              <span v-if="document.owner_department_name || document.owner_department_id" class="governance-badge is-gray">
-                {{ document.owner_department_name || document.owner_department_id }}
+              <span class="governance-badge is-gray">
+                归属部门：{{ document.owner_department_name || document.owner_department_id || '未归属' }}
               </span>
             </div>
           </div>
@@ -144,7 +143,7 @@ const toggleDocument = (document) => {
 
 const isExpanded = (id) => expandedIds.value.has(id)
 
-// 外部选中时自动展开（例如主题树点击）
+// 外部选中时自动展开（例如列表联动）
 watch(
   () => props.selectedDocumentId,
   (id) => {
@@ -257,11 +256,6 @@ const highlightSnippet = (text, query) =>
     cursor: not-allowed;
     &:hover { text-decoration: none; }
   }
-}
-
-.classification {
-  font-size: 11px;
-  color: var(--ink-muted);
 }
 
 .governance-row {

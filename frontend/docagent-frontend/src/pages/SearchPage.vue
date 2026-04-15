@@ -1,5 +1,10 @@
 <template>
   <section class="page-stack search-page">
+    <section class="shell-panel page-head">
+      <h2>具体检索</h2>
+      <p>按公共文档、部门文档和业务分类设置范围，检索可审计的文档证据与阅读内容。</p>
+    </section>
+
     <SearchToolbar
       v-model="filters"
       :stats="stats"
@@ -81,8 +86,6 @@ const createDefaultFilters = () => ({
   department_id: '',
   business_category_id: '',
   limit: 12,
-  alpha: 0.5,
-  use_rerank: false,
   file_types: [],
   filename: '',
   date_range: []
@@ -116,15 +119,18 @@ const openViewer = (document) => {
   viewerVisible.value = true
 }
 
+const normalizeMode = (mode) => {
+  const allowedModes = ['hybrid', 'vector', 'keyword']
+  return allowedModes.includes(mode) ? mode : 'hybrid'
+}
+
 const buildSearchRequest = () => ({
   query: filters.value.query?.trim() || '',
-  mode: filters.value.mode === 'smart' ? 'hybrid' : filters.value.mode,
+  mode: normalizeMode(filters.value.mode),
   visibility_scope: filters.value.visibility_scope || null,
   department_id: filters.value.department_id || null,
   business_category_id: filters.value.business_category_id || null,
   limit: filters.value.limit,
-  alpha: filters.value.alpha,
-  use_rerank: filters.value.use_rerank,
   file_types: filters.value.file_types || [],
   filename: filters.value.filename?.trim() || null,
   date_from: filters.value.date_range?.[0] || null,
@@ -267,6 +273,21 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.page-head {
+  h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ink-strong);
+    margin-bottom: 6px;
+  }
+
+  p {
+    font-size: 13px;
+    color: var(--ink-muted);
+    line-height: 1.65;
+  }
 }
 
 .workspace-grid {

@@ -3,7 +3,7 @@
     <div class="toolbar-head">
       <div class="toolbar-title-group">
         <h3>具体检索</h3>
-        <p>输入问题、关键词或文件名，在当前筛选范围内检索文档并查看证据。</p>
+        <p>围绕公共文档、部门文档和业务分类执行检索，结果仅返回当前权限范围内的治理文档。</p>
       </div>
 
       <div class="toolbar-metrics">
@@ -35,7 +35,7 @@
         @update:model-value="updateField('mode', $event)"
       >
         <el-option label="混合检索" value="hybrid" />
-        <el-option label="语义检索" value="vector" />
+        <el-option label="向量检索" value="vector" />
         <el-option label="关键词检索" value="keyword" />
       </el-select>
 
@@ -134,24 +134,6 @@
       </label>
     </div>
 
-    <div class="tuning-row">
-      <label v-if="form.mode === 'hybrid'" class="slider-block">
-        <span>语义权重</span>
-        <el-slider
-          :model-value="Math.round((form.alpha || 0.5) * 100)"
-          @update:model-value="updateAlpha"
-        />
-      </label>
-
-      <label v-if="form.mode !== 'keyword'" class="switch-block">
-        <span>启用重排序</span>
-        <el-switch
-          :model-value="form.use_rerank"
-          @update:model-value="updateField('use_rerank', $event)"
-        />
-      </label>
-    </div>
-
     <div class="action-row">
       <div class="mode-note">
         <strong>{{ modeTitle }}</strong>
@@ -205,15 +187,15 @@ const modeMeta = computed(() => {
   const dictionary = {
     hybrid: {
       title: '混合检索',
-      description: '向量召回和关键词召回一起工作，适合办公资料的日常查找。'
+      description: '向量召回与关键词召回并行，适合跨部门治理资料的日常检索。'
     },
     vector: {
-      title: '语义检索',
-      description: '更适合问句和概念性检索，优先理解语义接近的文档。'
+      title: '向量检索',
+      description: '优先匹配语义接近内容，适合制度问答和概念性查询。'
     },
     keyword: {
       title: '关键词检索',
-      description: '更适合项目代号、文件名、术语和精确短语。'
+      description: '适合项目代号、文件名、条款术语和精确短语检索。'
     }
   }
   return dictionary[currentMode] || dictionary.hybrid
@@ -232,10 +214,6 @@ const updateField = (field, value) => {
     ...form.value,
     [field]: value
   })
-}
-
-const updateAlpha = (value) => {
-  updateField('alpha', value / 100)
 }
 </script>
 
@@ -323,9 +301,7 @@ const updateAlpha = (value) => {
   gap: 12px;
 }
 
-.field-block,
-.switch-block,
-.slider-block {
+.field-block {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -335,21 +311,6 @@ const updateAlpha = (value) => {
     font-weight: 500;
     color: var(--ink-muted);
   }
-}
-
-.tuning-row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.switch-block,
-.slider-block {
-  min-width: 160px;
-  padding: 10px 14px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--bg-subtle);
 }
 
 .action-row {

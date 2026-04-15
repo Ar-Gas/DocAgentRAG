@@ -2,12 +2,12 @@
   <section class="upload-page">
     <div class="page-header shell-panel">
       <div>
-        <h3>治理上传</h3>
-        <p>上传前明确文档可见范围、归属部门和业务分类，避免公共资料与部门资料混放。</p>
+        <h3>上传文档</h3>
+        <p>上传时请显式填写治理元数据，包括可见范围、归属部门和业务分类，确保台账口径一致。</p>
       </div>
       <div class="summary-chips">
-        <span class="summary-chip">一级分类：公共文档 / 部门文档</span>
-        <span class="summary-chip">二级分类：业务文档</span>
+        <span class="summary-chip">一级范围：公共文档 / 部门文档</span>
+        <span class="summary-chip">业务分类：按治理目录维护</span>
       </div>
     </div>
 

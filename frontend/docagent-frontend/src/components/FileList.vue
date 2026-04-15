@@ -29,16 +29,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="分类" width="160">
-        <template #default="{ row }">
-          <el-tag v-if="row.classification_result" type="success" size="small">
-            {{ row.classification_result }}
-          </el-tag>
-          <el-tag v-else type="warning" size="small">未分类</el-tag>
-        </template>
-      </el-table-column>
-
-      <el-table-column label="治理范围" min-width="180">
+      <el-table-column label="可见范围 / 归属部门" min-width="200">
         <template #default="{ row }">
           <div class="governance-cell">
             <el-tag size="small" :type="row.visibility_scope === 'public' ? 'success' : 'info'">

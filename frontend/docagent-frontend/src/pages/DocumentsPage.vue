@@ -3,7 +3,7 @@
     <div class="page-header shell-panel">
       <div>
         <h3>文档台账</h3>
-        <p>上传完成后，这里按公共文档、部门文档和业务分类展示当前账号可见的文档清单。</p>
+        <p>仅展示当前账号可见的治理台账，按公共文档、部门文档与业务分类追踪文档状态。</p>
       </div>
       <div class="doc-stats">
         <article>

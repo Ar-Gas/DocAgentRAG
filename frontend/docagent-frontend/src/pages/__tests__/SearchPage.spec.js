@@ -76,42 +76,51 @@ describe('SearchPage', () => {
     vi.clearAllMocks()
   })
 
-  it('loads the reduced search chrome without semantic dependencies', async () => {
-    await mountSearchPage()
+  it('presents concrete retrieval and keeps semantic surfaces removed', async () => {
+    const wrapper = await mountSearchPage()
 
+    expect(wrapper.text()).toContain('具体检索')
+    expect(wrapper.text()).not.toContain('主题树')
+    expect(wrapper.text()).not.toContain('摘要报告')
+    expect(wrapper.text()).not.toContain('分类报告')
     expect(apiMocks.getStats).toHaveBeenCalledTimes(1)
     expect(apiMocks.getDepartments).toHaveBeenCalledTimes(1)
     expect(apiMocks.getSystemCategories).toHaveBeenCalledTimes(1)
     expect(apiMocks.getDepartmentCategories).not.toHaveBeenCalled()
   })
 
-  it('normalizes former smart requests onto sync workspace search', async () => {
+  it('sends only concrete governance filters in workspace search payloads', async () => {
     const wrapper = await mountSearchPage()
 
+    wrapper.vm.filters.query = '预算审批'
     wrapper.vm.filters.mode = 'smart'
-    await wrapper.find('.go').trigger('click')
-    await flushPromises()
-
-    expect(apiMocks.workspaceSearch).toHaveBeenCalledWith(expect.objectContaining({
-      mode: 'hybrid',
-    }))
-    expect(apiMocks.workspaceSearch.mock.calls[0][0].retrieval_version).toBeUndefined()
-  })
-
-  it('includes visibility and department filters in workspace search requests', async () => {
-    const wrapper = await mountSearchPage()
-
     wrapper.vm.filters.visibility_scope = 'department'
     wrapper.vm.filters.department_id = 'dept-fin'
     wrapper.vm.filters.business_category_id = 'cat-budget'
+    wrapper.vm.filters.file_types = ['pdf']
+    wrapper.vm.filters.filename = '预算手册'
+    wrapper.vm.filters.date_range = ['2026-01-01', '2026-02-01']
+    wrapper.vm.filters.limit = 20
     await wrapper.find('.go').trigger('click')
     await flushPromises()
 
-    expect(apiMocks.workspaceSearch).toHaveBeenCalledWith(expect.objectContaining({
+    const payload = apiMocks.workspaceSearch.mock.calls[0][0]
+    expect(payload).toEqual({
+      query: '预算审批',
+      mode: 'hybrid',
       visibility_scope: 'department',
       department_id: 'dept-fin',
       business_category_id: 'cat-budget',
-    }))
+      limit: 20,
+      file_types: ['pdf'],
+      filename: '预算手册',
+      date_from: '2026-01-01',
+      date_to: '2026-02-01',
+      group_by_document: true,
+    })
+    expect(payload.use_query_expansion).toBeUndefined()
+    expect(payload.use_llm_rerank).toBeUndefined()
+    expect(payload.expansion_method).toBeUndefined()
   })
 
   it('resets the current workspace without semantic drawer state', async () => {

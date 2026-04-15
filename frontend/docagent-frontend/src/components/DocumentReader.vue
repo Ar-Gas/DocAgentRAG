@@ -15,7 +15,10 @@
       <div class="reader-meta">
         <div>
           <h5>{{ reader.filename }}</h5>
-          <p>{{ reader.classification_result || '未分类' }}</p>
+          <p>
+            归属部门：{{ reader.owner_department_name || reader.owner_department_id || '未归属' }}
+            · 业务分类：{{ reader.business_category_name || reader.business_category_id || '待整理' }}
+          </p>
         </div>
         <div class="meta-tags">
           <el-tag size="small" type="info">{{ reader.file_type || '未知类型' }}</el-tag>
