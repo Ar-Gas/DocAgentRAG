@@ -4,13 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 
 const apiMocks = vi.hoisted(() => ({
-  getDocumentFileUrl: vi.fn((documentId) => `/api/v1/documents/${documentId}/file`),
+  getDocumentFileBlob: vi.fn(() => Promise.resolve(new Blob(['file']))),
   getDocumentReader: vi.fn()
 }))
 
 vi.mock('@/api', () => ({
   api: {
-    getDocumentFileUrl: apiMocks.getDocumentFileUrl,
+    getDocumentFileBlob: apiMocks.getDocumentFileBlob,
     getDocumentReader: apiMocks.getDocumentReader
   }
 }))
@@ -52,6 +52,8 @@ const STUBS = {
 describe('DocumentViewerModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    URL.createObjectURL = vi.fn(() => 'blob:docagent-preview')
+    URL.revokeObjectURL = vi.fn()
   })
 
   afterEach(() => {

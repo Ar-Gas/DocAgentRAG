@@ -86,6 +86,7 @@ const emit = defineEmits(['update:visible'])
 
 const OFFICE_RENDER_TIMEOUT_MS = 15000
 
+const fileUrl = ref('')
 const officeLoading = ref(false)
 const officeError = ref('')
 let renderTimeoutId = null
@@ -105,7 +106,6 @@ const normalizeFileType = (fileType, filename) => {
   return filenameMatch?.[1] || ''
 }
 
-const fileUrl = computed(() => api.getDocumentFileUrl(props.documentId))
 const normalizedFileType = computed(() => normalizeFileType(props.fileType, props.filename))
 const fileUnavailable = computed(() => props.fileAvailable === false)
 const isPdf = computed(() => normalizedFileType.value === '.pdf')
@@ -114,6 +114,13 @@ const isXlsx = computed(() => normalizedFileType.value === '.xlsx')
 const isSupportedOfficePreview = computed(() => isPdf.value || isDocx.value || isXlsx.value)
 const displayFileType = computed(() => normalizedFileType.value || props.fileType || '未知')
 const title = computed(() => props.filename || '文档预览')
+
+const revokeObjectUrl = () => {
+  if (fileUrl.value) {
+    URL.revokeObjectURL(fileUrl.value)
+    fileUrl.value = ''
+  }
+}
 
 const clearRenderTimeout = () => {
   if (renderTimeoutId !== null) {
@@ -135,10 +142,33 @@ const scheduleRenderTimeout = () => {
   }, OFFICE_RENDER_TIMEOUT_MS)
 }
 
-const resetViewerState = () => {
+const ensureFileUrl = async () => {
+  if (fileUrl.value || !props.documentId) {
+    return fileUrl.value
+  }
+
+  const fileBlob = await api.getDocumentFileBlob(props.documentId)
+  fileUrl.value = URL.createObjectURL(fileBlob)
+  return fileUrl.value
+}
+
+const resetViewerState = async () => {
+  revokeObjectUrl()
   officeLoading.value = props.visible && !fileUnavailable.value && isSupportedOfficePreview.value
   officeError.value = ''
   scheduleRenderTimeout()
+
+  if (!officeLoading.value) {
+    return
+  }
+
+  try {
+    await ensureFileUrl()
+  } catch (_error) {
+    clearRenderTimeout()
+    officeLoading.value = false
+    officeError.value = '预览文件加载失败，请在新标签页打开查看。'
+  }
 }
 
 const handleOfficeRendered = () => {
@@ -154,13 +184,14 @@ const handleOfficeError = (error) => {
 
 watch(
   () => [props.visible, props.documentId, props.fileType, props.filename, props.fileAvailable],
-  ([visible]) => {
+  async ([visible]) => {
     if (visible) {
-      resetViewerState()
+      await resetViewerState()
       return
     }
 
     clearRenderTimeout()
+    revokeObjectUrl()
     officeLoading.value = false
     officeError.value = ''
   },
@@ -169,14 +200,22 @@ watch(
 
 onBeforeUnmount(() => {
   clearRenderTimeout()
+  revokeObjectUrl()
 })
 
-const openInNewTab = () => {
+const openInNewTab = async () => {
   if (fileUnavailable.value) {
     return
   }
 
-  window.open(fileUrl.value, '_blank', 'noopener,noreferrer')
+  try {
+    const targetUrl = await ensureFileUrl()
+    if (targetUrl) {
+      window.open(targetUrl, '_blank', 'noopener,noreferrer')
+    }
+  } catch (_error) {
+    officeError.value = '原文件加载失败，请稍后重试。'
+  }
 }
 </script>
 

@@ -109,7 +109,9 @@ export const api = {
     return request.post('/classification/tables/generate', { query, results, persist })
   },
 
-  getDocumentFileUrl: (documentId) => `/api/v1/documents/${documentId}/file`,
+  getDocumentFileBlob: (documentId) => {
+    return request.get(`/documents/${documentId}/file`, { responseType: 'blob' })
+  },
   workspaceSearch: (payload) => {
     return request.post('/retrieval/workspace-search', payload)
   },
