@@ -75,6 +75,32 @@ class DocumentService:
         if current_user is not None and not authorization_service.can_manage_document(current_user, doc_info):
             raise AppServiceError(401, "无权限管理文档")
 
+    @staticmethod
+    def _ensure_target_manage_scope(current_user: Optional[Dict], doc_info: Dict) -> None:
+        if current_user is None:
+            return
+        if str(current_user.get("role_code") or "") == "system_admin":
+            return
+        if not authorization_service.can_manage_document(current_user, doc_info):
+            raise AppServiceError(401, "无权限管理文档")
+
+        managed_department_ids = {
+            str(department_id)
+            for department_id in authorization_service._managed_department_ids(current_user)
+            if department_id
+        }
+        owner_department_id = doc_info.get("owner_department_id")
+        if owner_department_id and str(owner_department_id) not in managed_department_ids:
+            raise AppServiceError(401, "无权限管理文档")
+
+        shared_department_ids = {
+            str(department_id)
+            for department_id in (doc_info.get("shared_department_ids") or [])
+            if department_id
+        }
+        if shared_department_ids and not shared_department_ids.issubset(managed_department_ids):
+            raise AppServiceError(401, "无权限管理文档")
+
     def upload(
         self,
         filename: str,
@@ -322,6 +348,7 @@ class DocumentService:
         if "is_public_restricted" not in (updated_fields or {}):
             merged_source.pop("is_public_restricted", None)
         merged = self._apply_governance_defaults(merged_source, current_user=current_user)
+        self._ensure_target_manage_scope(current_user, merged)
         governance_patch = {field: merged.get(field) for field in self.GOVERNANCE_FIELDS}
         if not update_document_info(document_id, governance_patch):
             raise AppServiceError(1001, f"文档ID: {document_id}")

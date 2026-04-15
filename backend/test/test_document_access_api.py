@@ -426,6 +426,72 @@ def test_update_document_metadata_does_not_gain_manage_access_from_actor_fallbac
         raise AssertionError("legacy owner fallback should not grant manage permission")
 
 
+def test_update_document_metadata_denies_retarget_owner_department_outside_managed_scope(monkeypatch):
+    existing_doc = {
+        "id": "doc-1",
+        "filename": "doc.pdf",
+        "visibility_scope": "department",
+        "owner_department_id": "dept-fin",
+        "shared_department_ids": [],
+        "role_restriction": None,
+    }
+    mock_update = Mock(return_value=True)
+    monkeypatch.setattr(document_service_module, "get_document_info", lambda document_id: existing_doc)
+    monkeypatch.setattr(document_service_module, "update_document_info", mock_update)
+    service = DocumentService()
+    monkeypatch.setattr(service, "get_document", Mock(return_value={"id": "doc-1"}))
+
+    try:
+        service.update_document_metadata(
+            "doc-1",
+            {"owner_department_id": "dept-ops"},
+            current_user={
+                "id": "user-admin",
+                "role_code": "department_admin",
+                "managed_department_ids": ["dept-fin"],
+            },
+        )
+    except AppServiceError as exc:
+        assert exc.code == 401
+    else:
+        raise AssertionError("department_admin should not retarget owner department outside managed scope")
+
+    mock_update.assert_not_called()
+
+
+def test_update_document_metadata_denies_sharing_unmanaged_departments(monkeypatch):
+    existing_doc = {
+        "id": "doc-1",
+        "filename": "doc.pdf",
+        "visibility_scope": "department",
+        "owner_department_id": "dept-fin",
+        "shared_department_ids": [],
+        "role_restriction": None,
+    }
+    mock_update = Mock(return_value=True)
+    monkeypatch.setattr(document_service_module, "get_document_info", lambda document_id: existing_doc)
+    monkeypatch.setattr(document_service_module, "update_document_info", mock_update)
+    service = DocumentService()
+    monkeypatch.setattr(service, "get_document", Mock(return_value={"id": "doc-1"}))
+
+    try:
+        service.update_document_metadata(
+            "doc-1",
+            {"shared_department_ids": ["dept-fin", "dept-ops"]},
+            current_user={
+                "id": "user-admin",
+                "role_code": "department_admin",
+                "managed_department_ids": ["dept-fin"],
+            },
+        )
+    except AppServiceError as exc:
+        assert exc.code == 401
+    else:
+        raise AssertionError("department_admin should not share document to unmanaged departments")
+
+    mock_update.assert_not_called()
+
+
 def test_document_service_get_document_denies_unviewable_document(monkeypatch):
     monkeypatch.setattr(
         document_service_module,
