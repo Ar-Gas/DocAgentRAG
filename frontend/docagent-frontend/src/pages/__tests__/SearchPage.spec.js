@@ -10,22 +10,8 @@ const apiMocks = vi.hoisted(() => ({
   getDocumentReader: vi.fn(),
 }))
 
-const streamState = vi.hoisted(() => ({
-  cancel: vi.fn(),
-  callbacks: null,
-}))
-
-const workspaceSearchStream = vi.hoisted(() =>
-  vi.fn((_payload, callbacks) => {
-    streamState.callbacks = callbacks
-    return streamState.cancel
-  }),
-)
-const SEARCH_PAGE_TEST_TIMEOUT = 10000
-
 vi.mock('@/api', () => ({
   api: apiMocks,
-  workspaceSearchStream,
 }))
 
 const STUBS = {
@@ -44,8 +30,17 @@ const STUBS = {
   DocumentViewerModal: { template: '<div class="viewer-modal-stub" />' },
 }
 
-async function mountSearchPage(version = 'block') {
-  vi.stubEnv('VITE_WORKSPACE_RETRIEVAL_VERSION', version)
+function createDeferred() {
+  let resolve
+  let reject
+  const promise = new Promise((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+async function mountSearchPage() {
   vi.resetModules()
   const SearchPage = (await import('@/pages/SearchPage.vue')).default
 
@@ -75,18 +70,14 @@ describe('SearchPage', () => {
     apiMocks.getSystemCategories.mockResolvedValue({ data: [] })
     apiMocks.getDepartmentCategories.mockResolvedValue({ data: [] })
     apiMocks.getDocumentReader.mockResolvedValue({ data: null })
-    workspaceSearchStream.mockClear()
-    streamState.cancel.mockClear()
-    streamState.callbacks = null
   })
 
   afterEach(() => {
     vi.clearAllMocks()
-    vi.unstubAllEnvs()
   })
 
   it('loads the reduced search chrome without semantic dependencies', async () => {
-    await mountSearchPage('block')
+    await mountSearchPage()
 
     expect(apiMocks.getStats).toHaveBeenCalledTimes(1)
     expect(apiMocks.getDepartments).toHaveBeenCalledTimes(1)
@@ -94,36 +85,21 @@ describe('SearchPage', () => {
     expect(apiMocks.getDepartmentCategories).not.toHaveBeenCalled()
   })
 
-  it('uses sync workspace search for block smart requests', async () => {
-    const wrapper = await mountSearchPage('block')
+  it('normalizes former smart requests onto sync workspace search', async () => {
+    const wrapper = await mountSearchPage()
 
     wrapper.vm.filters.mode = 'smart'
     await wrapper.find('.go').trigger('click')
     await flushPromises()
 
     expect(apiMocks.workspaceSearch).toHaveBeenCalledWith(expect.objectContaining({
-      mode: 'smart',
-      retrieval_version: 'block',
+      mode: 'hybrid',
     }))
-    expect(workspaceSearchStream).not.toHaveBeenCalled()
-  }, SEARCH_PAGE_TEST_TIMEOUT)
-
-  it('keeps legacy smart requests on the SSE path during rollout', async () => {
-    const wrapper = await mountSearchPage('legacy')
-
-    wrapper.vm.filters.mode = 'smart'
-    await wrapper.find('.go').trigger('click')
-    await flushPromises()
-
-    expect(workspaceSearchStream).toHaveBeenCalledWith(expect.objectContaining({
-      mode: 'smart',
-      retrieval_version: 'legacy',
-    }), expect.any(Object))
-    expect(apiMocks.workspaceSearch).not.toHaveBeenCalled()
-  }, SEARCH_PAGE_TEST_TIMEOUT)
+    expect(apiMocks.workspaceSearch.mock.calls[0][0].retrieval_version).toBeUndefined()
+  })
 
   it('includes visibility and department filters in workspace search requests', async () => {
-    const wrapper = await mountSearchPage('block')
+    const wrapper = await mountSearchPage()
 
     wrapper.vm.filters.visibility_scope = 'department'
     wrapper.vm.filters.department_id = 'dept-fin'
@@ -136,10 +112,10 @@ describe('SearchPage', () => {
       department_id: 'dept-fin',
       business_category_id: 'cat-budget',
     }))
-  }, SEARCH_PAGE_TEST_TIMEOUT)
+  })
 
   it('resets the current workspace without semantic drawer state', async () => {
-    const wrapper = await mountSearchPage('block')
+    const wrapper = await mountSearchPage()
 
     wrapper.vm.filters.query = '预算'
     wrapper.vm.filters.department_id = 'dept-fin'
@@ -163,21 +139,18 @@ describe('SearchPage', () => {
     expect(wrapper.vm.readerPayload).toBeNull()
   })
 
-  it('cancels active legacy smart-search streams on reset and ignores late callbacks', async () => {
-    const wrapper = await mountSearchPage('legacy')
+  it('ignores late workspace responses after reset', async () => {
+    const deferred = createDeferred()
+    apiMocks.workspaceSearch.mockReturnValueOnce(deferred.promise)
 
-    wrapper.vm.filters.mode = 'smart'
+    const wrapper = await mountSearchPage()
+
+    wrapper.vm.filters.query = '预算'
     await wrapper.find('.go').trigger('click')
     await flushPromises()
 
-    expect(streamState.callbacks).toBeTruthy()
-
     await wrapper.find('.reset').trigger('click')
-    await flushPromises()
-
-    expect(streamState.cancel).toHaveBeenCalledTimes(1)
-
-    await streamState.callbacks.onResults({
+    deferred.resolve({
       data: {
         results: [{ id: 'res-1' }],
         documents: [{ document_id: 'doc-late' }],
@@ -191,19 +164,30 @@ describe('SearchPage', () => {
     expect(wrapper.vm.workspace.documents).toEqual([])
     expect(wrapper.vm.workspace.total_documents).toBe(0)
     expect(wrapper.vm.selectedDocumentId).toBe('')
-  }, SEARCH_PAGE_TEST_TIMEOUT)
+  })
 
-  it('cancels active legacy smart-search streams on unmount', async () => {
-    const wrapper = await mountSearchPage('legacy')
+  it('ignores late workspace responses after unmount', async () => {
+    const deferred = createDeferred()
+    apiMocks.workspaceSearch.mockReturnValueOnce(deferred.promise)
 
-    wrapper.vm.filters.mode = 'smart'
+    const wrapper = await mountSearchPage()
+
+    wrapper.vm.filters.query = '预算'
     await wrapper.find('.go').trigger('click')
     await flushPromises()
 
-    expect(streamState.callbacks).toBeTruthy()
-
     wrapper.unmount()
+    deferred.resolve({
+      data: {
+        results: [{ id: 'res-1' }],
+        documents: [{ document_id: 'doc-late' }],
+        total_results: 1,
+        total_documents: 1,
+        applied_filters: {},
+      },
+    })
+    await flushPromises()
 
-    expect(streamState.cancel).toHaveBeenCalledTimes(1)
-  }, SEARCH_PAGE_TEST_TIMEOUT)
+    expect(apiMocks.workspaceSearch).toHaveBeenCalledTimes(1)
+  })
 })

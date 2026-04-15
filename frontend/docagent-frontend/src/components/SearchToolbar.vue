@@ -2,8 +2,8 @@
   <section class="search-toolbar shell-panel">
     <div class="toolbar-head">
       <div class="toolbar-title-group">
-        <h3>智能检索</h3>
-        <p>输入问题或关键词，检索文档库并进入提取文本阅读区。</p>
+        <h3>具体检索</h3>
+        <p>输入问题、关键词或文件名，在当前筛选范围内检索文档并查看证据。</p>
       </div>
 
       <div class="toolbar-metrics">
@@ -37,7 +37,6 @@
         <el-option label="混合检索" value="hybrid" />
         <el-option label="语义检索" value="vector" />
         <el-option label="关键词检索" value="keyword" />
-        <el-option label="智能检索" value="smart" />
       </el-select>
 
       <el-button type="primary" :loading="loading" @click="emit('search')">检索文档</el-button>
@@ -151,22 +150,6 @@
           @update:model-value="updateField('use_rerank', $event)"
         />
       </label>
-
-      <label v-if="form.mode === 'smart'" class="switch-block">
-        <span>查询扩展</span>
-        <el-switch
-          :model-value="form.use_query_expansion"
-          @update:model-value="updateField('use_query_expansion', $event)"
-        />
-      </label>
-
-      <label v-if="form.mode === 'smart'" class="switch-block">
-        <span>LLM 重排</span>
-        <el-switch
-          :model-value="form.use_llm_rerank"
-          @update:model-value="updateField('use_llm_rerank', $event)"
-        />
-      </label>
     </div>
 
     <div class="action-row">
@@ -231,10 +214,6 @@ const modeMeta = computed(() => {
     keyword: {
       title: '关键词检索',
       description: '更适合项目代号、文件名、术语和精确短语。'
-    },
-    smart: {
-      title: '智能检索',
-      description: '在混合检索基础上叠加查询扩展与 LLM 重排，质量更高但耗时更长。'
     }
   }
   return dictionary[currentMode] || dictionary.hybrid

@@ -84,7 +84,13 @@ def test_init_chroma_client_returns_client_and_collection(monkeypatch, isolated_
 def test_save_document_summary_for_classification_persists_content(monkeypatch, isolated_storage, tmp_path: Path):
     source = tmp_path / "notes.txt"
     source.write_text("项目会议纪要", encoding="utf-8")
-    monkeypatch.setattr(storage, "update_classification_tree_after_add", lambda doc_info: None)
+    legacy_tree_update = Mock()
+    monkeypatch.setattr(
+        storage,
+        "update_classification_tree_after_add",
+        legacy_tree_update,
+        raising=False,
+    )
 
     document_id, doc_info = isolated_storage.save_document_summary_for_classification(
         str(source),
@@ -95,6 +101,7 @@ def test_save_document_summary_for_classification_persists_content(monkeypatch, 
     assert document_id
     assert doc_info["filename"] == "notes.txt"
     assert isolated_storage.get_document_content_record(document_id)["full_content"] == "项目会议纪要"
+    legacy_tree_update.assert_not_called()
 
 
 def test_save_document_to_chroma_persists_segments(monkeypatch, isolated_storage, tmp_path: Path):
@@ -128,12 +135,19 @@ def test_retrieve_from_chroma_and_delete_document(monkeypatch, isolated_storage)
     collection.query.return_value = {"documents": [["Result 1"]]}
     collection.get.return_value = {"ids": ["doc-1_chunk_0"]}
     monkeypatch.setattr(storage, "get_chroma_collection", lambda: collection)
-    monkeypatch.setattr(storage, "update_classification_tree_after_delete", lambda document_id: None)
+    legacy_tree_delete = Mock()
+    monkeypatch.setattr(
+        storage,
+        "update_classification_tree_after_delete",
+        legacy_tree_delete,
+        raising=False,
+    )
 
     assert isolated_storage.retrieve_from_chroma("query") == {"documents": [["Result 1"]]}
     assert isolated_storage.delete_document("doc-1") is True
     collection.delete.assert_called_once_with(ids=["doc-1_chunk_0"])
     assert isolated_storage.get_document_info("doc-1") is None
+    legacy_tree_delete.assert_not_called()
 
 
 def test_update_document_info_and_split_text_into_chunks(isolated_storage):

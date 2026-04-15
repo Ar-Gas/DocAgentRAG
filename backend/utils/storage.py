@@ -999,52 +999,11 @@ def save_document_summary_for_classification(filepath, full_content: Optional[st
                 extraction_status='ready',
                 parser_name=parser_name or ext.lstrip('.'),
             )
-            update_classification_tree_after_add(doc_info)
             return document_id, doc_info
         return None, None
     except Exception as e:
         logger.error(f"保存文档摘要失败: {str(e)}")
         return None, None
-
-# 新增文档后更新分类树
-def update_classification_tree_after_add(doc_info):
-    """新增文档后增量更新分类树"""
-    try:
-        from utils.multi_level_classifier import get_multi_level_classifier, build_and_save_classification_tree
-        
-        classifier = get_multi_level_classifier()
-        tree = classifier.load_classification_tree()
-        
-        if not tree or 'tree' not in tree:
-            build_and_save_classification_tree()
-            return
-        
-        # 对新文档进行分类
-        classification = classifier.classify_document(doc_info)
-        if not classification:
-            return
-        
-        content_cat = classification['content_category']
-        file_type = classification['file_type']
-        time_group = classification['time_group']
-        
-        # 确保树结构存在
-        if content_cat not in tree['tree']:
-            tree['tree'][content_cat] = {}
-        if file_type not in tree['tree'][content_cat]:
-            tree['tree'][content_cat][file_type] = {}
-        if time_group not in tree['tree'][content_cat][file_type]:
-            tree['tree'][content_cat][file_type][time_group] = []
-        
-        # 添加新文档
-        tree['tree'][content_cat][file_type][time_group].append(classification)
-        tree['total_documents'] = tree.get('total_documents', 0) + 1
-        tree['updated_at'] = datetime.now().isoformat()
-        
-        classifier.save_classification_tree(tree)
-        logger.info(f"分类树已更新（新增文档）: {doc_info.get('filename')}")
-    except Exception as e:
-        logger.error(f"新增文档后更新分类树失败: {str(e)}")
 
 # 保存文档到Chroma（使用内容提炼引擎）
 def save_document_to_chroma(filepath, document_id=None, use_refiner=True, save_chunk_info=True, full_content: Optional[str] = None):
@@ -1293,8 +1252,7 @@ def delete_document(document_id):
                     collection.delete(ids=results["ids"])
             except Exception:
                 pass
-        
-        update_classification_tree_after_delete(document_id)
+
         _metadata_store().delete_document(document_id)
         
         logger.info(f"文档{document_id}删除成功")
@@ -1302,112 +1260,6 @@ def delete_document(document_id):
     except Exception as e:
         logger.error(f"删除文档失败: {str(e)}")
         return False
-
-# 删除文档后更新分类树
-def update_classification_tree_after_reclassify(document_id, old_classification, new_classification):
-    """重新分类后更新分类树"""
-    try:
-        from utils.multi_level_classifier import get_multi_level_classifier
-        
-        classifier = get_multi_level_classifier()
-        tree = classifier.load_classification_tree()
-        
-        if not tree or 'tree' not in tree:
-            return
-        
-        doc_info = get_document_info(document_id)
-        if not doc_info:
-            return
-        
-        tree_modified = False
-        
-        if old_classification:
-            for content_cat, types in list(tree['tree'].items()):
-                for file_type, times in list(types.items()):
-                    for time_group, docs in list(times.items()):
-                        original_count = len(docs)
-                        tree['tree'][content_cat][file_type][time_group] = [
-                            doc for doc in docs 
-                            if doc.get('document_id') != document_id
-                        ]
-                        new_count = len(tree['tree'][content_cat][file_type][time_group])
-                        
-                        if original_count != new_count:
-                            tree_modified = True
-                        
-                        if not tree['tree'][content_cat][file_type][time_group]:
-                            del tree['tree'][content_cat][file_type][time_group]
-                    
-                    if not tree['tree'][content_cat][file_type]:
-                        del tree['tree'][content_cat][file_type]
-                
-                if not tree['tree'][content_cat]:
-                    del tree['tree'][content_cat]
-        
-        if new_classification:
-            content_cat = new_classification.get('content_category')
-            file_type = new_classification.get('file_type')
-            time_group = new_classification.get('time_group')
-            
-            if content_cat and file_type and time_group:
-                if content_cat not in tree['tree']:
-                    tree['tree'][content_cat] = {}
-                if file_type not in tree['tree'][content_cat]:
-                    tree['tree'][content_cat][file_type] = {}
-                if time_group not in tree['tree'][content_cat][file_type]:
-                    tree['tree'][content_cat][file_type][time_group] = []
-                
-                tree['tree'][content_cat][file_type][time_group].append(new_classification)
-                tree_modified = True
-        
-        if tree_modified:
-            tree['updated_at'] = datetime.now().isoformat()
-            classifier.save_classification_tree(tree)
-            logger.info(f"分类树已更新（重新分类）: {document_id}")
-    except Exception as e:
-        logger.error(f"重新分类后更新分类树失败: {str(e)}")
-
-def update_classification_tree_after_delete(document_id):
-    """删除文档后增量更新分类树"""
-    try:
-        from utils.multi_level_classifier import get_multi_level_classifier
-        
-        classifier = get_multi_level_classifier()
-        tree = classifier.load_classification_tree()
-        
-        if not tree or 'tree' not in tree:
-            return
-        
-        tree_modified = False
-        for content_cat, types in list(tree['tree'].items()):
-            for file_type, times in list(types.items()):
-                for time_group, docs in list(times.items()):
-                    original_count = len(docs)
-                    tree['tree'][content_cat][file_type][time_group] = [
-                        doc for doc in docs 
-                        if doc.get('document_id') != document_id
-                    ]
-                    new_count = len(tree['tree'][content_cat][file_type][time_group])
-                    
-                    if original_count != new_count:
-                        tree_modified = True
-                    
-                    if not tree['tree'][content_cat][file_type][time_group]:
-                        del tree['tree'][content_cat][file_type][time_group]
-                
-                if not tree['tree'][content_cat][file_type]:
-                    del tree['tree'][content_cat][file_type]
-            
-            if not tree['tree'][content_cat]:
-                del tree['tree'][content_cat]
-        
-        if tree_modified:
-            tree['total_documents'] = max(0, tree.get('total_documents', 0) - 1)
-            tree['updated_at'] = datetime.now().isoformat()
-            classifier.save_classification_tree(tree)
-            logger.info(f"分类树已更新（删除文档）: {document_id}")
-    except Exception as e:
-        logger.error(f"删除文档后更新分类树失败: {str(e)}")
 
 # 更新文档信息
 def update_document_info(document_id, updated_info):

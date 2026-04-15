@@ -150,6 +150,78 @@ def test_upload_rejects_json_shared_department_ids_with_non_list_type():
     mock_upload.assert_not_called()
 
 
+def test_upload_does_not_call_legacy_classifier(monkeypatch, tmp_path):
+    import io
+    import sys
+    import types
+    import app.services.document_service as document_service_module
+
+    fake_classifier_module = types.ModuleType("utils.classifier")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("legacy classifier should not be called")
+
+    fake_classifier_module.classify_document = _boom
+    monkeypatch.setitem(sys.modules, "utils.classifier", fake_classifier_module)
+    monkeypatch.setattr(document_service_module, "DOC_DIR", tmp_path)
+    monkeypatch.setattr(
+        document_service_module.DocumentService,
+        "_trigger_block_reindex_best_effort",
+        lambda self, document_id, context="upload": None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        document_service_module.ExtractionService,
+        "extract",
+        lambda self, filepath: types.SimpleNamespace(
+            success=True,
+            content="预算制度",
+            parser_name="pdf",
+            error=None,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        document_service_module,
+        "save_document_summary_for_classification",
+        lambda filepath, full_content, parser_name, display_filename: (
+            "doc-1",
+            {
+                "id": "doc-1",
+                "filename": display_filename,
+                "filepath": filepath,
+                "file_type": ".pdf",
+            },
+        ),
+    )
+    monkeypatch.setattr(document_service_module, "save_document_to_chroma", lambda *args, **kwargs: True)
+    monkeypatch.setattr(document_service_module, "update_document_info", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        document_service_module,
+        "enrich_document_file_state",
+        lambda doc_info, persist=True: {**doc_info, "file_available": True},
+    )
+
+    payload = document_service_module.DocumentService().upload(
+        "budget.pdf",
+        io.BytesIO(b"%PDF-1.4"),
+        current_user={
+            "id": "user-1",
+            "primary_department_id": "dept-fin",
+            "role_code": "employee",
+        },
+        governance_metadata={
+            "visibility_scope": "department",
+            "owner_department_id": "dept-fin",
+            "shared_department_ids": [],
+            "business_category_id": "cat-budget",
+        },
+    )
+
+    assert payload["business_category_id"] == "cat-budget"
+    assert payload.get("classification_result") in (None, "")
+
+
 def test_document_detail_content_reader_and_file_forward_current_user(monkeypatch, tmp_path: Path):
     current_user = {"id": "user-1", "role_code": "employee", "department_ids": ["dept-fin"]}
     pdf_path = tmp_path / "sample.pdf"

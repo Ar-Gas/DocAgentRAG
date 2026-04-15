@@ -8,12 +8,10 @@ from utils.logger import get_logger, log_retrieval
 from utils.search_cache import get_search_cache
 from utils.retriever import (
     get_document_by_id,
-    get_ready_block_document_ids,
     get_query_parser,
     hybrid_search,
     keyword_search,
     multimodal_search,
-    search_block_documents,
     search_documents,
     search_with_highlight,
 )
@@ -327,36 +325,16 @@ class RetrievalService:
             self.filter_result_items_for_user(results, current_user),
         )
 
-    def regroup_workspace_payload(
-        self,
-        payload: Dict[str, Any],
-        results: List[Dict[str, Any]],
-        query: str = "",
-    ) -> Dict[str, Any]:
-        documents = self._group_workspace_results(results, query)
-        return {
-            **payload,
-            "results": results,
-            "documents": documents,
-            "total_results": len(results),
-            "total_documents": len(documents),
-        }
-
     @log_retrieval
     def workspace_search(
         self,
         query: str = "",
         mode: str = "hybrid",
-        retrieval_version: Optional[str] = None,
         limit: int = 10,
         alpha: float = 0.5,
         use_rerank: bool = False,
-        use_query_expansion: bool = True,
-        use_llm_rerank: bool = True,
-        expansion_method: str = "llm",
         file_types: Optional[List[str]] = None,
         filename: Optional[str] = None,
-        classification: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         group_by_document: bool = True,
@@ -367,7 +345,6 @@ class RetrievalService:
     ) -> Dict[str, Any]:
         normalized_query = (query or "").strip()
         normalized_mode = self._normalize_workspace_mode(mode)
-        requested_retrieval_version = self._resolve_requested_retrieval_version(retrieval_version)
         normalized_limit = max(1, min(limit, 100))
         normalized_file_types = self._normalize_file_types(file_types)
         normalized_visibility_scope = (visibility_scope or "").strip() or None
@@ -391,7 +368,6 @@ class RetrievalService:
         applied_filters = {
             "file_types": normalized_file_types,
             "filename": filename or None,
-            "classification": classification or None,
             "date_from": date_from or None,
             "date_to": date_to or None,
             "visibility_scope": normalized_visibility_scope,
@@ -403,17 +379,12 @@ class RetrievalService:
         # 3.2 LRU 缓存：相同参数直接返回
         _cache = get_search_cache()
         _filter_key = {
-            "retrieval_version": requested_retrieval_version,
             "file_types": sorted(normalized_file_types or []),
             "filename": filename or "",
-            "classification": classification or "",
             "date_from": date_from or "",
             "date_to": date_to or "",
             "alpha": alpha,
             "use_rerank": use_rerank,
-            "use_query_expansion": use_query_expansion,
-            "use_llm_rerank": use_llm_rerank,
-            "expansion_method": expansion_method or "",
             "visibility_scope": normalized_visibility_scope or "",
             "department_id": normalized_department_id or "",
             "business_category_id": normalized_business_category_id or "",
@@ -423,66 +394,6 @@ class RetrievalService:
         cached = _cache.get(normalized_query, normalized_mode, _filter_key)
         if cached is not None:
             return cached
-
-        if requested_retrieval_version == "block":
-            ready_document_ids = get_ready_block_document_ids(
-                file_types=normalized_file_types,
-                filename=filename,
-                classification=classification,
-                date_from=date_from,
-                date_to=date_to,
-            ) & visible_document_ids
-            if ready_document_ids:
-                block_payload = search_block_documents(
-                    query=normalized_query,
-                    mode=normalized_mode,
-                    limit=normalized_limit,
-                    alpha=alpha,
-                    use_rerank=use_rerank,
-                    use_llm_rerank=use_llm_rerank,
-                    file_types=normalized_file_types,
-                    classification=classification,
-                    date_from=date_from,
-                    date_to=date_to,
-                    ready_document_ids=ready_document_ids,
-                    group_by_document=group_by_document,
-                    use_query_expansion=use_query_expansion,
-                    expansion_method=expansion_method,
-                )
-                documents = self._filter_items_by_document_ids(
-                    list(block_payload.get("documents") or []),
-                    visible_document_ids,
-                )
-                results = self._filter_items_by_document_ids(
-                    list(block_payload.get("results") or []),
-                    visible_document_ids,
-                )
-                if group_by_document:
-                    documents = documents[:normalized_limit]
-                    results = self._flatten_surfaced_block_results(documents)
-                else:
-                    results = results[:normalized_limit]
-                result = {
-                    "query": normalized_query,
-                    "mode": normalized_mode,
-                    "retrieval_version_requested": requested_retrieval_version,
-                    "retrieval_version_used": "block",
-                    "total_results": len(results),
-                    "total_documents": len(documents),
-                    "results": results,
-                    "documents": documents,
-                    "meta": block_payload.get("meta") or {"fallback_used": False},
-                    "applied_filters": applied_filters,
-                }
-                _cache.set(normalized_query, normalized_mode, _filter_key, result)
-                return result
-            block_meta: Dict[str, Any] = {
-                "fallback_used": True,
-                "fallback_reason": "no_ready_block_documents",
-                "fallback_documents": [],
-            }
-        else:
-            block_meta = {}
 
         raw_results: List[Dict[str, Any]] = []
         meta: Dict[str, Any] = {}
@@ -494,9 +405,6 @@ class RetrievalService:
                 limit=normalized_limit * 3,
                 alpha=alpha,
                 use_rerank=use_rerank,
-                use_query_expansion=use_query_expansion,
-                use_llm_rerank=use_llm_rerank,
-                expansion_method=expansion_method,
                 file_types=normalized_file_types,
                 current_user=current_user,
                 visible_document_ids=visible_document_ids,
@@ -526,7 +434,6 @@ class RetrievalService:
                 hydrated,
                 file_types=normalized_file_types,
                 filename=filename,
-                classification=classification,
                 date_from=date_from,
                 date_to=date_to,
             ):
@@ -545,16 +452,14 @@ class RetrievalService:
         result = {
             "query": normalized_query,
             "mode": normalized_mode,
-            "retrieval_version_requested": requested_retrieval_version,
-            "retrieval_version_used": "legacy",
             "total_results": len(filtered_results),
             "total_documents": len(documents),
             "results": filtered_results,
             "documents": documents,
-            "meta": {**meta, **block_meta},
+            "meta": meta,
             "applied_filters": applied_filters,
         }
-        # 3.2 写入缓存（smart 模式 LLM rerank 结果也缓存）
+        # 3.2 写入缓存
         _cache.set(normalized_query, normalized_mode, _filter_key, result)
         return result
 
@@ -571,7 +476,7 @@ class RetrievalService:
             "vector": "vector",
             "keyword": "keyword",
             "hybrid": "hybrid",
-            "smart": "smart",
+            "smart": "hybrid",
         }
         return aliases.get(normalized, "hybrid")
 
@@ -587,11 +492,6 @@ class RetrievalService:
             if value and value not in normalized:
                 normalized.append(value)
         return normalized
-
-    @staticmethod
-    def _resolve_requested_retrieval_version(retrieval_version: Optional[str]) -> str:
-        normalized = (retrieval_version or "").strip().lower()
-        return "block" if normalized == "block" else "legacy"
 
     def _build_actor_cache_key(self, current_user: dict | None) -> Dict[str, Any]:
         actor = current_user or {}
@@ -609,34 +509,6 @@ class RetrievalService:
             ),
         }
 
-    @staticmethod
-    def _flatten_surfaced_block_results(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        flattened: List[Dict[str, Any]] = []
-        for document in documents:
-            document_id = document.get("document_id")
-            for evidence in document.get("evidence_blocks") or []:
-                flattened.append(
-                    {
-                        "document_id": document_id,
-                        "block_id": evidence.get("block_id"),
-                        "block_index": evidence.get("block_index", 0),
-                        "block_type": evidence.get("block_type", "paragraph"),
-                        "snippet": evidence.get("snippet", ""),
-                        "heading_path": evidence.get("heading_path", []),
-                        "page_number": evidence.get("page_number"),
-                        "score": evidence.get("score", 0.0),
-                        "match_reason": evidence.get("match_reason", ""),
-                    }
-                )
-        flattened.sort(
-            key=lambda item: (
-                item.get("score", 0.0),
-                -item.get("block_index", 0),
-            ),
-            reverse=True,
-        )
-        return flattened
-
     def _run_workspace_query_search(
         self,
         query: str,
@@ -644,9 +516,6 @@ class RetrievalService:
         limit: int,
         alpha: float,
         use_rerank: bool,
-        use_query_expansion: bool,
-        use_llm_rerank: bool,
-        expansion_method: str,
         file_types: List[str],
         current_user: dict | None,
         visible_document_ids: set[str],
@@ -680,18 +549,6 @@ class RetrievalService:
                 ),
                 {},
             )
-        if mode == "smart":
-            result = self.smart(
-                query=query,
-                limit=limit,
-                use_query_expansion=use_query_expansion,
-                use_llm_rerank=use_llm_rerank,
-                expansion_method=expansion_method,
-                file_types=file_types,
-                current_user=current_user,
-                visible_document_ids=visible_document_ids,
-            )
-            return result.get("results", []), result.get("meta", {})
         return (
             self.collect_visible_results(
                 lambda fetch_limit: hybrid_search(
@@ -1042,7 +899,6 @@ class RetrievalService:
         result: Dict[str, Any],
         file_types: List[str],
         filename: Optional[str],
-        classification: Optional[str],
         date_from: Optional[str],
         date_to: Optional[str],
     ) -> bool:
@@ -1053,11 +909,6 @@ class RetrievalService:
         if filename:
             filename_filter = filename.strip().lower()
             if filename_filter not in (result.get("filename") or "").lower():
-                return False
-
-        if classification:
-            result_classification = (result.get("classification_result") or "未分类").lower()
-            if classification.strip().lower() not in result_classification:
                 return False
 
         created_at = result.get("created_at_iso")

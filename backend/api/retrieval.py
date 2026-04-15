@@ -1,9 +1,6 @@
 from fastapi import APIRouter, Depends, Query, File, UploadFile, Form
-from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, validator
-import asyncio
-import json
+from pydantic import BaseModel, ConfigDict, validator
 import logging
 import tempfile
 import os
@@ -19,8 +16,6 @@ from utils.retriever import (
 )
 from utils.smart_retrieval import (
     smart_multimodal_retrieval,
-    llm_rerank,
-    is_llm_available,
 )
 from api import success, BusinessException
 from api.dependencies import require_authenticated_user
@@ -55,38 +50,22 @@ class HybridSearchRequest(BaseModel):
         return _validate_file_types(v)
 
 
-class SmartSearchRequest(BaseModel):
-    query: str
-    limit: int = 10
-    use_query_expansion: bool = True
-    use_llm_rerank: bool = True
-    expansion_method: str = 'llm'
-    file_types: Optional[List[str]] = None
-
-    @validator("file_types")
-    def validate_file_types(cls, v):
-        return _validate_file_types(v)
-
-
 class WorkspaceSearchRequest(BaseModel):
     query: str = ""
     mode: str = "hybrid"
-    retrieval_version: Optional[str] = None
     limit: int = 10
     alpha: float = 0.5
     use_rerank: bool = False
-    use_query_expansion: bool = True
-    use_llm_rerank: bool = True
-    expansion_method: str = "llm"
     file_types: Optional[List[str]] = None
     filename: Optional[str] = None
-    classification: Optional[str] = None
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     group_by_document: bool = True
     visibility_scope: Optional[str] = None
     department_id: Optional[str] = None
     business_category_id: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
 
     @validator("file_types")
     def validate_file_types(cls, v):
@@ -208,32 +187,6 @@ async def get_document_chunks(
 async def get_document_stats_api(current_user: dict = Depends(require_authenticated_user)):
     return success(data=retrieval_service.stats(current_user=current_user))
 
-@router.post("/smart-search", summary="智能检索（查询扩展+多查询+LLM重排序）")
-async def smart_search_api(
-    request: SmartSearchRequest,
-    current_user: dict = Depends(require_authenticated_user),
-):
-    try:
-        result = retrieval_service.smart(
-            request.query,
-            request.limit,
-            request.use_query_expansion,
-            request.use_llm_rerank,
-            request.expansion_method,
-            request.file_types,
-            current_user=current_user,
-        )
-        logger.info(
-            "智能检索完成: query='%s...', expansions=%s, results=%s",
-            request.query[:50],
-            len(result["meta"]["expanded_queries"]),
-            result["total"],
-        )
-        return success(data=result)
-    except AppServiceError as exc:
-        raise BusinessException(code=exc.code, detail=exc.detail)
-
-
 @router.post("/workspace-search", summary="工作台统一检索")
 async def workspace_search_api(
     request: WorkspaceSearchRequest,
@@ -243,16 +196,11 @@ async def workspace_search_api(
         result = retrieval_service.workspace_search(
             query=request.query,
             mode=request.mode,
-            retrieval_version=request.retrieval_version,
             limit=request.limit,
             alpha=request.alpha,
             use_rerank=request.use_rerank,
-            use_query_expansion=request.use_query_expansion,
-            use_llm_rerank=request.use_llm_rerank,
-            expansion_method=request.expansion_method,
             file_types=request.file_types,
             filename=request.filename,
-            classification=request.classification,
             date_from=request.date_from,
             date_to=request.date_to,
             group_by_document=request.group_by_document,
@@ -271,20 +219,6 @@ async def workspace_search_api(
         return success(data=result)
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
-
-@router.get("/expand-query", summary="查询扩展预览")
-async def expand_query_api(
-    query: str = Query(..., description="原始查询"),
-    method: str = Query('llm', description="扩展方法: llm 或 keyword")
-):
-    try:
-        return success(data=retrieval_service.expand_query(query, method))
-    except AppServiceError as exc:
-        raise BusinessException(code=exc.code, detail=exc.detail)
-
-@router.get("/llm-status", summary="检查LLM服务状态")
-async def check_llm_status():
-    return success(data=retrieval_service.llm_status())
 
 
 class MultimodalSearchRequest(BaseModel):
@@ -432,11 +366,6 @@ class SearchWithHighlightRequest(BaseModel):
     file_types: Optional[List[str]] = None
 
 
-class SummarizeResultsRequest(BaseModel):
-    query: str
-    results: List[Dict[str, Any]] = []
-
-
 @router.post("/search-with-highlight", summary="带关键词高亮的检索")
 async def search_with_highlight_api(
     request: SearchWithHighlightRequest,
@@ -469,22 +398,6 @@ async def search_with_highlight_api(
             current_user=current_user,
         )
         logger.info(f"带高亮检索完成: query='{request.query[:50]}...', type={search_type}, results={result['total']}")
-        return success(data=result)
-    except AppServiceError as exc:
-        raise BusinessException(code=exc.code, detail=exc.detail)
-
-
-@router.post("/summarize-results", summary="对检索结果生成总结")
-async def summarize_results_api(
-    request: SummarizeResultsRequest,
-    current_user: dict = Depends(require_authenticated_user),
-):
-    try:
-        result = retrieval_service.summarize_results(
-            request.query,
-            request.results,
-            current_user=current_user,
-        )
         return success(data=result)
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
@@ -664,85 +577,3 @@ async def smart_multimodal_search_api(
     finally:
         if image_path and os.path.exists(image_path):
             os.unlink(image_path)
-
-
-# ===================== 3.3 Smart Search SSE =====================
-
-@router.post("/workspace-search-stream", summary="智能检索 SSE 流（先返回 hybrid，后推 LLM rerank）")
-async def workspace_search_stream(
-    req: WorkspaceSearchRequest,
-    current_user: dict = Depends(require_authenticated_user),
-):
-    """
-    两阶段流式响应：
-    - event: results  → 立即返回 hybrid 检索结果
-    - event: reranked → LLM rerank 完成后推送（仅 smart 模式且 LLM 可用时）
-    - event: done     → 流结束
-
-    前端可立即渲染 results，reranked 到来后更新排序。
-    """
-    async def event_generator():
-        loop = asyncio.get_event_loop()
-
-        # Phase 1：hybrid 检索，立即返回
-        try:
-            hybrid_result = await loop.run_in_executor(
-                None,
-                lambda: retrieval_service.workspace_search(
-                    query=req.query,
-                    mode="hybrid",
-                    limit=req.limit,
-                    alpha=req.alpha,
-                    use_rerank=req.use_rerank,
-                    file_types=req.file_types,
-                    filename=req.filename,
-                    classification=req.classification,
-                    date_from=req.date_from,
-                    date_to=req.date_to,
-                    group_by_document=req.group_by_document,
-                    visibility_scope=req.visibility_scope,
-                    department_id=req.department_id,
-                    business_category_id=req.business_category_id,
-                    current_user=current_user,
-                ),
-            )
-            yield f"event: results\ndata: {json.dumps(hybrid_result, ensure_ascii=False)}\n\n"
-        except Exception as exc:
-            logger.error(f"SSE hybrid search 失败: {exc}")
-            yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
-            yield "event: done\ndata: {}\n\n"
-            return
-
-        # Phase 2：LLM rerank（仅 smart 模式 + LLM 可用）
-        if req.mode == "smart" and req.use_llm_rerank and is_llm_available():
-            try:
-                raw_results = hybrid_result.get("results", [])
-                if raw_results:
-                    reranked_results = await loop.run_in_executor(
-                        None,
-                        lambda: llm_rerank(req.query, raw_results, req.limit),
-                    )
-                    reranked_payload = retrieval_service.regroup_workspace_payload(
-                        {
-                            **hybrid_result,
-                            "mode": "smart",
-                        },
-                        reranked_results,
-                        req.query,
-                    )
-                    yield f"event: reranked\ndata: {json.dumps(reranked_payload, ensure_ascii=False)}\n\n"
-            except Exception as exc:
-                logger.warning(f"SSE LLM rerank 失败（降级保留 hybrid 结果）: {exc}")
-                yield f"event: rerank_error\ndata: {json.dumps({'error': str(exc)})}\n\n"
-
-        yield "event: done\ndata: {}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )

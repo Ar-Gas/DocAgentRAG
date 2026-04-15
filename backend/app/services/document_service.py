@@ -199,24 +199,6 @@ class DocumentService:
         except Exception:
             pass
 
-        # B. 上传完成后自动分类，失败不影响上传结果
-        try:
-            from utils.classifier import classify_document
-            from utils.storage import save_classification_result
-            classification_result = classify_document(doc_info)
-            if classification_result:
-                result_data = classification_result.get("classification_result", {})
-                categories = result_data.get("categories", [])
-                actual_path = result_data.get("actual_path")
-                if categories:
-                    save_classification_result(document_id, categories[0])
-                    doc_info["classification_result"] = categories[0]
-                if actual_path:
-                    update_document_info(document_id, {"filepath": actual_path})
-                    doc_info["filepath"] = actual_path
-        except Exception:
-            pass  # 分类失败不报错，仅记录到日志
-
         normalized_governance = self._apply_governance_defaults(
             governance_metadata or {},
             current_user=current_user,

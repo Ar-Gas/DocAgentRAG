@@ -72,9 +72,7 @@ import DocumentReader from '@/components/DocumentReader.vue'
 import DocumentResultList from '@/components/DocumentResultList.vue'
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 import SearchToolbar from '@/components/SearchToolbar.vue'
-import { api, workspaceSearchStream } from '@/api'
-
-const WORKSPACE_RETRIEVAL_VERSION = import.meta.env.VITE_WORKSPACE_RETRIEVAL_VERSION || 'legacy'
+import { api } from '@/api'
 
 const createDefaultFilters = () => ({
   query: '',
@@ -85,9 +83,6 @@ const createDefaultFilters = () => ({
   limit: 12,
   alpha: 0.5,
   use_rerank: false,
-  use_query_expansion: true,
-  use_llm_rerank: true,
-  expansion_method: 'llm',
   file_types: [],
   filename: '',
   date_range: []
@@ -123,17 +118,13 @@ const openViewer = (document) => {
 
 const buildSearchRequest = () => ({
   query: filters.value.query?.trim() || '',
-  mode: filters.value.mode,
-  retrieval_version: WORKSPACE_RETRIEVAL_VERSION,
+  mode: filters.value.mode === 'smart' ? 'hybrid' : filters.value.mode,
   visibility_scope: filters.value.visibility_scope || null,
   department_id: filters.value.department_id || null,
   business_category_id: filters.value.business_category_id || null,
   limit: filters.value.limit,
   alpha: filters.value.alpha,
   use_rerank: filters.value.use_rerank,
-  use_query_expansion: filters.value.use_query_expansion,
-  use_llm_rerank: filters.value.use_llm_rerank,
-  expansion_method: filters.value.expansion_method,
   file_types: filters.value.file_types || [],
   filename: filters.value.filename?.trim() || null,
   date_from: filters.value.date_range?.[0] || null,
@@ -201,17 +192,10 @@ const selectDocument = async (documentId, anchorBlockId = null) => {
   await loadDocumentReader(documentId, anchorBlockId || matched?.best_block_id || null)
 }
 
-let _cancelStream = null
 let _workspaceRequestId = 0
 
 const beginWorkspaceRequest = () => {
   _workspaceRequestId += 1
-
-  if (_cancelStream) {
-    _cancelStream()
-    _cancelStream = null
-  }
-
   return _workspaceRequestId
 }
 
@@ -233,36 +217,6 @@ const executeSearch = async () => {
   searchLoading.value = true
 
   const req = buildSearchRequest()
-
-  if (req.mode === 'smart' && req.retrieval_version === 'legacy') {
-    _cancelStream = workspaceSearchStream(req, {
-      async onResults(data) {
-        if (!isActiveWorkspaceRequest(requestId)) {
-          return
-        }
-        searchLoading.value = false
-        await _applyWorkspaceResult(data, requestId)
-      },
-      async onReranked(data) {
-        await _applyWorkspaceResult(data, requestId)
-      },
-      onDone() {
-        if (isActiveWorkspaceRequest(requestId)) {
-          searchLoading.value = false
-          _cancelStream = null
-        }
-      },
-      onError(err) {
-        if (!isActiveWorkspaceRequest(requestId)) {
-          return
-        }
-        searchLoading.value = false
-        _cancelStream = null
-        console.error('Smart search SSE error:', err)
-      },
-    })
-    return
-  }
 
   try {
     const response = await api.workspaceSearch(req)

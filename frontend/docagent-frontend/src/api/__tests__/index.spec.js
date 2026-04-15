@@ -30,7 +30,8 @@ describe('api surface helpers', () => {
 
   it('does not expose removed semantic helpers after the cutover', async () => {
     vi.resetModules()
-    const { api } = await import('@/api')
+    const apiModule = await import('@/api')
+    const { api } = apiModule
 
     expect(api.getTopicTree).toBeUndefined()
     expect(api.buildTopicTree).toBeUndefined()
@@ -38,6 +39,7 @@ describe('api surface helpers', () => {
     expect(api.summarizeResults).toBeUndefined()
     expect(api.reclassifyDocument).toBeUndefined()
     expect(api.updateDocument).toBeUndefined()
+    expect(apiModule.workspaceSearchStream).toBeUndefined()
   })
 
   it('posts governed upload metadata as multipart fields', async () => {
