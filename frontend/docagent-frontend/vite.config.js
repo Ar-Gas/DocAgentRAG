@@ -1,6 +1,12 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import crypto from 'node:crypto'
 import path from 'path'
+
+if (!crypto.hash) {
+  crypto.hash = (algorithm, data, outputEncoding) =>
+    crypto.createHash(algorithm).update(data).digest(outputEncoding)
+}
 
 // https://vite.dev/config/
 export default defineConfig({

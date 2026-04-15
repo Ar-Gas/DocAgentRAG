@@ -16,12 +16,17 @@ import {
   ElTableColumn,
   ElTag,
   ElUpload,
-  vLoading
+  vLoading,
 } from 'element-plus'
 import 'element-plus/dist/index.css'
 import '@/assets/styles/global.scss'
-import router from '@/router'
 
+import { createAppRouter } from '@/router'
+import { sessionStore } from '@/stores/session'
+
+sessionStore.hydrate()
+
+const router = createAppRouter()
 const app = createApp(App)
 
 ;[
@@ -39,7 +44,7 @@ const app = createApp(App)
   ElTable,
   ElTableColumn,
   ElTag,
-  ElUpload
+  ElUpload,
 ].forEach((component) => {
   app.component(component.name, component)
 })
