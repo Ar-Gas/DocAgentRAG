@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, File, UploadFile, Form
+from fastapi import APIRouter, Depends, Query, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, validator
@@ -23,6 +23,7 @@ from utils.smart_retrieval import (
     is_llm_available,
 )
 from api import success, BusinessException
+from api.dependencies import require_authenticated_user
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,9 @@ class WorkspaceSearchRequest(BaseModel):
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     group_by_document: bool = True
+    visibility_scope: Optional[str] = None
+    department_id: Optional[str] = None
+    business_category_id: Optional[str] = None
 
     @validator("file_types")
     def validate_file_types(cls, v):
@@ -210,7 +214,10 @@ async def smart_search_api(request: SmartSearchRequest):
 
 
 @router.post("/workspace-search", summary="工作台统一检索")
-async def workspace_search_api(request: WorkspaceSearchRequest):
+async def workspace_search_api(
+    request: WorkspaceSearchRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     try:
         result = retrieval_service.workspace_search(
             query=request.query,
@@ -228,6 +235,10 @@ async def workspace_search_api(request: WorkspaceSearchRequest):
             date_from=request.date_from,
             date_to=request.date_to,
             group_by_document=request.group_by_document,
+            visibility_scope=request.visibility_scope,
+            department_id=request.department_id,
+            business_category_id=request.business_category_id,
+            current_user=current_user,
         )
         logger.info(
             "工作台检索完成: query='%s...', mode=%s, results=%s, documents=%s",
@@ -591,7 +602,10 @@ async def smart_multimodal_search_api(
 # ===================== 3.3 Smart Search SSE =====================
 
 @router.post("/workspace-search-stream", summary="智能检索 SSE 流（先返回 hybrid，后推 LLM rerank）")
-async def workspace_search_stream(req: WorkspaceSearchRequest):
+async def workspace_search_stream(
+    req: WorkspaceSearchRequest,
+    current_user: dict = Depends(require_authenticated_user),
+):
     """
     两阶段流式响应：
     - event: results  → 立即返回 hybrid 检索结果
@@ -619,6 +633,10 @@ async def workspace_search_stream(req: WorkspaceSearchRequest):
                     date_from=req.date_from,
                     date_to=req.date_to,
                     group_by_document=req.group_by_document,
+                    visibility_scope=req.visibility_scope,
+                    department_id=req.department_id,
+                    business_category_id=req.business_category_id,
+                    current_user=current_user,
                 ),
             )
             yield f"event: results\ndata: {json.dumps(hybrid_result, ensure_ascii=False)}\n\n"
@@ -637,7 +655,14 @@ async def workspace_search_stream(req: WorkspaceSearchRequest):
                         None,
                         lambda: llm_rerank(req.query, raw_results, req.limit),
                     )
-                    reranked_payload = {**hybrid_result, "results": reranked_results, "mode": "smart"}
+                    reranked_payload = retrieval_service.regroup_workspace_payload(
+                        {
+                            **hybrid_result,
+                            "mode": "smart",
+                        },
+                        reranked_results,
+                        req.query,
+                    )
                     yield f"event: reranked\ndata: {json.dumps(reranked_payload, ensure_ascii=False)}\n\n"
             except Exception as exc:
                 logger.warning(f"SSE LLM rerank 失败（降级保留 hybrid 结果）: {exc}")

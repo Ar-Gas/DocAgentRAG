@@ -148,8 +148,8 @@ class ClassificationService:
     def build_topic_tree(self, force_rebuild: bool = False) -> Dict:
         return self.topic_tree_service.build_topic_tree(force_rebuild=force_rebuild)
 
-    def get_topic_tree(self) -> Dict:
-        return self.topic_tree_service.get_topic_tree()
+    def get_topic_tree(self, current_user: dict | None = None) -> Dict:
+        return self.topic_tree_service.get_topic_tree(current_user=current_user)
 
     def get_document_multi_level_info(self, document_id: str) -> Dict:
         doc_info = get_document_info(document_id)

@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from app.infra.metadata_store import get_metadata_store
+from app.services.authorization_service import AuthorizationService
 from app.services.topic_clustering import TopicClustering
 from app.services.topic_labeler import TopicLabeler
 from config import DATA_DIR
@@ -22,12 +23,16 @@ class TopicTreeService:
         self.max_topics = max_topics
         self.clustering = TopicClustering(max_topics=max_topics)
         self.labeler = TopicLabeler()
+        self.authorization_service = AuthorizationService()
 
-    def get_topic_tree(self) -> Dict[str, Any]:
+    def get_topic_tree(self, current_user: dict | None = None) -> Dict[str, Any]:
         cached = self._load_valid_cached_artifact()
         if cached:
-            return cached
-        return self.build_topic_tree(force_rebuild=True)
+            return self._filter_topic_tree_for_user(cached, current_user=current_user)
+        return self._filter_topic_tree_for_user(
+            self.build_topic_tree(force_rebuild=True),
+            current_user=current_user,
+        )
 
     def build_topic_tree(self, force_rebuild: bool = False) -> Dict[str, Any]:
         if not force_rebuild:
@@ -205,6 +210,67 @@ class TopicTreeService:
             "generation_method": self.generation_method,
             "topics": topics,
         }
+
+    def _filter_topic_tree_for_user(
+        self,
+        payload: Dict[str, Any],
+        *,
+        current_user: dict | None,
+    ) -> Dict[str, Any]:
+        visible_document_ids = self.authorization_service.list_visible_document_ids(
+            current_user or {},
+            [doc for doc in get_all_documents() if doc.get("id")],
+        )
+        topics = self._filter_topics(payload.get("topics") or [], visible_document_ids)
+        clustered_document_ids = self._collect_topic_document_ids(topics)
+
+        return {
+            **payload,
+            "total_documents": len(visible_document_ids),
+            "clustered_documents": len(clustered_document_ids),
+            "excluded_documents": max(len(visible_document_ids) - len(clustered_document_ids), 0),
+            "topic_count": len(topics),
+            "topics": topics,
+        }
+
+    def _filter_topics(
+        self,
+        topics: List[Dict[str, Any]],
+        visible_document_ids: set[str],
+    ) -> List[Dict[str, Any]]:
+        filtered_topics: List[Dict[str, Any]] = []
+        for topic in topics:
+            children = self._filter_topics(topic.get("children") or [], visible_document_ids)
+            documents = [
+                dict(document)
+                for document in (topic.get("documents") or [])
+                if str(document.get("document_id") or document.get("id") or "") in visible_document_ids
+            ]
+            document_count = len(documents) + sum(
+                int(child.get("document_count") or 0)
+                for child in children
+            )
+            if not documents and not children:
+                continue
+            filtered_topics.append(
+                {
+                    **topic,
+                    "documents": documents,
+                    "children": children,
+                    "document_count": document_count,
+                }
+            )
+        return filtered_topics
+
+    def _collect_topic_document_ids(self, topics: List[Dict[str, Any]]) -> set[str]:
+        document_ids: set[str] = set()
+        for topic in topics:
+            for document in topic.get("documents") or []:
+                document_id = document.get("document_id") or document.get("id")
+                if document_id:
+                    document_ids.add(str(document_id))
+            document_ids.update(self._collect_topic_document_ids(topic.get("children") or []))
+        return document_ids
 
     @staticmethod
     def _serialize_doc(doc: Dict[str, Any]) -> Dict[str, Any]:

@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 import logging
@@ -6,6 +6,7 @@ import logging
 from app.services.classification_service import ClassificationService
 from app.services.errors import AppServiceError
 from api import success, BusinessException
+from api.dependencies import require_authenticated_user
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +100,9 @@ async def build_topic_tree(request: TopicTreeBuildRequest):
 
 
 @router.get("/topic-tree", summary="获取动态语义主题树")
-async def get_topic_tree():
+async def get_topic_tree(current_user: dict = Depends(require_authenticated_user)):
     try:
-        tree = classification_service.get_topic_tree()
+        tree = classification_service.get_topic_tree(current_user=current_user)
         return success(data=tree, message="获取动态主题树成功")
     except Exception as e:
         logger.error(f"获取动态主题树失败: {str(e)}")

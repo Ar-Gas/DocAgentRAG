@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from config import DOUBAO_API_KEY, DOUBAO_DEFAULT_LLM_MODEL
+from app.services.authorization_service import AuthorizationService
 from app.services.errors import AppServiceError
 from utils.logger import get_logger, log_retrieval
 from utils.search_cache import get_search_cache
@@ -35,6 +36,9 @@ from utils.storage import (
 
 
 class RetrievalService:
+    def __init__(self):
+        self.authorization_service = AuthorizationService()
+
     def search(self, query: str, limit: int, use_rerank: bool, file_types: Optional[List[str]] = None) -> Dict:
         self._ensure_query(query)
         results = search_documents(query, limit=limit, use_rerank=use_rerank, file_types=file_types)
@@ -219,18 +223,43 @@ class RetrievalService:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         group_by_document: bool = True,
+        visibility_scope: Optional[str] = None,
+        department_id: Optional[str] = None,
+        business_category_id: Optional[str] = None,
+        current_user: dict | None = None,
     ) -> Dict[str, Any]:
         normalized_query = (query or "").strip()
         normalized_mode = self._normalize_workspace_mode(mode)
         requested_retrieval_version = self._resolve_requested_retrieval_version(retrieval_version)
         normalized_limit = max(1, min(limit, 100))
         normalized_file_types = self._normalize_file_types(file_types)
+        normalized_visibility_scope = (visibility_scope or "").strip() or None
+        normalized_department_id = (department_id or "").strip() or None
+        normalized_business_category_id = (business_category_id or "").strip() or None
+        all_documents = [doc for doc in get_all_documents() if doc.get("id")]
+        governed_documents = [
+            doc
+            for doc in all_documents
+            if self._matches_governance_filters(
+                doc,
+                visibility_scope=normalized_visibility_scope,
+                department_id=normalized_department_id,
+                business_category_id=normalized_business_category_id,
+            )
+        ]
+        visible_document_ids = self.authorization_service.list_visible_document_ids(
+            current_user or {},
+            governed_documents,
+        )
         applied_filters = {
             "file_types": normalized_file_types,
             "filename": filename or None,
             "classification": classification or None,
             "date_from": date_from or None,
             "date_to": date_to or None,
+            "visibility_scope": normalized_visibility_scope,
+            "department_id": normalized_department_id,
+            "business_category_id": normalized_business_category_id,
             "group_by_document": group_by_document,
         }
 
@@ -248,7 +277,11 @@ class RetrievalService:
             "use_query_expansion": use_query_expansion,
             "use_llm_rerank": use_llm_rerank,
             "expansion_method": expansion_method or "",
+            "visibility_scope": normalized_visibility_scope or "",
+            "department_id": normalized_department_id or "",
+            "business_category_id": normalized_business_category_id or "",
             "group_by_document": group_by_document,
+            "actor": self._build_actor_cache_key(current_user),
         }
         cached = _cache.get(normalized_query, normalized_mode, _filter_key)
         if cached is not None:
@@ -261,7 +294,7 @@ class RetrievalService:
                 classification=classification,
                 date_from=date_from,
                 date_to=date_to,
-            )
+            ) & visible_document_ids
             if ready_document_ids:
                 block_payload = search_block_documents(
                     query=normalized_query,
@@ -340,7 +373,7 @@ class RetrievalService:
         filtered_results: List[Dict[str, Any]] = []
         for result in raw_results:
             hydrated = self._hydrate_workspace_result(result)
-            if hydrated and self._matches_workspace_filters(
+            if hydrated and hydrated.get("document_id") in visible_document_ids and self._matches_workspace_filters(
                 hydrated,
                 file_types=normalized_file_types,
                 filename=filename,
@@ -410,6 +443,21 @@ class RetrievalService:
     def _resolve_requested_retrieval_version(retrieval_version: Optional[str]) -> str:
         normalized = (retrieval_version or "").strip().lower()
         return "block" if normalized == "block" else "legacy"
+
+    def _build_actor_cache_key(self, current_user: dict | None) -> Dict[str, Any]:
+        actor = current_user or {}
+        return {
+            "id": actor.get("id"),
+            "role_code": actor.get("role_code"),
+            "primary_department_id": actor.get("primary_department_id"),
+            "department_ids": sorted(str(item) for item in (actor.get("department_ids") or []) if item),
+            "collaborative_department_ids": sorted(
+                str(item) for item in (actor.get("collaborative_department_ids") or []) if item
+            ),
+            "managed_department_ids": sorted(
+                str(item) for item in (actor.get("managed_department_ids") or []) if item
+            ),
+        }
 
     @staticmethod
     def _flatten_surfaced_block_results(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -702,6 +750,32 @@ class RetrievalService:
             "segment_count": len(segments),
             "current_segment": current_segment,
         }
+
+    @staticmethod
+    def _matches_governance_filters(
+        doc: Dict[str, Any],
+        *,
+        visibility_scope: Optional[str],
+        department_id: Optional[str],
+        business_category_id: Optional[str],
+    ) -> bool:
+        if visibility_scope and str(doc.get("visibility_scope") or "") != visibility_scope:
+            return False
+
+        if business_category_id and str(doc.get("business_category_id") or "") != business_category_id:
+            return False
+
+        if not department_id:
+            return True
+
+        document_department_ids = set()
+        owner_department_id = doc.get("owner_department_id")
+        if owner_department_id:
+            document_department_ids.add(str(owner_department_id))
+        for shared_department_id in doc.get("shared_department_ids") or []:
+            if shared_department_id:
+                document_department_ids.add(str(shared_department_id))
+        return department_id in document_department_ids
 
     def _matches_workspace_filters(
         self,
