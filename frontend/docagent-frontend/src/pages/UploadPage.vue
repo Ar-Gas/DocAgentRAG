@@ -3,7 +3,7 @@
     <div class="page-header shell-panel">
       <div>
         <h3>上传文档</h3>
-        <p>上传时请显式填写治理元数据，包括可见范围、归属部门和业务分类，确保台账口径一致。</p>
+        <p>上传时请显式填写治理元数据，包括可见范围、归属部门和业务分类；系统不再执行自动语义分类，确保台账口径一致。</p>
       </div>
       <div class="summary-chips">
         <span class="summary-chip">一级范围：公共文档 / 部门文档</span>
