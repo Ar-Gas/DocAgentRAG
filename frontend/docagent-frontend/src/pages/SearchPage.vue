@@ -66,7 +66,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import DocumentReader from '@/components/DocumentReader.vue'
 import DocumentResultList from '@/components/DocumentResultList.vue'
@@ -286,6 +286,10 @@ const resetWorkspace = () => {
 
 onMounted(() => {
   loadWorkspaceChrome()
+})
+
+onBeforeUnmount(() => {
+  beginWorkspaceRequest()
 })
 
 watch(

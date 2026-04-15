@@ -192,4 +192,18 @@ describe('SearchPage', () => {
     expect(wrapper.vm.workspace.total_documents).toBe(0)
     expect(wrapper.vm.selectedDocumentId).toBe('')
   }, SEARCH_PAGE_TEST_TIMEOUT)
+
+  it('cancels active legacy smart-search streams on unmount', async () => {
+    const wrapper = await mountSearchPage('legacy')
+
+    wrapper.vm.filters.mode = 'smart'
+    await wrapper.find('.go').trigger('click')
+    await flushPromises()
+
+    expect(streamState.callbacks).toBeTruthy()
+
+    wrapper.unmount()
+
+    expect(streamState.cancel).toHaveBeenCalledTimes(1)
+  }, SEARCH_PAGE_TEST_TIMEOUT)
 })
