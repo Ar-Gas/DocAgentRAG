@@ -53,7 +53,9 @@ request.interceptors.response.use(
       '请求失败'
 
     ElMessage.error(msg)
-    return Promise.reject(new Error(msg))
+    const wrappedError = new Error(msg)
+    wrappedError.status = error.response?.status || null
+    return Promise.reject(wrappedError)
   },
 )
 

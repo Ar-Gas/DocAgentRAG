@@ -21,5 +21,6 @@ describe('frontend bootstrap entry', () => {
 
     expect(source).toContain('sessionStore.hydrate()')
     expect(source).toContain('api.getCurrentUser()')
+    expect(source).toContain('error?.status === 401')
   })
 })

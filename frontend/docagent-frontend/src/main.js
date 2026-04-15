@@ -32,8 +32,10 @@ async function bootstrap() {
     try {
       const response = await api.getCurrentUser()
       sessionStore.updateUser(response.data || null)
-    } catch (_error) {
-      sessionStore.clear()
+    } catch (error) {
+      if (error?.status === 401) {
+        sessionStore.clear()
+      }
     }
   }
 
