@@ -102,9 +102,11 @@ def paginated(items: List[Any], total: int, page: int, page_size: int) -> dict:
 from .document import router as document_router
 from .classification import router as classification_router
 from .retrieval import router as retrieval_router
+from .auth import router as auth_router
 
 router = APIRouter()
 
+router.include_router(auth_router, prefix="/auth", tags=["认证"])
 router.include_router(document_router, prefix="/documents", tags=["文档管理"])
 router.include_router(classification_router, prefix="/classification", tags=["智能分类"])
 router.include_router(retrieval_router, prefix="/retrieval", tags=["语义检索"])
