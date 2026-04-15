@@ -8,12 +8,13 @@
     <div class="search-row">
       <el-input
         :model-value="query"
+        :disabled="disabled || loading"
         clearable
         placeholder="输入文件名或关键词"
         @update:model-value="emit('update:query', $event)"
-        @keyup.enter="emit('search')"
+        @keyup.enter="handleSearch"
       />
-      <el-button type="primary" :loading="loading" @click="emit('search')">搜索</el-button>
+      <el-button type="primary" :loading="loading" :disabled="!canSearch" @click="handleSearch">搜索</el-button>
       <el-button :disabled="!canReset" @click="emit('reset')">重置</el-button>
     </div>
   </section>
@@ -31,10 +32,22 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  disabled: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['update:query', 'search', 'reset'])
-const canReset = computed(() => !props.loading && Boolean(props.query.trim()))
+const canSearch = computed(() => !props.disabled && !props.loading)
+const canReset = computed(() => !props.disabled && !props.loading && Boolean(props.query.trim()))
+
+const handleSearch = () => {
+  if (!canSearch.value) {
+    return
+  }
+  emit('search')
+}
 </script>
 
 <style scoped lang="scss">

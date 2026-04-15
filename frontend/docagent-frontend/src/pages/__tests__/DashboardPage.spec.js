@@ -50,30 +50,30 @@ const STUBS = {
   },
   DocumentViewerModal: { template: '<div class="viewer-stub" />' },
   DirectorySearchBar: {
-    props: ['query', 'loading'],
+    props: ['query', 'loading', 'disabled'],
     emits: ['update:query', 'search', 'reset'],
     template: `
       <div class="search-bar-stub">
-        <button class="set-query" @click="$emit('update:query', '预算')">set-query</button>
-        <button class="search" @click="$emit('search')">search</button>
-        <button class="reset" @click="$emit('reset')">reset</button>
+        <button class="set-query" @click="!disabled && $emit('update:query', '预算')">set-query</button>
+        <button class="search" @click="!disabled && $emit('search')">search</button>
+        <button class="reset" @click="!disabled && $emit('reset')">reset</button>
       </div>
     `,
   },
   DirectoryTreePanel: {
-    props: ['nodes', 'activeScopeKey'],
+    props: ['nodes', 'activeScopeKey', 'disabled'],
     emits: ['select-scope'],
     template: `
       <div class="tree-stub">
         <button
           class="scope-fin"
-          @click="$emit('select-scope', { visibility_scope: 'department', department_id: 'dept-fin', business_category_id: null })"
+          @click="!disabled && $emit('select-scope', { visibility_scope: 'department', department_id: 'dept-fin', business_category_id: null })"
         >
           scope-fin
         </button>
         <button
           class="scope-ops"
-          @click="$emit('select-scope', { visibility_scope: 'department', department_id: 'dept-ops', business_category_id: null })"
+          @click="!disabled && $emit('select-scope', { visibility_scope: 'department', department_id: 'dept-ops', business_category_id: null })"
         >
           scope-ops
         </button>
@@ -81,13 +81,13 @@ const STUBS = {
     `,
   },
   DirectoryContentPanel: {
-    props: ['mode', 'folders', 'documents', 'searchDocuments', 'selectedDocumentId'],
+    props: ['mode', 'folders', 'documents', 'searchDocuments', 'selectedDocumentId', 'disabled'],
     emits: ['open-folder', 'select-document', 'open-viewer'],
     template: `
       <div class="content-stub">
         <div class="folders-text">{{ (folders || []).map((item) => item.label).join(',') }}</div>
-        <button class="doc-1" @click="$emit('select-document', 'doc-1', 'block-1')">doc-1</button>
-        <button class="doc-2" @click="$emit('select-document', 'doc-2', 'block-2')">doc-2</button>
+        <button class="doc-1" @click="!disabled && $emit('select-document', 'doc-1', 'block-1')">doc-1</button>
+        <button class="doc-2" @click="!disabled && $emit('select-document', 'doc-2', 'block-2')">doc-2</button>
       </div>
     `,
   },
@@ -120,8 +120,32 @@ describe('DashboardPage', () => {
   it('loads the global directory workspace on mount', async () => {
     const wrapper = await mountDashboardPage()
 
-    expect(apiMocks.getDirectoryWorkspace).toHaveBeenCalledWith({})
+    expect(apiMocks.getDirectoryWorkspace).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ signal: expect.any(Object) }),
+    )
     expect(wrapper.text()).toContain('公共文档')
+  })
+
+  it('blocks search/tree/document actions while workspace transition is pending', async () => {
+    const deferred = createDeferred()
+    apiMocks.getDirectoryWorkspace.mockReturnValueOnce(deferred.promise)
+
+    const wrapper = await mountDashboardPage()
+    await wrapper.find('.set-query').trigger('click')
+    await wrapper.find('.search').trigger('click')
+    await wrapper.find('.scope-fin').trigger('click')
+    await wrapper.find('.doc-1').trigger('click')
+    await flushPromises()
+
+    expect(apiMocks.getDirectoryWorkspace).toHaveBeenCalledTimes(1)
+    expect(apiMocks.workspaceSearch).not.toHaveBeenCalled()
+    expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
+
+    deferred.resolve(createWorkspacePayload())
+    await flushPromises()
+
+    expect(wrapper.vm.workspace.current_scope.scope_key).toBe('root')
   })
 
   it('uses current workspace search_scope in scoped search payload', async () => {
@@ -140,15 +164,18 @@ describe('DashboardPage', () => {
     await wrapper.find('.search').trigger('click')
     await flushPromises()
 
-    expect(apiMocks.workspaceSearch).toHaveBeenCalledWith(expect.objectContaining({
-      query: '预算',
-      visibility_scope: 'department',
-      department_id: 'dept-fin',
-      business_category_id: 'cat-budget',
-    }))
+    expect(apiMocks.workspaceSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: '预算',
+        visibility_scope: 'department',
+        department_id: 'dept-fin',
+        business_category_id: 'cat-budget',
+      }),
+      expect.objectContaining({ signal: expect.any(Object) }),
+    )
   })
 
-  it('ignores late scoped-search responses after reset', async () => {
+  it('blocks tree/document/reset actions while scoped search is pending', async () => {
     const deferred = createDeferred()
     apiMocks.workspaceSearch.mockReturnValueOnce(deferred.promise)
 
@@ -157,56 +184,23 @@ describe('DashboardPage', () => {
     await wrapper.find('.search').trigger('click')
     await flushPromises()
 
+    await wrapper.find('.scope-fin').trigger('click')
+    await wrapper.find('.doc-1').trigger('click')
     await wrapper.find('.reset').trigger('click')
     await flushPromises()
 
     deferred.resolve({
       data: {
-        documents: [{ document_id: 'doc-stale', filename: '过期文档.pdf' }],
+        documents: [{ document_id: 'doc-live', filename: '当前文档.pdf' }],
         total_documents: 1,
       },
     })
     await flushPromises()
 
-    expect(wrapper.vm.searchDocuments).toEqual([])
-    expect(wrapper.vm.contentMode).toBe('directory')
-  })
-
-  it('ignores late workspace responses after a newer scope action', async () => {
-    const deferred = createDeferred()
-    apiMocks.getDirectoryWorkspace
-      .mockResolvedValueOnce(createWorkspacePayload())
-      .mockReturnValueOnce(deferred.promise)
-      .mockResolvedValueOnce(
-        createWorkspacePayload({
-          current_scope: { scope_key: 'department:dept-ops', title: '运营部' },
-          breadcrumbs: [{ label: '全局目录' }, { label: '运营部' }],
-          folders: [{ node_id: 'ops-root', label: '运营目录', folder_type: 'department' }],
-          search_scope: {
-            visibility_scope: 'department',
-            department_id: 'dept-ops',
-            business_category_id: null,
-          },
-        }),
-      )
-
-    const wrapper = await mountDashboardPage()
-    await wrapper.find('.scope-fin').trigger('click')
-    await wrapper.find('.scope-ops').trigger('click')
-    await flushPromises()
-
-    deferred.resolve(
-      createWorkspacePayload({
-        current_scope: { scope_key: 'department:dept-fin', title: '财务部' },
-        breadcrumbs: [{ label: '全局目录' }, { label: '财务部' }],
-        folders: [{ node_id: 'fin-root', label: '财务旧目录', folder_type: 'department' }],
-      }),
-    )
-    await flushPromises()
-
-    expect(wrapper.vm.workspace.current_scope.scope_key).toBe('department:dept-ops')
-    expect(wrapper.text()).toContain('运营目录')
-    expect(wrapper.text()).not.toContain('财务旧目录')
+    expect(apiMocks.getDirectoryWorkspace).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
+    expect(wrapper.vm.searchDocuments).toEqual([{ document_id: 'doc-live', filename: '当前文档.pdf' }])
+    expect(wrapper.vm.contentMode).toBe('search')
   })
 
   it('ignores late reader responses after selecting a newer document', async () => {

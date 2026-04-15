@@ -39,6 +39,10 @@ const props = defineProps({
     type: String,
     default: 'root',
   },
+  disabled: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['select-scope'])
@@ -55,7 +59,7 @@ const flattenNodes = (items = [], depth = 0, result = []) => {
 
 const flatNodes = computed(() => flattenNodes(props.nodes))
 
-const isSelectable = (node) => !(node?.locked || node?.accessible === false)
+const isSelectable = (node) => !props.disabled && !(node?.locked || node?.accessible === false)
 
 const nodeScopeKey = (node) => {
   if (!node?.visibility_scope) {

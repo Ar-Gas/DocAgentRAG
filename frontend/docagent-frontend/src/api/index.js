@@ -42,6 +42,14 @@ request.interceptors.request.use(
 request.interceptors.response.use(
   (response) => response.data,
   (error) => {
+    if (
+      axios.isCancel(error) ||
+      error?.code === 'ERR_CANCELED' ||
+      error?.name === 'CanceledError'
+    ) {
+      return Promise.reject(error)
+    }
+
     if (error.response?.status === 401) {
       handleUnauthorized()
     }
@@ -69,8 +77,8 @@ export const api = {
   getUsers: (page = 1, pageSize = 10) =>
     request.get('/users', { params: { page, page_size: pageSize } }),
   createUser: (payload) => request.post('/users', payload),
-  getDirectoryWorkspace: (params = {}) =>
-    request.get('/directory/workspace', { params }),
+  getDirectoryWorkspace: (params = {}, config = {}) =>
+    request.get('/directory/workspace', { params, ...config }),
   uploadFile: (file, metadata = {}, onProgress) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -94,9 +102,10 @@ export const api = {
     request.get('/documents/', { params: { page, page_size: pageSize } }),
   getDocumentFileBlob: (documentId) =>
     request.get(`/documents/${documentId}/file`, { responseType: 'blob' }),
-  getDocumentReader: (documentId, query = '', anchorBlockId = null) =>
+  getDocumentReader: (documentId, query = '', anchorBlockId = null, config = {}) =>
     request.get(`/documents/${documentId}/reader`, {
       params: { query, anchor_block_id: anchorBlockId },
+      ...config,
     }),
   deleteDocument: (documentId) => request.delete(`/documents/${documentId}`),
   getSystemCategories: () => request.get('/categories/system'),
@@ -107,7 +116,7 @@ export const api = {
   createSystemCategory: (payload) => request.post('/categories/system', payload),
   createDepartmentCategory: (payload) => request.post('/categories/department', payload),
   updateCategory: (categoryId, payload) => request.patch(`/categories/${categoryId}`, payload),
-  workspaceSearch: (payload) => request.post('/retrieval/workspace-search', payload),
+  workspaceSearch: (payload, config = {}) => request.post('/retrieval/workspace-search', payload, config),
   getStats: () => request.get('/retrieval/stats'),
   getAuditLogs: (params = {}) => request.get('/audit-logs', { params }),
 }

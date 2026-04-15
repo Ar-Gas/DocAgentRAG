@@ -38,7 +38,7 @@
           <button
             type="button"
             class="document-main"
-            :disabled="!hasDocumentId(document)"
+            :disabled="disabled || !hasDocumentId(document)"
             @click="handleSelectDocument(document)"
           >
             <span class="document-title">{{ document.filename }}</span>
@@ -57,7 +57,7 @@
             <button
               type="button"
               class="action-btn primary-btn"
-              :disabled="!hasDocumentId(document)"
+              :disabled="disabled || !hasDocumentId(document)"
               @click="handleSelectDocument(document)"
             >
               阅读
@@ -65,7 +65,7 @@
             <button
               type="button"
               class="action-btn"
-              :disabled="document.file_available === false"
+              :disabled="disabled || document.file_available === false"
               @click="emit('open-viewer', document)"
             >
               预览
@@ -105,6 +105,10 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  disabled: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['open-folder', 'select-document', 'open-viewer'])
@@ -113,9 +117,12 @@ const activeDocuments = computed(() =>
   props.mode === 'search' ? props.searchDocuments : props.documents,
 )
 
-const isFolderSelectable = (folder) => !(folder?.locked || folder?.accessible === false)
+const isFolderSelectable = (folder) => !props.disabled && !(folder?.locked || folder?.accessible === false)
 
 const handleOpenFolder = (folder) => {
+  if (props.disabled) {
+    return
+  }
   if (!isFolderSelectable(folder)) {
     return
   }
@@ -130,6 +137,9 @@ const getDocumentId = (document) => String(document?.document_id || document?.id
 const hasDocumentId = (document) => Boolean(getDocumentId(document))
 
 const handleSelectDocument = (document) => {
+  if (props.disabled) {
+    return
+  }
   const documentId = getDocumentId(document)
   if (!documentId) {
     return

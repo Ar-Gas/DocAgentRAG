@@ -2,7 +2,8 @@
   <section class="directory-home page-stack">
     <DirectorySearchBar
       :query="query"
-      :loading="searchLoading"
+      :loading="searchLoading || loading"
+      :disabled="interactionBusy"
       @update:query="query = $event"
       @search="runScopedSearch"
       @reset="resetSearch"
@@ -22,6 +23,7 @@
       <DirectoryTreePanel
         :nodes="workspace?.tree || []"
         :active-scope-key="workspace?.current_scope?.scope_key || 'root'"
+        :disabled="interactionBusy"
         @select-scope="loadWorkspace"
       />
 
@@ -32,6 +34,7 @@
           :documents="workspace?.documents || []"
           :search-documents="searchDocuments"
           :selected-document-id="selectedDocumentId"
+          :disabled="interactionBusy"
           @open-folder="loadWorkspace"
           @select-document="selectDocument"
           @open-viewer="openViewer"
@@ -57,7 +60,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import DirectoryContentPanel from '@/components/DirectoryContentPanel.vue'
 import DirectorySearchBar from '@/components/DirectorySearchBar.vue'
@@ -93,10 +96,14 @@ const searchMode = ref(false)
 
 const contentMode = computed(() => (searchMode.value ? 'search' : 'directory'))
 const breadcrumbText = computed(() => (workspace.value?.breadcrumbs || []).map((item) => item.label).join(' / '))
+const interactionBusy = computed(() => loading.value || searchLoading.value)
 
 let workspaceRequestId = 0
 let searchRequestId = 0
 let readerRequestId = 0
+let workspaceAbortController = null
+let searchAbortController = null
+let readerAbortController = null
 
 const beginWorkspaceRequest = () => {
   workspaceRequestId += 1
@@ -117,6 +124,24 @@ const isActiveWorkspaceRequest = (requestId) => requestId === workspaceRequestId
 const isActiveSearchRequest = (requestId) => requestId === searchRequestId
 const isActiveReaderRequest = (requestId) => requestId === readerRequestId
 
+const isCanceledError = (error) =>
+  error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError'
+
+const cancelWorkspaceRequest = () => {
+  workspaceAbortController?.abort()
+  workspaceAbortController = null
+}
+
+const cancelSearchRequest = () => {
+  searchAbortController?.abort()
+  searchAbortController = null
+}
+
+const cancelReaderRequest = () => {
+  readerAbortController?.abort()
+  readerAbortController = null
+}
+
 const clearSelection = () => {
   selectedDocumentId.value = ''
   readerPayload.value = null
@@ -124,13 +149,18 @@ const clearSelection = () => {
 
 const loadWorkspace = async (params = {}) => {
   const requestId = beginWorkspaceRequest()
+  cancelWorkspaceRequest()
+  cancelSearchRequest()
+  cancelReaderRequest()
   beginSearchRequest()
   beginReaderRequest()
+  const controller = new AbortController()
+  workspaceAbortController = controller
   loading.value = true
   searchLoading.value = false
   readerLoading.value = false
   try {
-    const response = await api.getDirectoryWorkspace(params)
+    const response = await api.getDirectoryWorkspace(params, { signal: controller.signal })
     if (!isActiveWorkspaceRequest(requestId)) {
       return
     }
@@ -143,6 +173,9 @@ const loadWorkspace = async (params = {}) => {
     if (!isActiveWorkspaceRequest(requestId)) {
       return
     }
+    if (isCanceledError(_error)) {
+      return
+    }
     workspace.value = emptyWorkspace()
     searchDocuments.value = []
     searchMode.value = false
@@ -152,12 +185,21 @@ const loadWorkspace = async (params = {}) => {
     if (isActiveWorkspaceRequest(requestId)) {
       loading.value = false
     }
+    if (workspaceAbortController === controller) {
+      workspaceAbortController = null
+    }
   }
 }
 
 const runScopedSearch = async () => {
+  if (interactionBusy.value) {
+    return
+  }
+
   const trimmedQuery = query.value.trim()
   if (!trimmedQuery || !workspace.value?.search_scope) {
+    cancelSearchRequest()
+    cancelReaderRequest()
     beginSearchRequest()
     beginReaderRequest()
     searchLoading.value = false
@@ -169,7 +211,11 @@ const runScopedSearch = async () => {
   }
 
   const requestId = beginSearchRequest()
+  cancelSearchRequest()
+  cancelReaderRequest()
   beginReaderRequest()
+  const controller = new AbortController()
+  searchAbortController = controller
   searchLoading.value = true
   readerLoading.value = false
   try {
@@ -179,7 +225,7 @@ const runScopedSearch = async () => {
       limit: 20,
       group_by_document: true,
       ...workspace.value.search_scope,
-    })
+    }, { signal: controller.signal })
     if (!isActiveSearchRequest(requestId)) {
       return
     }
@@ -190,6 +236,9 @@ const runScopedSearch = async () => {
     if (!isActiveSearchRequest(requestId)) {
       return
     }
+    if (isCanceledError(_error)) {
+      return
+    }
     searchDocuments.value = []
     searchMode.value = false
     clearSelection()
@@ -197,12 +246,20 @@ const runScopedSearch = async () => {
     if (isActiveSearchRequest(requestId)) {
       searchLoading.value = false
     }
+    if (searchAbortController === controller) {
+      searchAbortController = null
+    }
   }
 }
 
 const selectDocument = async (documentId, anchorBlockId = null) => {
+  if (interactionBusy.value) {
+    return
+  }
+
   const normalizedDocumentId = String(documentId || '').trim()
   if (!normalizedDocumentId) {
+    cancelReaderRequest()
     beginReaderRequest()
     readerLoading.value = false
     clearSelection()
@@ -210,10 +267,18 @@ const selectDocument = async (documentId, anchorBlockId = null) => {
   }
 
   const requestId = beginReaderRequest()
+  cancelReaderRequest()
+  const controller = new AbortController()
+  readerAbortController = controller
   selectedDocumentId.value = normalizedDocumentId
   readerLoading.value = true
   try {
-    const response = await api.getDocumentReader(normalizedDocumentId, query.value.trim(), anchorBlockId)
+    const response = await api.getDocumentReader(
+      normalizedDocumentId,
+      query.value.trim(),
+      anchorBlockId,
+      { signal: controller.signal },
+    )
     if (!isActiveReaderRequest(requestId)) {
       return
     }
@@ -222,10 +287,16 @@ const selectDocument = async (documentId, anchorBlockId = null) => {
     if (!isActiveReaderRequest(requestId)) {
       return
     }
+    if (isCanceledError(_error)) {
+      return
+    }
     readerPayload.value = null
   } finally {
     if (isActiveReaderRequest(requestId)) {
       readerLoading.value = false
+    }
+    if (readerAbortController === controller) {
+      readerAbortController = null
     }
   }
 }
@@ -236,6 +307,12 @@ const openViewer = (document) => {
 }
 
 const resetSearch = async () => {
+  if (interactionBusy.value) {
+    return
+  }
+
+  cancelSearchRequest()
+  cancelReaderRequest()
   beginSearchRequest()
   beginReaderRequest()
   searchLoading.value = false
@@ -249,6 +326,15 @@ const resetSearch = async () => {
 
 onMounted(async () => {
   await loadWorkspace({})
+})
+
+onBeforeUnmount(() => {
+  cancelWorkspaceRequest()
+  cancelSearchRequest()
+  cancelReaderRequest()
+  beginWorkspaceRequest()
+  beginSearchRequest()
+  beginReaderRequest()
 })
 </script>
 
