@@ -86,6 +86,19 @@ describe('api surface helpers', () => {
     })
   })
 
+  it('requests document file blobs for active preview flows', async () => {
+    vi.resetModules()
+    const { api } = await import('@/api')
+
+    expect(api.getDocumentFileBlob).toBeTypeOf('function')
+
+    api.getDocumentFileBlob('doc-12')
+
+    expect(requestMock.get).toHaveBeenCalledWith('/documents/doc-12/file', {
+      responseType: 'blob',
+    })
+  })
+
   it('uses category mutation and audit log endpoints', async () => {
     vi.resetModules()
     const { api } = await import('@/api')

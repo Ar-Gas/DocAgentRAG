@@ -92,6 +92,8 @@ export const api = {
   },
   getDocumentList: (page = 1, pageSize = 100) =>
     request.get('/documents/', { params: { page, page_size: pageSize } }),
+  getDocumentFileBlob: (documentId) =>
+    request.get(`/documents/${documentId}/file`, { responseType: 'blob' }),
   getDocumentReader: (documentId, query = '', anchorBlockId = null) =>
     request.get(`/documents/${documentId}/reader`, {
       params: { query, anchor_block_id: anchorBlockId },

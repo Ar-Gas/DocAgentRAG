@@ -60,7 +60,7 @@ describe('DocumentViewerModal', () => {
     vi.useRealTimers()
   })
 
-  it('renders pdf files with the dedicated pdf viewer branch instead of native iframe', () => {
+  it('renders pdf files with the dedicated pdf viewer branch instead of native iframe', async () => {
     const wrapper = mount(DocumentViewerModal, {
       props: {
         visible: true,
@@ -73,8 +73,11 @@ describe('DocumentViewerModal', () => {
       }
     })
 
+    await flushPromises()
+
     expect(wrapper.find('.pdf-renderer-stub').exists()).toBe(true)
     expect(wrapper.find('iframe.native-iframe').exists()).toBe(false)
+    expect(apiMocks.getDocumentFileBlob).toHaveBeenCalledWith('doc-1')
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
   })
 
