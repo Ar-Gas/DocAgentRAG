@@ -10,7 +10,17 @@ const apiMocks = vi.hoisted(() => ({
   getDocumentReader: vi.fn(),
 }))
 
-const workspaceSearchStream = vi.hoisted(() => vi.fn(() => () => {}))
+const streamState = vi.hoisted(() => ({
+  cancel: vi.fn(),
+  callbacks: null,
+}))
+
+const workspaceSearchStream = vi.hoisted(() =>
+  vi.fn((_payload, callbacks) => {
+    streamState.callbacks = callbacks
+    return streamState.cancel
+  }),
+)
 const SEARCH_PAGE_TEST_TIMEOUT = 10000
 
 vi.mock('@/api', () => ({
@@ -66,6 +76,8 @@ describe('SearchPage', () => {
     apiMocks.getDepartmentCategories.mockResolvedValue({ data: [] })
     apiMocks.getDocumentReader.mockResolvedValue({ data: null })
     workspaceSearchStream.mockClear()
+    streamState.cancel.mockClear()
+    streamState.callbacks = null
   })
 
   afterEach(() => {
@@ -150,4 +162,34 @@ describe('SearchPage', () => {
     expect(wrapper.vm.selectedDocumentId).toBe('')
     expect(wrapper.vm.readerPayload).toBeNull()
   })
+
+  it('cancels active legacy smart-search streams on reset and ignores late callbacks', async () => {
+    const wrapper = await mountSearchPage('legacy')
+
+    wrapper.vm.filters.mode = 'smart'
+    await wrapper.find('.go').trigger('click')
+    await flushPromises()
+
+    expect(streamState.callbacks).toBeTruthy()
+
+    await wrapper.find('.reset').trigger('click')
+    await flushPromises()
+
+    expect(streamState.cancel).toHaveBeenCalledTimes(1)
+
+    await streamState.callbacks.onResults({
+      data: {
+        results: [{ id: 'res-1' }],
+        documents: [{ document_id: 'doc-late' }],
+        total_results: 1,
+        total_documents: 1,
+        applied_filters: {},
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.vm.workspace.documents).toEqual([])
+    expect(wrapper.vm.workspace.total_documents).toBe(0)
+    expect(wrapper.vm.selectedDocumentId).toBe('')
+  }, SEARCH_PAGE_TEST_TIMEOUT)
 })

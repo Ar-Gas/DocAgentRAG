@@ -90,6 +90,7 @@ const fileUrl = ref('')
 const officeLoading = ref(false)
 const officeError = ref('')
 let renderTimeoutId = null
+let previewRequestId = 0
 
 const normalizeFileType = (fileType, filename) => {
   const rawType = (fileType || '').trim().toLowerCase()
@@ -129,6 +130,14 @@ const clearRenderTimeout = () => {
   }
 }
 
+const nextPreviewRequestId = () => {
+  previewRequestId += 1
+  return previewRequestId
+}
+
+const isActivePreviewRequest = (requestId, documentId) =>
+  requestId === previewRequestId && props.visible && props.documentId === documentId
+
 const scheduleRenderTimeout = () => {
   clearRenderTimeout()
 
@@ -142,17 +151,31 @@ const scheduleRenderTimeout = () => {
   }, OFFICE_RENDER_TIMEOUT_MS)
 }
 
-const ensureFileUrl = async () => {
+const ensureFileUrl = async (requestId = nextPreviewRequestId()) => {
   if (fileUrl.value || !props.documentId) {
     return fileUrl.value
   }
 
-  const fileBlob = await api.getDocumentFileBlob(props.documentId)
-  fileUrl.value = URL.createObjectURL(fileBlob)
+  const requestedDocumentId = props.documentId
+  const fileBlob = await api.getDocumentFileBlob(requestedDocumentId)
+
+  if (!isActivePreviewRequest(requestId, requestedDocumentId)) {
+    return ''
+  }
+
+  const nextFileUrl = URL.createObjectURL(fileBlob)
+
+  if (!isActivePreviewRequest(requestId, requestedDocumentId)) {
+    URL.revokeObjectURL(nextFileUrl)
+    return ''
+  }
+
+  fileUrl.value = nextFileUrl
   return fileUrl.value
 }
 
 const resetViewerState = async () => {
+  const requestId = nextPreviewRequestId()
   revokeObjectUrl()
   officeLoading.value = props.visible && !fileUnavailable.value && isSupportedOfficePreview.value
   officeError.value = ''
@@ -163,8 +186,12 @@ const resetViewerState = async () => {
   }
 
   try {
-    await ensureFileUrl()
+    await ensureFileUrl(requestId)
   } catch (_error) {
+    if (!isActivePreviewRequest(requestId, props.documentId)) {
+      return
+    }
+
     clearRenderTimeout()
     officeLoading.value = false
     officeError.value = '预览文件加载失败，请在新标签页打开查看。'
@@ -190,6 +217,7 @@ watch(
       return
     }
 
+    nextPreviewRequestId()
     clearRenderTimeout()
     revokeObjectUrl()
     officeLoading.value = false
@@ -199,6 +227,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  nextPreviewRequestId()
   clearRenderTimeout()
   revokeObjectUrl()
 })
@@ -214,7 +243,7 @@ const openInNewTab = async () => {
   }
 
   try {
-    const targetUrl = await ensureFileUrl()
+    const targetUrl = fileUrl.value || await ensureFileUrl(nextPreviewRequestId())
     if (targetUrl && previewWindow) {
       previewWindow.location.replace(targetUrl)
       return

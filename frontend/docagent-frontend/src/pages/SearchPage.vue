@@ -202,8 +202,26 @@ const selectDocument = async (documentId, anchorBlockId = null) => {
 }
 
 let _cancelStream = null
+let _workspaceRequestId = 0
 
-const _applyWorkspaceResult = async (data) => {
+const beginWorkspaceRequest = () => {
+  _workspaceRequestId += 1
+
+  if (_cancelStream) {
+    _cancelStream()
+    _cancelStream = null
+  }
+
+  return _workspaceRequestId
+}
+
+const isActiveWorkspaceRequest = (requestId) => requestId === _workspaceRequestId
+
+const _applyWorkspaceResult = async (data, requestId) => {
+  if (!isActiveWorkspaceRequest(requestId)) {
+    return
+  }
+
   workspace.value = data?.data || data || emptyWorkspace()
   // 不再自动打开第一个文档——让用户主动展开
   selectedDocumentId.value = ''
@@ -211,7 +229,7 @@ const _applyWorkspaceResult = async (data) => {
 }
 
 const executeSearch = async () => {
-  if (_cancelStream) { _cancelStream(); _cancelStream = null }
+  const requestId = beginWorkspaceRequest()
   searchLoading.value = true
 
   const req = buildSearchRequest()
@@ -219,17 +237,27 @@ const executeSearch = async () => {
   if (req.mode === 'smart' && req.retrieval_version === 'legacy') {
     _cancelStream = workspaceSearchStream(req, {
       async onResults(data) {
+        if (!isActiveWorkspaceRequest(requestId)) {
+          return
+        }
         searchLoading.value = false
-        await _applyWorkspaceResult(data)
+        await _applyWorkspaceResult(data, requestId)
       },
       async onReranked(data) {
-        await _applyWorkspaceResult(data)
+        await _applyWorkspaceResult(data, requestId)
       },
       onDone() {
-        searchLoading.value = false
+        if (isActiveWorkspaceRequest(requestId)) {
+          searchLoading.value = false
+          _cancelStream = null
+        }
       },
       onError(err) {
+        if (!isActiveWorkspaceRequest(requestId)) {
+          return
+        }
         searchLoading.value = false
+        _cancelStream = null
         console.error('Smart search SSE error:', err)
       },
     })
@@ -238,13 +266,17 @@ const executeSearch = async () => {
 
   try {
     const response = await api.workspaceSearch(req)
-    await _applyWorkspaceResult(response)
+    await _applyWorkspaceResult(response, requestId)
   } finally {
-    searchLoading.value = false
+    if (isActiveWorkspaceRequest(requestId)) {
+      searchLoading.value = false
+    }
   }
 }
 
 const resetWorkspace = () => {
+  beginWorkspaceRequest()
+  searchLoading.value = false
   filters.value = createDefaultFilters()
   departmentCategories.value = []
   workspace.value = emptyWorkspace()
