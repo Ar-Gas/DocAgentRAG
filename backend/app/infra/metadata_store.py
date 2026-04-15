@@ -298,7 +298,7 @@ class DocumentMetadataStore:
         normalized = dict(payload)
         normalized.setdefault("visibility_scope", "department")
         normalized.setdefault("owner_department_id", None)
-        normalized.setdefault("business_category_id", None)
+        normalized.setdefault("business_category_id", "cat-pending")
         normalized.setdefault("role_restriction", None)
         normalized.setdefault("confidentiality_level", "internal")
         normalized.setdefault("document_status", "draft")
