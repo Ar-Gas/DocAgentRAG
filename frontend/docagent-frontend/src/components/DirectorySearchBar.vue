@@ -14,13 +14,15 @@
         @keyup.enter="emit('search')"
       />
       <el-button type="primary" :loading="loading" @click="emit('search')">搜索</el-button>
-      <el-button :disabled="loading && !query" @click="emit('reset')">重置</el-button>
+      <el-button :disabled="!canReset" @click="emit('reset')">重置</el-button>
     </div>
   </section>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   query: {
     type: String,
     default: '',
@@ -32,6 +34,7 @@ defineProps({
 })
 
 const emit = defineEmits(['update:query', 'search', 'reset'])
+const canReset = computed(() => !props.loading && Boolean(props.query.trim()))
 </script>
 
 <style scoped lang="scss">

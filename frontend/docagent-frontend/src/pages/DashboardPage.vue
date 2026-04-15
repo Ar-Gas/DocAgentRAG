@@ -94,35 +94,84 @@ const searchMode = ref(false)
 const contentMode = computed(() => (searchMode.value ? 'search' : 'directory'))
 const breadcrumbText = computed(() => (workspace.value?.breadcrumbs || []).map((item) => item.label).join(' / '))
 
+let workspaceRequestId = 0
+let searchRequestId = 0
+let readerRequestId = 0
+
+const beginWorkspaceRequest = () => {
+  workspaceRequestId += 1
+  return workspaceRequestId
+}
+
+const beginSearchRequest = () => {
+  searchRequestId += 1
+  return searchRequestId
+}
+
+const beginReaderRequest = () => {
+  readerRequestId += 1
+  return readerRequestId
+}
+
+const isActiveWorkspaceRequest = (requestId) => requestId === workspaceRequestId
+const isActiveSearchRequest = (requestId) => requestId === searchRequestId
+const isActiveReaderRequest = (requestId) => requestId === readerRequestId
+
 const clearSelection = () => {
   selectedDocumentId.value = ''
   readerPayload.value = null
 }
 
 const loadWorkspace = async (params = {}) => {
+  const requestId = beginWorkspaceRequest()
+  beginSearchRequest()
+  beginReaderRequest()
   loading.value = true
+  searchLoading.value = false
+  readerLoading.value = false
   try {
     const response = await api.getDirectoryWorkspace(params)
+    if (!isActiveWorkspaceRequest(requestId)) {
+      return
+    }
     workspace.value = response?.data || emptyWorkspace()
     searchDocuments.value = []
     searchMode.value = false
     query.value = ''
     clearSelection()
+  } catch (_error) {
+    if (!isActiveWorkspaceRequest(requestId)) {
+      return
+    }
+    workspace.value = emptyWorkspace()
+    searchDocuments.value = []
+    searchMode.value = false
+    query.value = ''
+    clearSelection()
   } finally {
-    loading.value = false
+    if (isActiveWorkspaceRequest(requestId)) {
+      loading.value = false
+    }
   }
 }
 
 const runScopedSearch = async () => {
   const trimmedQuery = query.value.trim()
   if (!trimmedQuery || !workspace.value?.search_scope) {
+    beginSearchRequest()
+    beginReaderRequest()
+    searchLoading.value = false
+    readerLoading.value = false
     searchDocuments.value = []
     searchMode.value = false
     clearSelection()
     return
   }
 
+  const requestId = beginSearchRequest()
+  beginReaderRequest()
   searchLoading.value = true
+  readerLoading.value = false
   try {
     const response = await api.workspaceSearch({
       query: trimmedQuery,
@@ -131,27 +180,53 @@ const runScopedSearch = async () => {
       group_by_document: true,
       ...workspace.value.search_scope,
     })
+    if (!isActiveSearchRequest(requestId)) {
+      return
+    }
     searchDocuments.value = response?.data?.documents || []
     searchMode.value = true
     clearSelection()
+  } catch (_error) {
+    if (!isActiveSearchRequest(requestId)) {
+      return
+    }
+    searchDocuments.value = []
+    searchMode.value = false
+    clearSelection()
   } finally {
-    searchLoading.value = false
+    if (isActiveSearchRequest(requestId)) {
+      searchLoading.value = false
+    }
   }
 }
 
 const selectDocument = async (documentId, anchorBlockId = null) => {
-  if (!documentId) {
+  const normalizedDocumentId = String(documentId || '').trim()
+  if (!normalizedDocumentId) {
+    beginReaderRequest()
+    readerLoading.value = false
     clearSelection()
     return
   }
 
-  selectedDocumentId.value = String(documentId)
+  const requestId = beginReaderRequest()
+  selectedDocumentId.value = normalizedDocumentId
   readerLoading.value = true
   try {
-    const response = await api.getDocumentReader(documentId, query.value.trim(), anchorBlockId)
+    const response = await api.getDocumentReader(normalizedDocumentId, query.value.trim(), anchorBlockId)
+    if (!isActiveReaderRequest(requestId)) {
+      return
+    }
     readerPayload.value = response?.data || null
+  } catch (_error) {
+    if (!isActiveReaderRequest(requestId)) {
+      return
+    }
+    readerPayload.value = null
   } finally {
-    readerLoading.value = false
+    if (isActiveReaderRequest(requestId)) {
+      readerLoading.value = false
+    }
   }
 }
 
@@ -161,6 +236,10 @@ const openViewer = (document) => {
 }
 
 const resetSearch = async () => {
+  beginSearchRequest()
+  beginReaderRequest()
+  searchLoading.value = false
+  readerLoading.value = false
   searchDocuments.value = []
   searchMode.value = false
   query.value = ''

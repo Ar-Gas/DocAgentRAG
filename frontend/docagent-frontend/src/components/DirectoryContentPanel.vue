@@ -35,7 +35,12 @@
           class="document-row"
           :class="{ 'is-active': getDocumentId(document) === selectedDocumentId }"
         >
-          <button type="button" class="document-main" @click="handleSelectDocument(document)">
+          <button
+            type="button"
+            class="document-main"
+            :disabled="!hasDocumentId(document)"
+            @click="handleSelectDocument(document)"
+          >
             <span class="document-title">{{ document.filename }}</span>
             <span class="document-meta">
               <span class="meta-chip">{{ toVisibilityLabel(document.visibility_scope) }}</span>
@@ -49,7 +54,12 @@
           </button>
 
           <div class="document-actions">
-            <button type="button" class="action-btn primary-btn" @click="handleSelectDocument(document)">
+            <button
+              type="button"
+              class="action-btn primary-btn"
+              :disabled="!hasDocumentId(document)"
+              @click="handleSelectDocument(document)"
+            >
               阅读
             </button>
             <button
@@ -117,11 +127,16 @@ const handleOpenFolder = (folder) => {
 }
 
 const getDocumentId = (document) => String(document?.document_id || document?.id || '')
+const hasDocumentId = (document) => Boolean(getDocumentId(document))
 
 const handleSelectDocument = (document) => {
+  const documentId = getDocumentId(document)
+  if (!documentId) {
+    return
+  }
   emit(
     'select-document',
-    getDocumentId(document),
+    documentId,
     document?.best_block_id || null,
   )
 }
