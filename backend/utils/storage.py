@@ -468,13 +468,43 @@ def _init_ephemeral_chroma_client() -> tuple[object, object]:
     )
     return client, collection
 
+
+def _normalize_shared_department_ids(raw_department_ids) -> List[str]:
+    if not isinstance(raw_department_ids, (list, tuple, set)):
+        return []
+    normalized: List[str] = []
+    for department_id in raw_department_ids:
+        value = str(department_id).strip() if department_id is not None else ""
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _attach_shared_department_ids(doc_info: Optional[dict], store=None) -> Optional[dict]:
+    if doc_info is None:
+        return None
+    metadata_store = store or _metadata_store()
+    document_id = doc_info.get("id")
+    if not document_id:
+        return dict(doc_info)
+    enriched = dict(doc_info)
+    enriched["shared_department_ids"] = metadata_store.list_document_shared_departments(document_id)
+    return enriched
+
 # 保存文档信息到JSON
 def save_document_info(doc_info):
     if not isinstance(doc_info, dict) or 'id' not in doc_info:
         logger.error("保存文档信息失败：无效的文档信息（缺少ID）")
         return False
     try:
-        return _metadata_store().upsert_document(doc_info)
+        metadata_store = _metadata_store()
+        saved = metadata_store.upsert_document(doc_info)
+        if saved and "shared_department_ids" in doc_info:
+            metadata_store.replace_document_shared_departments(
+                doc_info["id"],
+                _normalize_shared_department_ids(doc_info.get("shared_department_ids")),
+            )
+        return saved
     except Exception as e:
         logger.error(f"保存文档信息失败: {str(e)}")
         return False
@@ -485,7 +515,9 @@ def get_document_info(document_id):
         logger.error("获取文档信息失败：文档ID为空或非法")
         return None
     try:
-        return _metadata_store().get_document(document_id)
+        metadata_store = _metadata_store()
+        doc_info = metadata_store.get_document(document_id)
+        return _attach_shared_department_ids(doc_info, store=metadata_store)
     except Exception as e:
         logger.error(f"获取文档信息失败: {str(e)}")
         return None
@@ -513,7 +545,12 @@ def get_classification_result(document_id):
 # 获取所有文档信息
 def get_all_documents():
     try:
-        return _metadata_store().list_documents()
+        metadata_store = _metadata_store()
+        documents = metadata_store.list_documents()
+        return [
+            _attach_shared_department_ids(doc_info, store=metadata_store)
+            for doc_info in documents
+        ]
     except Exception as e:
         logger.error(f"获取所有文档失败: {str(e)}")
         return []
@@ -1378,10 +1415,42 @@ def update_document_info(document_id, updated_info):
         logger.error("更新失败：ID为空或更新信息非法")
         return False
     try:
-        return _metadata_store().update_document(document_id, updated_info)
+        metadata_store = _metadata_store()
+        updated = metadata_store.update_document(document_id, updated_info)
+        if updated and "shared_department_ids" in updated_info:
+            metadata_store.replace_document_shared_departments(
+                document_id,
+                _normalize_shared_department_ids(updated_info.get("shared_department_ids")),
+            )
+        return updated
     except Exception as e:
         logger.error(f"更新文档信息失败: {str(e)}")
         return False
+
+
+def replace_document_shared_departments(document_id: str, department_ids: List[str]) -> bool:
+    if not document_id:
+        logger.error("更新共享部门失败：文档ID为空")
+        return False
+    try:
+        _metadata_store().replace_document_shared_departments(
+            document_id,
+            _normalize_shared_department_ids(department_ids),
+        )
+        return True
+    except Exception as e:
+        logger.error(f"更新共享部门失败: {str(e)}")
+        return False
+
+
+def list_document_shared_departments(document_id: str) -> List[str]:
+    if not document_id:
+        return []
+    try:
+        return _metadata_store().list_document_shared_departments(document_id)
+    except Exception as e:
+        logger.error(f"获取共享部门失败: {str(e)}")
+        return []
 
 # 根据分类结果获取文档
 def get_documents_by_classification(classification):
