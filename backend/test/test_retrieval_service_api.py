@@ -633,6 +633,112 @@ def test_workspace_search_block_mode_returns_documents_and_compatibility_results
     assert payload["results"][0]["block_id"] == "doc-1:block-v1:14"
 
 
+def test_workspace_search_block_mode_filters_hidden_documents_before_response_assembly(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+    service = RetrievalService()
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {
+            "documents": [
+                {
+                    "document_id": "doc-visible",
+                    "filename": "budget.docx",
+                    "file_type": ".docx",
+                    "score": 0.92,
+                    "hit_count": 2,
+                    "best_block_id": "doc-visible:block-v1:1",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-visible:block-v1:1",
+                            "block_index": 1,
+                            "snippet": "预算审批流程",
+                            "score": 0.92,
+                        }
+                    ],
+                },
+                {
+                    "document_id": "doc-hidden",
+                    "filename": "salary.docx",
+                    "file_type": ".docx",
+                    "score": 0.89,
+                    "hit_count": 1,
+                    "best_block_id": "doc-hidden:block-v1:7",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-hidden:block-v1:7",
+                            "block_index": 7,
+                            "snippet": "薪酬保密规则",
+                            "score": 0.89,
+                        }
+                    ],
+                },
+            ],
+            "results": [
+                {
+                    "document_id": "doc-visible",
+                    "block_id": "doc-visible:block-v1:1",
+                    "block_index": 1,
+                    "snippet": "预算审批流程",
+                    "score": 0.92,
+                },
+                {
+                    "document_id": "doc-hidden",
+                    "block_id": "doc-hidden:block-v1:7",
+                    "block_index": 7,
+                    "snippet": "薪酬保密规则",
+                    "score": 0.89,
+                },
+            ],
+            "meta": {"fallback_used": False},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_ready_block_document_ids",
+        lambda **kwargs: {"doc-visible", "doc-hidden"},
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-visible",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-fin",
+                "shared_department_ids": [],
+            },
+            {
+                "id": "doc-hidden",
+                "visibility_scope": "department",
+                "owner_department_id": "dept-hr",
+                "shared_department_ids": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "authorization_service",
+        Mock(list_visible_document_ids=lambda current_user, documents: {"doc-visible"}),
+        raising=False,
+    )
+
+    payload = service.workspace_search(
+        query="预算",
+        mode="hybrid",
+        retrieval_version="block",
+        limit=10,
+        group_by_document=True,
+        current_user={"id": "user-1", "role_code": "employee"},
+    )
+
+    assert payload["retrieval_version_used"] == "block"
+    assert payload["total_documents"] == 1
+    assert payload["total_results"] == 1
+    assert [item["document_id"] for item in payload["documents"]] == ["doc-visible"]
+    assert [item["document_id"] for item in payload["results"]] == ["doc-visible"]
+
+
 def test_workspace_search_block_mode_falls_back_to_legacy_when_no_ready_docs(monkeypatch):
     search_cache_module.get_search_cache().invalidate_all()
     monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: set())

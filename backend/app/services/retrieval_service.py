@@ -389,8 +389,14 @@ class RetrievalService:
                     use_query_expansion=use_query_expansion,
                     expansion_method=expansion_method,
                 )
-                documents = list(block_payload.get("documents") or [])
-                results = list(block_payload.get("results") or [])
+                documents = self._filter_items_by_document_ids(
+                    list(block_payload.get("documents") or []),
+                    visible_document_ids,
+                )
+                results = self._filter_items_by_document_ids(
+                    list(block_payload.get("results") or []),
+                    visible_document_ids,
+                )
                 if group_by_document:
                     documents = documents[:normalized_limit]
                     results = self._flatten_surfaced_block_results(documents)
@@ -853,10 +859,17 @@ class RetrievalService:
         current_user: dict | None,
     ) -> List[Dict[str, Any]]:
         visible_document_ids = self._visible_document_ids(current_user)
+        return self._filter_items_by_document_ids(results, visible_document_ids)
+
+    @staticmethod
+    def _filter_items_by_document_ids(
+        items: List[Dict[str, Any]],
+        visible_document_ids: set[str],
+    ) -> List[Dict[str, Any]]:
         return [
             item
-            for item in (results or [])
-            if str(item.get("document_id") or "") in visible_document_ids
+            for item in (items or [])
+            if str(item.get("document_id") or item.get("id") or "") in visible_document_ids
         ]
 
     @staticmethod
