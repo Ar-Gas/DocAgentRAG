@@ -34,13 +34,14 @@ async def login(request: LoginRequest, http_request: Request = None):
 
     try:
         login_result = auth_service.login(request.username, request.password)
+        authenticated_user = login_result.get("user") or {}
         try:
             audit_service.record(
                 action_type="login_success",
                 target_type="auth",
-                target_id=request.username,
+                target_id=authenticated_user.get("id") or request.username,
                 result="success",
-                user=login_result.get("user"),
+                user=authenticated_user,
                 ip_address=ip_address,
                 metadata={"username": request.username},
             )
@@ -56,12 +57,18 @@ async def login(request: LoginRequest, http_request: Request = None):
                 action_type="login_failure",
                 target_type="auth",
                 target_id=request.username,
-                result="failure",
-                user=None,
+                result="failed",
+                user={
+                    "id": None,
+                    "username": request.username,
+                    "role_code": "anonymous",
+                    "primary_department_id": None,
+                },
                 ip_address=ip_address,
                 metadata={
                     "username": request.username,
                     "error_code": exc.code,
+                    "error_detail": exc.detail,
                 },
             )
         except Exception:

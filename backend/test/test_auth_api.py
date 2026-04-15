@@ -420,7 +420,7 @@ def test_login_api_records_login_success_audit_with_ip(monkeypatch):
     mock_record.assert_called_once_with(
         action_type="login_success",
         target_type="auth",
-        target_id="alice",
+        target_id="user-1",
         result="success",
         user=login_payload["user"],
         ip_address="203.0.113.10",
@@ -452,8 +452,17 @@ def test_login_api_records_login_failure_audit_with_ip(monkeypatch):
         action_type="login_failure",
         target_type="auth",
         target_id="alice",
-        result="failure",
-        user=None,
+        result="failed",
+        user={
+            "id": None,
+            "username": "alice",
+            "role_code": "anonymous",
+            "primary_department_id": None,
+        },
         ip_address="198.51.100.20",
-        metadata={"username": "alice", "error_code": 4001},
+        metadata={
+            "username": "alice",
+            "error_code": 4001,
+            "error_detail": "用户名或密码错误",
+        },
     )
