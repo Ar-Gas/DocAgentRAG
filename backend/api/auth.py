@@ -35,13 +35,17 @@ async def login(request: LoginRequest, http_request: Request = None):
     try:
         login_result = auth_service.login(request.username, request.password)
         authenticated_user = login_result.get("user") or {}
+        audit_actor = (
+            auth_service.get_audit_actor_snapshot(authenticated_user.get("id"))
+            or authenticated_user
+        )
         try:
             audit_service.record(
                 action_type="login_success",
                 target_type="auth",
                 target_id=authenticated_user.get("id") or request.username,
                 result="success",
-                user=authenticated_user,
+                user=audit_actor,
                 ip_address=ip_address,
                 metadata={"username": request.username},
             )

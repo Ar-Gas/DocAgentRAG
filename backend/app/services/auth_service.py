@@ -23,6 +23,19 @@ class AuthService:
             "role_code": user["role_code"],
         }
 
+    def get_audit_actor_snapshot(self, user_id: str | None) -> dict | None:
+        if not user_id:
+            return None
+        user = self.store.get_user(user_id)
+        if not user:
+            return None
+        return {
+            "id": user.get("id"),
+            "username": user.get("username"),
+            "role_code": user.get("role_code"),
+            "primary_department_id": user.get("primary_department_id"),
+        }
+
     def verify_password(self, password: str, password_hash: str) -> bool:
         try:
             salt_hex, digest_hex = password_hash.split("$", 1)

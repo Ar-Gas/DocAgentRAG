@@ -400,13 +400,25 @@ def test_login_api_records_login_success_audit_with_ip(monkeypatch):
             "username": "alice",
             "display_name": "Alice",
             "role_code": "employee",
-            "primary_department_id": "dept-fin",
         },
     }
+    audit_actor_snapshot = {
+        "id": "user-1",
+        "username": "alice",
+        "role_code": "employee",
+        "primary_department_id": "dept-fin",
+    }
     mock_login = Mock(return_value=login_payload)
+    mock_get_audit_actor_snapshot = Mock(return_value=audit_actor_snapshot)
     mock_record = Mock(return_value="audit-1")
     request = Mock(client=Mock(host="203.0.113.10"))
     monkeypatch.setattr(auth_api.auth_service, "login", mock_login)
+    monkeypatch.setattr(
+        auth_api.auth_service,
+        "get_audit_actor_snapshot",
+        mock_get_audit_actor_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr(auth_api, "audit_service", Mock(record=mock_record), raising=False)
 
     body = asyncio.run(
@@ -417,12 +429,15 @@ def test_login_api_records_login_success_audit_with_ip(monkeypatch):
     )
 
     assert body["code"] == 200
+    assert body["data"]["user"] == login_payload["user"]
+    assert "primary_department_id" not in body["data"]["user"]
+    mock_get_audit_actor_snapshot.assert_called_once_with("user-1")
     mock_record.assert_called_once_with(
         action_type="login_success",
         target_type="auth",
         target_id="user-1",
         result="success",
-        user=login_payload["user"],
+        user=audit_actor_snapshot,
         ip_address="203.0.113.10",
         metadata={"username": "alice"},
     )
