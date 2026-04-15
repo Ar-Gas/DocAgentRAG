@@ -274,7 +274,7 @@ class DocumentMetadataStore:
                 logger.warning("同步元数据 JSON 失败 %s: %s", json_path.name, exc)
 
     def _serialize_doc(self, doc_info: Dict[str, Any]) -> Dict[str, Any]:
-        payload = dict(doc_info)
+        payload = self._apply_enterprise_document_defaults(dict(doc_info))
         return {
             "id": payload["id"],
             "filename": payload.get("filename", ""),
@@ -293,6 +293,17 @@ class DocumentMetadataStore:
             "is_public_restricted": payload.get("is_public_restricted", 0),
             "payload": json.dumps(payload, ensure_ascii=False),
         }
+
+    def _apply_enterprise_document_defaults(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(payload)
+        normalized.setdefault("visibility_scope", "department")
+        normalized.setdefault("owner_department_id", None)
+        normalized.setdefault("business_category_id", None)
+        normalized.setdefault("role_restriction", None)
+        normalized.setdefault("confidentiality_level", "internal")
+        normalized.setdefault("document_status", "draft")
+        normalized.setdefault("is_public_restricted", 0)
+        return normalized
 
     def _write_document_json(self, doc_info: Dict[str, Any]) -> None:
         output_path = self.data_dir / f"{doc_info['id']}.json"
@@ -376,7 +387,7 @@ class DocumentMetadataStore:
 
         if not row:
             return None
-        return json.loads(row["payload"])
+        return self._apply_enterprise_document_defaults(json.loads(row["payload"]))
 
     def list_documents(self) -> List[Dict[str, Any]]:
         with self._connect() as connection:
@@ -389,10 +400,11 @@ class DocumentMetadataStore:
                     COALESCE(created_at, 0) DESC
                 """
             ).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
+        return [self._apply_enterprise_document_defaults(json.loads(row["payload"])) for row in rows]
 
     def delete_document(self, document_id: str, mirror: bool = True) -> bool:
         with self._connect() as connection:
+            connection.execute("DELETE FROM document_shared_departments WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM document_contents WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM document_segments WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM document_artifacts WHERE document_id = ?", (document_id,))
@@ -853,7 +865,9 @@ class DocumentMetadataStore:
 
     def upsert_user(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         now = datetime.now().isoformat()
-        user_id = payload.get("id") or f"user-{uuid.uuid4().hex}"
+        existing = self.get_user_by_username(payload["username"])
+        user_id = existing["id"] if existing else payload.get("id") or f"user-{uuid.uuid4().hex}"
+        created_at = payload.get("created_at") or (existing["created_at"] if existing else now)
         with self._connect() as connection:
             connection.execute(
                 """
@@ -883,7 +897,7 @@ class DocumentMetadataStore:
                     payload["role_code"],
                     payload.get("last_login_at"),
                     payload.get("external_identity_id"),
-                    payload.get("created_at", now),
+                    created_at,
                     now,
                 ),
             )
@@ -988,8 +1002,11 @@ class DocumentMetadataStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
+                    scope_type = excluded.scope_type,
+                    department_id = excluded.department_id,
                     status = excluded.status,
                     sort_order = excluded.sort_order,
+                    created_by = excluded.created_by,
                     updated_at = excluded.updated_at
                 """,
                 (

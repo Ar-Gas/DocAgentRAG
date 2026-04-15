@@ -112,3 +112,128 @@ def test_upsert_document_persists_enterprise_columns_in_documents_row(tmp_path: 
     assert row["confidentiality_level"] == "strict"
     assert row["document_status"] == "archived"
     assert row["is_public_restricted"] == 0
+
+
+def test_delete_document_removes_document_shared_departments(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    assert store.upsert_document(
+        {
+            "id": "doc-delete",
+            "filename": "delete.pdf",
+            "filepath": "/tmp/delete.pdf",
+            "file_type": ".pdf",
+        },
+        mirror=False,
+    )
+    store.replace_document_shared_departments("doc-delete", ["dept-a", "dept-b"])
+
+    assert store.list_document_shared_departments("doc-delete") == ["dept-a", "dept-b"]
+    assert store.delete_document("doc-delete", mirror=False)
+    assert store.list_document_shared_departments("doc-delete") == []
+
+
+def test_upsert_user_reuses_existing_row_by_username(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+
+    first = store.upsert_user(
+        {
+            "id": "user-1",
+            "username": "alice",
+            "password_hash": "hash-1",
+            "display_name": "Alice",
+            "role_code": "employee",
+        }
+    )
+    second = store.upsert_user(
+        {
+            "id": "user-2",
+            "username": "alice",
+            "password_hash": "hash-2",
+            "display_name": "Alice Updated",
+            "role_code": "department_admin",
+        }
+    )
+
+    assert second["id"] == first["id"]
+    assert second["password_hash"] == "hash-2"
+    assert second["display_name"] == "Alice Updated"
+    assert second["role_code"] == "department_admin"
+    with store._connect() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM users WHERE username = ?",
+            ("alice",),
+        ).fetchone()
+    assert row["count"] == 1
+
+
+def test_upsert_business_category_updates_scope_department_and_creator(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    store.upsert_business_category(
+        {
+            "id": "cat-governance",
+            "name": "治理类",
+            "scope_type": "system",
+            "department_id": None,
+            "status": "enabled",
+            "sort_order": 10,
+            "created_by": "system",
+        }
+    )
+    store.upsert_business_category(
+        {
+            "id": "cat-governance",
+            "name": "治理类",
+            "scope_type": "department",
+            "department_id": "dept-fin",
+            "status": "enabled",
+            "sort_order": 11,
+            "created_by": "user-admin",
+        }
+    )
+
+    department_scoped = store.list_business_categories(scope_type="department", department_id="dept-fin")
+    assert any(
+        item["id"] == "cat-governance" and item["created_by"] == "user-admin"
+        for item in department_scoped
+    )
+    assert all(
+        item["id"] != "cat-governance"
+        for item in store.list_business_categories(scope_type="system")
+    )
+
+
+def test_get_and_list_documents_include_enterprise_default_fields(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    assert store.upsert_document(
+        {
+            "id": "doc-defaults",
+            "filename": "defaults.pdf",
+            "filepath": "/tmp/defaults.pdf",
+            "file_type": ".pdf",
+        },
+        mirror=False,
+    )
+
+    one = store.get_document("doc-defaults")
+    listed = next(item for item in store.list_documents() if item["id"] == "doc-defaults")
+
+    for doc in (one, listed):
+        assert doc["visibility_scope"] == "department"
+        assert doc["owner_department_id"] is None
+        assert doc["business_category_id"] is None
+        assert doc["role_restriction"] is None
+        assert doc["confidentiality_level"] == "internal"
+        assert doc["document_status"] == "draft"
+        assert doc["is_public_restricted"] == 0
