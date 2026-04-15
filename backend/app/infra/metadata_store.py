@@ -269,8 +269,13 @@ class DocumentMetadataStore:
             try:
                 with open(json_path, "r", encoding="utf-8") as handle:
                     doc_info = json.load(handle)
-                if doc_info.get("id") and doc_info.get("filename"):
-                    self.upsert_document(doc_info, mirror=False)
+                normalized_doc = self._apply_enterprise_document_defaults(doc_info)
+                if normalized_doc.get("id") and normalized_doc.get("filename"):
+                    self.upsert_document(normalized_doc, mirror=False)
+                    self.replace_document_shared_departments(
+                        normalized_doc["id"],
+                        list(normalized_doc.get("shared_department_ids") or []),
+                    )
             except Exception as exc:
                 logger.warning("同步元数据 JSON 失败 %s: %s", json_path.name, exc)
 
@@ -296,7 +301,11 @@ class DocumentMetadataStore:
         }
 
     def _apply_enterprise_document_defaults(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return normalize_document_governance(payload, current_user=None)
+        return normalize_document_governance(
+            payload,
+            current_user=None,
+            use_owner_fallback=False,
+        )
 
     def _write_document_json(self, doc_info: Dict[str, Any]) -> None:
         output_path = self.data_dir / f"{doc_info['id']}.json"

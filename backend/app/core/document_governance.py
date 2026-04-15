@@ -32,11 +32,12 @@ def _normalize_boolean(value: Any, default: bool = False) -> bool:
 def normalize_document_governance(
     payload: Mapping[str, Any] | None,
     current_user: Mapping[str, Any] | None = None,
+    use_owner_fallback: bool = False,
 ) -> dict[str, Any]:
     normalized = dict(payload or {})
 
     owner_department_id = normalized.get("owner_department_id")
-    if not owner_department_id and isinstance(current_user, Mapping):
+    if use_owner_fallback and not owner_department_id and isinstance(current_user, Mapping):
         owner_department_id = (
             current_user.get("primary_department_id")
             or current_user.get("department_id")

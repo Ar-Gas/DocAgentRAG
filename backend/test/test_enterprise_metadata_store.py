@@ -358,4 +358,32 @@ def test_metadata_store_governance_defaults_delegate_to_shared_normalizer(tmp_pa
     normalized = store._apply_enterprise_document_defaults({"id": "doc-1"})
 
     assert normalized["business_category_id"] == "cat-pending"
-    mock_normalize.assert_called_once_with({"id": "doc-1"}, current_user=None)
+    mock_normalize.assert_called_once_with(
+        {"id": "doc-1"},
+        current_user=None,
+        use_owner_fallback=False,
+    )
+
+
+def test_sync_from_json_files_preserves_shared_department_mappings(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with open(data_dir / "doc-shared.json", "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "id": "doc-shared",
+                "filename": "shared.pdf",
+                "filepath": "/tmp/shared.pdf",
+                "file_type": ".pdf",
+                "shared_department_ids": ["dept-fin", "dept-ops"],
+            },
+            handle,
+            ensure_ascii=False,
+        )
+
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=data_dir,
+    )
+
+    assert store.list_document_shared_departments("doc-shared") == ["dept-fin", "dept-ops"]

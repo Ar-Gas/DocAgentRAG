@@ -53,8 +53,17 @@ class DocumentService:
     def _hydrate_document(doc_info: Dict) -> Dict:
         return enrich_document_file_state(doc_info, persist=True)
 
-    def _apply_governance_defaults(self, doc_info: Dict, current_user: Optional[Dict] = None) -> Dict:
-        return normalize_document_governance(doc_info or {}, current_user=current_user)
+    def _apply_governance_defaults(
+        self,
+        doc_info: Dict,
+        current_user: Optional[Dict] = None,
+        use_owner_fallback: bool = False,
+    ) -> Dict:
+        return normalize_document_governance(
+            doc_info or {},
+            current_user=current_user,
+            use_owner_fallback=use_owner_fallback,
+        )
 
     @staticmethod
     def _ensure_view_permission(current_user: Optional[Dict], doc_info: Dict) -> None:
@@ -159,7 +168,11 @@ class DocumentService:
         except Exception:
             pass  # 分类失败不报错，仅记录到日志
 
-        normalized_governance = self._apply_governance_defaults(governance_metadata or {}, current_user=current_user)
+        normalized_governance = self._apply_governance_defaults(
+            governance_metadata or {},
+            current_user=current_user,
+            use_owner_fallback=True,
+        )
         update_document_info(
             document_id,
             {
@@ -302,13 +315,13 @@ class DocumentService:
         normalized_existing = self._apply_governance_defaults(existing, current_user=current_user)
         self._ensure_manage_permission(current_user, normalized_existing)
 
-        merged = self._apply_governance_defaults(
-            {
-                **normalized_existing,
-                **(updated_fields or {}),
-            },
-            current_user=current_user,
-        )
+        merged_source = {
+            **normalized_existing,
+            **(updated_fields or {}),
+        }
+        if "is_public_restricted" not in (updated_fields or {}):
+            merged_source.pop("is_public_restricted", None)
+        merged = self._apply_governance_defaults(merged_source, current_user=current_user)
         governance_patch = {field: merged.get(field) for field in self.GOVERNANCE_FIELDS}
         if not update_document_info(document_id, governance_patch):
             raise AppServiceError(1001, f"文档ID: {document_id}")

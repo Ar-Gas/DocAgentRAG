@@ -71,8 +71,11 @@ async def upload_document(
         parsed_shared_department_ids: List[str] = []
         try:
             parsed = json.loads(shared_department_ids or "[]")
-            if isinstance(parsed, list):
-                parsed_shared_department_ids = [str(item).strip() for item in parsed if str(item).strip()]
+            if not isinstance(parsed, list):
+                raise AppServiceError(2001, "shared_department_ids 必须是 JSON 数组字符串")
+            parsed_shared_department_ids = [str(item).strip() for item in parsed if str(item).strip()]
+        except AppServiceError:
+            raise
         except Exception:
             raise AppServiceError(2001, "shared_department_ids 必须是 JSON 数组字符串")
 

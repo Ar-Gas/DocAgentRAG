@@ -120,6 +120,36 @@ def test_upload_forwards_governance_fields_and_actor_context(monkeypatch):
     }
 
 
+def test_upload_rejects_json_shared_department_ids_with_non_list_type():
+    current_user = {"id": "user-1", "role_code": "employee", "primary_department_id": "dept-fin"}
+    mock_upload = Mock(return_value={"id": "doc-1"})
+    original_upload = document_api.document_service.upload
+    document_api.document_service.upload = mock_upload
+    upload = UploadFile(filename="budget.pdf", file=io.BytesIO(b"%PDF-1.4"))
+
+    try:
+        asyncio.run(
+            document_api.upload_document(
+                file=upload,
+                visibility_scope="public",
+                owner_department_id="dept-fin",
+                shared_department_ids='{"dept":"fin"}',
+                business_category_id="cat-budget",
+                role_restriction="employee",
+                confidentiality_level="confidential",
+                document_status="published",
+                current_user=current_user,
+            )
+        )
+    except document_api.BusinessException as exc:
+        assert exc.code == 2001
+    else:
+        raise AssertionError("expected non-list JSON shared_department_ids to be rejected before upload")
+    finally:
+        document_api.document_service.upload = original_upload
+    mock_upload.assert_not_called()
+
+
 def test_document_detail_content_reader_and_file_forward_current_user(monkeypatch, tmp_path: Path):
     current_user = {"id": "user-1", "role_code": "employee", "department_ids": ["dept-fin"]}
     pdf_path = tmp_path / "sample.pdf"
@@ -219,6 +249,7 @@ def test_document_service_applies_governance_defaults_with_actor_context():
             "primary_department_id": "dept-fin",
             "role_code": "employee",
         },
+        use_owner_fallback=True,
     )
 
     assert normalized["visibility_scope"] == "department"
@@ -258,7 +289,11 @@ def test_document_service_governance_defaults_delegate_to_shared_normalizer(monk
     )
 
     assert payload["business_category_id"] == "cat-pending"
-    mock_normalize.assert_called_once_with({"id": "doc-1"}, current_user={"id": "user-1"})
+    mock_normalize.assert_called_once_with(
+        {"id": "doc-1"},
+        current_user={"id": "user-1"},
+        use_owner_fallback=False,
+    )
 
 
 def test_document_service_list_documents_filters_visible_documents(monkeypatch):
@@ -289,6 +324,106 @@ def test_document_service_list_documents_filters_visible_documents(monkeypatch):
 
     assert payload["total"] == 1
     assert [item["id"] for item in payload["items"]] == ["doc-visible"]
+
+
+def test_document_service_get_document_does_not_gain_owner_access_from_actor_fallback(monkeypatch):
+    monkeypatch.setattr(
+        document_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "legacy.pdf",
+            "visibility_scope": "department",
+            "owner_department_id": None,
+            "shared_department_ids": [],
+        },
+    )
+    monkeypatch.setattr(
+        document_service_module,
+        "enrich_document_file_state",
+        lambda doc_info, persist=True: {**doc_info, "file_available": True},
+    )
+
+    try:
+        DocumentService().get_document(
+            "doc-legacy",
+            current_user={
+                "id": "user-1",
+                "role_code": "employee",
+                "primary_department_id": "dept-fin",
+                "department_ids": ["dept-fin"],
+            },
+        )
+    except AppServiceError as exc:
+        assert exc.code == 401
+    else:
+        raise AssertionError("legacy owner fallback should not grant read permission")
+
+
+def test_update_document_metadata_recomputes_public_restriction_when_omitted(monkeypatch):
+    existing_doc = {
+        "id": "doc-1",
+        "filename": "doc.pdf",
+        "visibility_scope": "department",
+        "owner_department_id": "dept-fin",
+        "shared_department_ids": [],
+        "role_restriction": None,
+        "is_public_restricted": False,
+    }
+    mock_update = Mock(return_value=True)
+    monkeypatch.setattr(document_service_module, "get_document_info", lambda document_id: existing_doc)
+    monkeypatch.setattr(document_service_module, "update_document_info", mock_update)
+    service = DocumentService()
+    monkeypatch.setattr(service, "get_document", Mock(return_value={"id": "doc-1", "is_public_restricted": True}))
+
+    result = service.update_document_metadata(
+        "doc-1",
+        {
+            "visibility_scope": "public",
+            "role_restriction": "employee",
+        },
+        current_user={
+            "id": "user-admin",
+            "role_code": "department_admin",
+            "department_ids": ["dept-fin"],
+            "managed_department_ids": ["dept-fin"],
+        },
+    )
+
+    assert result["is_public_restricted"] is True
+    patch_payload = mock_update.call_args.args[1]
+    assert patch_payload["is_public_restricted"] is True
+
+
+def test_update_document_metadata_does_not_gain_manage_access_from_actor_fallback(monkeypatch):
+    existing_doc = {
+        "id": "doc-1",
+        "filename": "doc.pdf",
+        "visibility_scope": "department",
+        "owner_department_id": None,
+        "shared_department_ids": [],
+        "role_restriction": None,
+    }
+    monkeypatch.setattr(document_service_module, "get_document_info", lambda document_id: existing_doc)
+    monkeypatch.setattr(document_service_module, "update_document_info", Mock(return_value=True))
+    service = DocumentService()
+    monkeypatch.setattr(service, "get_document", Mock(return_value={"id": "doc-1"}))
+
+    try:
+        service.update_document_metadata(
+            "doc-1",
+            {"document_status": "published"},
+            current_user={
+                "id": "user-admin",
+                "role_code": "department_admin",
+                "primary_department_id": "dept-fin",
+                "managed_department_ids": ["dept-fin"],
+            },
+        )
+    except AppServiceError as exc:
+        assert exc.code == 401
+    else:
+        raise AssertionError("legacy owner fallback should not grant manage permission")
 
 
 def test_document_service_get_document_denies_unviewable_document(monkeypatch):
