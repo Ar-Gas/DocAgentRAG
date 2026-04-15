@@ -10,7 +10,9 @@ from pydantic import BaseModel
 import logging
 
 from app.services.document_service import DocumentService
+from app.services.category_service import category_service
 from app.services.errors import AppServiceError
+from app.services.organization_service import organization_service
 from api import success, paginated, BusinessException
 from api.dependencies import require_authenticated_user
 
@@ -32,7 +34,26 @@ router = APIRouter()
 document_service = DocumentService()
 
 
+def _directory_name_maps() -> tuple[dict[str, str], dict[str, str]]:
+    departments = organization_service.store.list_departments()
+    categories = category_service.store.list_business_categories()
+    department_map = {
+        str(item.get("id") or ""): str(item.get("name") or "")
+        for item in departments
+        if item.get("id")
+    }
+    category_map = {
+        str(item.get("id") or ""): str(item.get("name") or "")
+        for item in categories
+        if item.get("id")
+    }
+    return department_map, category_map
+
+
 def _build_document_response(doc_info: dict) -> dict:
+    department_map, category_map = _directory_name_maps()
+    owner_department_id = doc_info.get("owner_department_id")
+    business_category_id = doc_info.get("business_category_id")
     return {
         "id": doc_info.get("id"),
         "filename": doc_info.get("filename"),
@@ -45,9 +66,13 @@ def _build_document_response(doc_info: dict) -> dict:
         "extraction_status": doc_info.get("extraction_status"),
         "parser_name": doc_info.get("parser_name"),
         "visibility_scope": doc_info.get("visibility_scope", "department"),
-        "owner_department_id": doc_info.get("owner_department_id"),
+        "owner_department_id": owner_department_id,
+        "owner_department_name": doc_info.get("owner_department_name")
+        or department_map.get(str(owner_department_id or "")),
         "shared_department_ids": list(doc_info.get("shared_department_ids") or []),
-        "business_category_id": doc_info.get("business_category_id"),
+        "business_category_id": business_category_id,
+        "business_category_name": doc_info.get("business_category_name")
+        or category_map.get(str(business_category_id or "")),
         "role_restriction": doc_info.get("role_restriction"),
         "is_public_restricted": bool(doc_info.get("is_public_restricted", False)),
         "confidentiality_level": doc_info.get("confidentiality_level", "internal"),
