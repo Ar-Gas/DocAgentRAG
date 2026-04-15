@@ -247,6 +247,20 @@ def test_document_service_derives_public_restriction_when_not_explicit():
     assert normalized["is_public_restricted"] is True
 
 
+def test_document_service_governance_defaults_delegate_to_shared_normalizer(monkeypatch):
+    service = DocumentService()
+    mock_normalize = Mock(return_value={"id": "doc-1", "business_category_id": "cat-pending"})
+    monkeypatch.setattr(document_service_module, "normalize_document_governance", mock_normalize, raising=False)
+
+    payload = service._apply_governance_defaults(
+        {"id": "doc-1"},
+        current_user={"id": "user-1"},
+    )
+
+    assert payload["business_category_id"] == "cat-pending"
+    mock_normalize.assert_called_once_with({"id": "doc-1"}, current_user={"id": "user-1"})
+
+
 def test_document_service_list_documents_filters_visible_documents(monkeypatch):
     monkeypatch.setattr(
         document_service_module,

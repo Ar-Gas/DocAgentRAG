@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.core.document_governance import normalize_document_governance
 from app.services.authorization_service import authorization_service
 from app.services.errors import AppServiceError
 from app.services.extraction_service import ExtractionService
@@ -52,77 +53,8 @@ class DocumentService:
     def _hydrate_document(doc_info: Dict) -> Dict:
         return enrich_document_file_state(doc_info, persist=True)
 
-    @staticmethod
-    def _normalize_shared_department_ids(raw_ids) -> List[str]:
-        if not isinstance(raw_ids, (list, tuple, set)):
-            return []
-        normalized: List[str] = []
-        for department_id in raw_ids:
-            value = str(department_id).strip() if department_id is not None else ""
-            if value and value not in normalized:
-                normalized.append(value)
-        return normalized
-
-    @staticmethod
-    def _normalize_boolean(value, default: bool = False) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"1", "true", "yes", "on"}:
-                return True
-            if lowered in {"0", "false", "no", "off"}:
-                return False
-        return default
-
-    @staticmethod
-    def _derive_is_public_restricted(
-        visibility_scope: str,
-        shared_department_ids: List[str],
-        role_restriction: Optional[str],
-    ) -> bool:
-        return visibility_scope == "public" and bool(shared_department_ids or role_restriction)
-
     def _apply_governance_defaults(self, doc_info: Dict, current_user: Optional[Dict] = None) -> Dict:
-        normalized = dict(doc_info or {})
-
-        owner_department_id = normalized.get("owner_department_id")
-        if not owner_department_id and isinstance(current_user, dict):
-            owner_department_id = (
-                current_user.get("primary_department_id")
-                or current_user.get("department_id")
-            )
-
-        normalized["visibility_scope"] = str(normalized.get("visibility_scope") or "department")
-        normalized["owner_department_id"] = str(owner_department_id) if owner_department_id else None
-        normalized_shared_department_ids = self._normalize_shared_department_ids(
-            normalized.get("shared_department_ids")
-        )
-        normalized["shared_department_ids"] = normalized_shared_department_ids
-        normalized["business_category_id"] = normalized.get("business_category_id") or "cat-pending"
-        normalized["role_restriction"] = normalized.get("role_restriction")
-
-        derived_is_public_restricted = self._derive_is_public_restricted(
-            visibility_scope=normalized["visibility_scope"],
-            shared_department_ids=normalized_shared_department_ids,
-            role_restriction=normalized["role_restriction"],
-        )
-        if "is_public_restricted" in normalized and normalized.get("is_public_restricted") is not None:
-            normalized["is_public_restricted"] = self._normalize_boolean(
-                normalized.get("is_public_restricted"),
-                default=derived_is_public_restricted,
-            )
-        else:
-            normalized["is_public_restricted"] = derived_is_public_restricted
-        normalized["confidentiality_level"] = str(
-            normalized.get("confidentiality_level") or "internal"
-        )
-        normalized["document_status"] = str(normalized.get("document_status") or "draft")
-        return normalized
+        return normalize_document_governance(doc_info or {}, current_user=current_user)
 
     @staticmethod
     def _ensure_view_permission(current_user: Optional[Dict], doc_info: Dict) -> None:

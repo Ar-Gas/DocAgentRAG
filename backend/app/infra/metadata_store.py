@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.core.database import connect_sqlite
+from app.core.document_governance import normalize_document_governance
 from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -295,15 +296,7 @@ class DocumentMetadataStore:
         }
 
     def _apply_enterprise_document_defaults(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        normalized = dict(payload)
-        normalized.setdefault("visibility_scope", "department")
-        normalized.setdefault("owner_department_id", None)
-        normalized.setdefault("business_category_id", "cat-pending")
-        normalized.setdefault("role_restriction", None)
-        normalized.setdefault("confidentiality_level", "internal")
-        normalized.setdefault("document_status", "draft")
-        normalized.setdefault("is_public_restricted", 0)
-        return normalized
+        return normalize_document_governance(payload, current_user=None)
 
     def _write_document_json(self, doc_info: Dict[str, Any]) -> None:
         output_path = self.data_dir / f"{doc_info['id']}.json"

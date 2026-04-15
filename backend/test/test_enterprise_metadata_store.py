@@ -1,7 +1,9 @@
 from pathlib import Path
 
 import json
+from unittest.mock import Mock
 
+import app.infra.metadata_store as metadata_store_module
 from app.infra.metadata_store import DocumentMetadataStore
 
 
@@ -343,3 +345,17 @@ def test_upsert_document_mirror_writes_normalized_payload_with_enterprise_defaul
     assert mirrored["confidentiality_level"] == "internal"
     assert mirrored["document_status"] == "draft"
     assert mirrored["is_public_restricted"] == 0
+
+
+def test_metadata_store_governance_defaults_delegate_to_shared_normalizer(tmp_path: Path, monkeypatch):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    mock_normalize = Mock(return_value={"id": "doc-1", "business_category_id": "cat-pending"})
+    monkeypatch.setattr(metadata_store_module, "normalize_document_governance", mock_normalize, raising=False)
+
+    normalized = store._apply_enterprise_document_defaults({"id": "doc-1"})
+
+    assert normalized["business_category_id"] == "cat-pending"
+    mock_normalize.assert_called_once_with({"id": "doc-1"}, current_user=None)
