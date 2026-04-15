@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import json
+
 from app.infra.metadata_store import DocumentMetadataStore
 
 
@@ -237,3 +239,72 @@ def test_get_and_list_documents_include_enterprise_default_fields(tmp_path: Path
         assert doc["confidentiality_level"] == "internal"
         assert doc["document_status"] == "draft"
         assert doc["is_public_restricted"] == 0
+
+
+def test_list_by_classification_includes_enterprise_default_fields(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    legacy_payload = {
+        "id": "doc-classified",
+        "filename": "classed.pdf",
+        "filepath": "/tmp/classed.pdf",
+        "file_type": ".pdf",
+        "classification_result": "finance",
+    }
+    with store._connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO documents (id, filename, filepath, file_type, classification_result, payload)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "doc-classified",
+                "classed.pdf",
+                "/tmp/classed.pdf",
+                ".pdf",
+                "finance",
+                json.dumps(legacy_payload, ensure_ascii=False),
+            ),
+        )
+        connection.commit()
+
+    docs = store.list_by_classification("finance")
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc["id"] == "doc-classified"
+    assert doc["visibility_scope"] == "department"
+    assert doc["owner_department_id"] is None
+    assert doc["business_category_id"] is None
+    assert doc["role_restriction"] is None
+    assert doc["confidentiality_level"] == "internal"
+    assert doc["document_status"] == "draft"
+    assert doc["is_public_restricted"] == 0
+
+
+def test_upsert_document_mirror_writes_normalized_payload_with_enterprise_defaults(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    assert store.upsert_document(
+        {
+            "id": "doc-mirror",
+            "filename": "mirror.pdf",
+            "filepath": "/tmp/mirror.pdf",
+            "file_type": ".pdf",
+        },
+        mirror=True,
+    )
+
+    with open(tmp_path / "data" / "doc-mirror.json", "r", encoding="utf-8") as handle:
+        mirrored = json.load(handle)
+
+    assert mirrored["visibility_scope"] == "department"
+    assert mirrored["owner_department_id"] is None
+    assert mirrored["business_category_id"] is None
+    assert mirrored["role_restriction"] is None
+    assert mirrored["confidentiality_level"] == "internal"
+    assert mirrored["document_status"] == "draft"
+    assert mirrored["is_public_restricted"] == 0

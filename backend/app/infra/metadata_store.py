@@ -375,7 +375,7 @@ class DocumentMetadataStore:
             connection.commit()
 
         if mirror:
-            self._write_document_json(doc_info)
+            self._write_document_json(json.loads(payload["payload"]))
         return True
 
     def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
@@ -434,7 +434,7 @@ class DocumentMetadataStore:
                 "SELECT payload FROM documents WHERE classification_result = ? ORDER BY COALESCE(updated_at, created_at_iso, '') DESC",
                 (classification,),
             ).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
+        return [self._apply_enterprise_document_defaults(json.loads(row["payload"])) for row in rows]
 
     def save_classification_result(self, document_id: str, classification_result: str) -> bool:
         current = self.get_document(document_id)
