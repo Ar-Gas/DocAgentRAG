@@ -133,6 +133,38 @@ def test_list_visible_document_ids_filters_documents():
     assert visible == {"doc-public", "doc-public-restricted", "doc-department-owner"}
 
 
+def test_can_view_document_denies_anonymous_user_for_unrestricted_public_document():
+    service = AuthorizationService()
+    public_document = {
+        "id": "doc-public",
+        "visibility_scope": "public",
+        "owner_department_id": None,
+        "shared_department_ids": [],
+        "role_restriction": None,
+    }
+
+    assert service.can_view_document({}, public_document) is False
+    assert service.can_view_document(None, public_document) is False
+
+
+def test_department_admin_without_explicit_managed_departments_cannot_manage_document():
+    service = AuthorizationService()
+    department_admin_user = {
+        "id": "user-admin",
+        "role_code": "department_admin",
+        "department_ids": ["dept-fin", "dept-risk"],
+    }
+    department_document = {
+        "id": "doc-dept",
+        "visibility_scope": "department",
+        "owner_department_id": "dept-fin",
+        "shared_department_ids": [],
+        "role_restriction": None,
+    }
+
+    assert service.can_manage_document(department_admin_user, department_document) is False
+
+
 def test_audit_service_record_persists_user_snapshot_and_metadata(tmp_path: Path):
     store = DocumentMetadataStore(
         db_path=tmp_path / "docagent.db",

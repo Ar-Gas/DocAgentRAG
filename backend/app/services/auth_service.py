@@ -23,6 +23,11 @@ class AuthService:
             "role_code": user["role_code"],
         }
 
+    def to_public_user(self, user: dict | None) -> dict | None:
+        if not user:
+            return None
+        return self._to_public_user(user)
+
     def get_audit_actor_snapshot(self, user_id: str | None) -> dict | None:
         if not user_id:
             return None
@@ -68,7 +73,7 @@ class AuthService:
             "user": self.get_current_user(token),
         }
 
-    def get_current_user(self, token: str) -> dict | None:
+    def get_current_actor(self, token: str) -> dict | None:
         if not token:
             return None
 
@@ -89,7 +94,49 @@ class AuthService:
         user = self.store.get_user(session["user_id"])
         if not user or user.get("status") != "enabled":
             return None
-        return self._to_public_user(user)
+
+        memberships = []
+        list_memberships = getattr(self.store, "list_user_department_memberships", None)
+        if callable(list_memberships):
+            try:
+                memberships = list_memberships(user["id"]) or []
+            except Exception:
+                memberships = []
+
+        department_ids: list[str] = []
+        collaborative_department_ids: list[str] = []
+        seen_department_ids = set()
+        for membership in memberships:
+            department_id = membership.get("department_id")
+            if not department_id:
+                continue
+            department_id = str(department_id)
+            if department_id not in seen_department_ids:
+                seen_department_ids.add(department_id)
+                department_ids.append(department_id)
+            if membership.get("membership_type") == "collaborative":
+                collaborative_department_ids.append(department_id)
+
+        primary_department_id = user.get("primary_department_id")
+        if primary_department_id:
+            primary_department_id = str(primary_department_id)
+            if primary_department_id not in seen_department_ids:
+                department_ids.insert(0, primary_department_id)
+
+        return {
+            "id": user["id"],
+            "username": user["username"],
+            "display_name": user["display_name"],
+            "role_code": user["role_code"],
+            "primary_department_id": primary_department_id,
+            "department_ids": department_ids,
+            "collaborative_department_ids": collaborative_department_ids,
+            "managed_department_ids": list(user.get("managed_department_ids") or []),
+        }
+
+    def get_current_user(self, token: str) -> dict | None:
+        actor = self.get_current_actor(token)
+        return self._to_public_user(actor) if actor else None
 
     def logout(self, token: str) -> None:
         self.store.delete_auth_session(token)

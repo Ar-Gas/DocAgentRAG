@@ -90,7 +90,7 @@ async def logout(
 
 @router.get("/me")
 async def me(current_user: dict = Depends(require_authenticated_user)):
-    return success(data=current_user)
+    return success(data=auth_service.to_public_user(current_user))
 
 
 @router.post("/change-password")

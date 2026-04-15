@@ -13,6 +13,7 @@ import api as api_module  # noqa: E402
 import api.auth as auth_api  # noqa: E402
 import api.dependencies as api_dependencies  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
+from app.services.authorization_service import AuthorizationService  # noqa: E402
 
 
 INTERNAL_USER_FIELDS = {
@@ -69,6 +70,22 @@ class FakeAuthStore:
     def upsert_user(self, payload: dict):
         self.user.update(payload)
         return dict(self.user)
+
+    def list_user_department_memberships(self, user_id: str):
+        if user_id != self.user.get("id"):
+            return []
+        memberships = self.user.get("department_memberships")
+        if memberships is not None:
+            return [dict(item) for item in memberships]
+        primary_department_id = self.user.get("primary_department_id")
+        if not primary_department_id:
+            return []
+        return [
+            {
+                "department_id": primary_department_id,
+                "membership_type": "primary",
+            }
+        ]
 
 
 def create_test_client() -> FastAPI:
@@ -165,13 +182,58 @@ def test_extract_bearer_token_accepts_case_insensitive_scheme():
 
 
 def test_require_authenticated_user_returns_user(monkeypatch):
-    mock_get_current_user = Mock(return_value={"id": "user-1", "username": "alice"})
-    monkeypatch.setattr(api_dependencies.auth_service, "get_current_user", mock_get_current_user)
+    mock_get_current_actor = Mock(
+        return_value={
+            "id": "user-1",
+            "username": "alice",
+            "display_name": "Alice",
+            "role_code": "employee",
+            "primary_department_id": "dept-1",
+            "department_ids": ["dept-1"],
+        }
+    )
+    monkeypatch.setattr(api_dependencies.auth_service, "get_current_actor", mock_get_current_actor)
 
     user = asyncio.run(api_dependencies.require_authenticated_user("Bearer token-1"))
 
     assert user["id"] == "user-1"
-    mock_get_current_user.assert_called_once_with("token-1")
+    assert user["primary_department_id"] == "dept-1"
+    mock_get_current_actor.assert_called_once_with("token-1")
+
+
+def test_dependency_actor_context_allows_department_document_authorization(monkeypatch):
+    raw_user = {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "employee",
+        "password_hash": "salt$hash",
+        "status": "enabled",
+        "primary_department_id": "dept-fin",
+    }
+    store = FakeAuthStore(raw_user)
+    service = AuthService(store=store)
+    store.create_auth_session(
+        user_id="user-1",
+        token="token-1",
+        expires_at="2099-01-01T00:00:00",
+    )
+    monkeypatch.setattr(api_dependencies, "auth_service", service)
+
+    actor = asyncio.run(api_dependencies.require_authenticated_user("Bearer token-1"))
+    can_view = AuthorizationService().can_view_document(
+        actor,
+        {
+            "id": "doc-1",
+            "visibility_scope": "department",
+            "owner_department_id": "dept-fin",
+            "shared_department_ids": [],
+            "role_restriction": None,
+        },
+    )
+
+    assert actor["primary_department_id"] == "dept-fin"
+    assert can_view is True
 
 
 def test_logout_api_deletes_current_token(monkeypatch):
@@ -190,10 +252,46 @@ def test_logout_api_deletes_current_token(monkeypatch):
 
 
 def test_me_api_returns_current_user():
-    body = asyncio.run(auth_api.me(current_user={"id": "user-1", "username": "alice"}))
+    body = asyncio.run(
+        auth_api.me(
+            current_user={
+                "id": "user-1",
+                "username": "alice",
+                "display_name": "Alice",
+                "role_code": "employee",
+            }
+        )
+    )
 
     assert body["code"] == 200
     assert body["data"]["username"] == "alice"
+
+
+def test_me_api_sanitizes_internal_actor_context_fields():
+    actor_context = {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "employee",
+        "primary_department_id": "dept-1",
+        "department_ids": ["dept-1", "dept-2"],
+        "collaborative_department_ids": ["dept-2"],
+        "managed_department_ids": ["dept-1"],
+    }
+
+    body = asyncio.run(auth_api.me(current_user=actor_context))
+
+    assert body["code"] == 200
+    assert body["data"] == {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "employee",
+    }
+    assert "primary_department_id" not in body["data"]
+    assert "department_ids" not in body["data"]
+    assert "collaborative_department_ids" not in body["data"]
+    assert "managed_department_ids" not in body["data"]
 
 
 def test_change_password_calls_service(monkeypatch):
@@ -323,7 +421,7 @@ def test_auth_logout_request_without_token_returns_http_401():
 
 def test_auth_me_request_accepts_case_insensitive_bearer_scheme(monkeypatch):
     class StubAuthService:
-        def get_current_user(self, token: str):
+        def get_current_actor(self, token: str):
             if token == "token-1":
                 return {
                     "id": "user-1",
@@ -359,7 +457,7 @@ def test_auth_logout_request_parses_authorization_once(monkeypatch):
         def __init__(self):
             self.logged_out = []
 
-        def get_current_user(self, token: str):
+        def get_current_actor(self, token: str):
             if token == "token-1":
                 return {
                     "id": "user-1",

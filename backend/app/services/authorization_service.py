@@ -2,6 +2,11 @@ from typing import Iterable
 
 
 class AuthorizationService:
+    def _is_authenticated(self, user: dict | None) -> bool:
+        if not isinstance(user, dict):
+            return False
+        return bool(user.get("id"))
+
     def _user_role(self, user: dict | None) -> str:
         if not isinstance(user, dict):
             return ""
@@ -45,7 +50,7 @@ class AuthorizationService:
                 if department_id:
                     result.add(str(department_id))
 
-        return result or self._user_department_ids(user)
+        return result
 
     def _document_shared_department_ids(self, document: dict | None) -> set[str]:
         if not isinstance(document, dict):
@@ -60,6 +65,9 @@ class AuthorizationService:
         return result
 
     def can_view_document(self, user: dict, document: dict) -> bool:
+        if not self._is_authenticated(user):
+            return False
+
         if self._user_role(user) == "system_admin":
             return True
 
@@ -83,6 +91,9 @@ class AuthorizationService:
         return bool(user_department_ids & document_department_ids)
 
     def can_manage_document(self, user: dict, document: dict) -> bool:
+        if not self._is_authenticated(user):
+            return False
+
         role_code = self._user_role(user)
         if role_code == "system_admin":
             return True

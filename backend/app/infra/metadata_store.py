@@ -990,6 +990,19 @@ class DocumentMetadataStore:
                 )
             connection.commit()
 
+    def list_user_department_memberships(self, user_id: str) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT department_id, membership_type
+                FROM user_department_memberships
+                WHERE user_id = ?
+                ORDER BY rowid ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_business_category(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         category_id = payload.get("id") or f"cat-{uuid.uuid4().hex}"
         now = datetime.now().isoformat()

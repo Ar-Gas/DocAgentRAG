@@ -20,7 +20,7 @@ def extract_bearer_token(authorization: str) -> str:
 
 async def require_authenticated_session(authorization: str = Header(default="")) -> dict:
     token = extract_bearer_token(authorization)
-    user = auth_service.get_current_user(token)
+    user = auth_service.get_current_actor(token)
     if not user:
         raise BusinessException(code=401, message="未登录")
     return {"token": token, "user": user}
