@@ -35,4 +35,40 @@ describe('router guards', () => {
 
     expect(router.currentRoute.value.path).toBe('/admin/audit')
   })
+
+  it('allows department admins to access the category admin route', async () => {
+    sessionStore.setSession({
+      token: 'token-3',
+      user: {
+        username: 'dept-admin',
+        display_name: 'Dept Admin',
+        role_code: 'department_admin',
+      },
+    })
+
+    const router = createAppRouter()
+
+    await router.push('/admin/categories')
+    await router.isReady()
+
+    expect(router.currentRoute.value.path).toBe('/admin/categories')
+  })
+
+  it('redirects employee away from admin pages', async () => {
+    sessionStore.setSession({
+      token: 'token-1',
+      user: {
+        username: 'alice',
+        display_name: 'Alice',
+        role_code: 'employee',
+      },
+    })
+
+    const router = createAppRouter()
+
+    await router.push('/admin/users')
+    await router.isReady()
+
+    expect(router.currentRoute.value.path).toBe('/')
+  })
 })

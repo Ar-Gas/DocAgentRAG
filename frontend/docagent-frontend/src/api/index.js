@@ -67,6 +67,7 @@ export const api = {
   getDepartments: () => request.get('/departments'),
   getRoles: () => request.get('/roles'),
   getUsers: (page = 1, pageSize = 10) => request.get('/users', { params: { page, page_size: pageSize } }),
+  createUser: (payload) => request.post('/users', payload),
 
   uploadFile: (file, metadata = {}, onProgress) => {
     const formData = new FormData()
@@ -119,6 +120,15 @@ export const api = {
       params: { department_id: departmentId },
     })
   },
+  createSystemCategory: (payload) => {
+    return request.post('/categories/system', payload)
+  },
+  createDepartmentCategory: (payload) => {
+    return request.post('/categories/department', payload)
+  },
+  updateCategory: (categoryId, payload) => {
+    return request.patch(`/categories/${categoryId}`, payload)
+  },
   getTopicTree: () => {
     return request.get('/classification/topic-tree')
   },
@@ -140,6 +150,9 @@ export const api = {
   },
   summarizeResults: (query, results = []) => {
     return request.post('/retrieval/summarize-results', { query, results })
+  },
+  getAuditLogs: (params = {}) => {
+    return request.get('/audit-logs', { params })
   },
 }
 

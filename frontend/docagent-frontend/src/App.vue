@@ -67,7 +67,7 @@
 <script setup>
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
-import { DataBoard, Document, Search, UserFilled, Notebook } from '@element-plus/icons-vue'
+import { DataBoard, Document, Search, UserFilled, Notebook, CollectionTag } from '@element-plus/icons-vue'
 
 import { api } from '@/api'
 import { canAccessRoles, sessionStore } from '@/stores/session'
@@ -79,6 +79,7 @@ const iconByRouteName = {
   dashboard: DataBoard,
   documents: Document,
   search: Search,
+  'category-admin': CollectionTag,
   'user-admin': UserFilled,
   'audit-log': Notebook,
 }

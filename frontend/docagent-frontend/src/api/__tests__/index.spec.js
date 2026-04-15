@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const requestMock = {
   get: vi.fn(),
   post: vi.fn(),
+  patch: vi.fn(),
   delete: vi.fn(),
   interceptors: {
     request: { use: vi.fn() },
@@ -24,6 +25,7 @@ describe('api topic tree helpers', () => {
   beforeEach(() => {
     requestMock.get.mockClear()
     requestMock.post.mockClear()
+    requestMock.patch.mockClear()
   })
 
   it('posts topic tree rebuilds to the build endpoint', async () => {
@@ -78,6 +80,31 @@ describe('api topic tree helpers', () => {
     expect(requestMock.get).toHaveBeenCalledWith('/categories/system')
     expect(requestMock.get).toHaveBeenCalledWith('/categories/department', {
       params: { department_id: 'dept-fin' },
+    })
+  })
+
+  it('uses category mutation and audit log endpoints', async () => {
+    vi.resetModules()
+    const { api } = await import('@/api')
+
+    api.createSystemCategory({ name: '制度流程', sort_order: 1 })
+    api.createDepartmentCategory({ name: '预算管理', department_id: 'dept-fin' })
+    api.updateCategory('cat-budget', { status: 'disabled' })
+    api.getAuditLogs({ target_type: 'document', result: 'success' })
+
+    expect(requestMock.post).toHaveBeenCalledWith('/categories/system', {
+      name: '制度流程',
+      sort_order: 1,
+    })
+    expect(requestMock.post).toHaveBeenCalledWith('/categories/department', {
+      name: '预算管理',
+      department_id: 'dept-fin',
+    })
+    expect(requestMock.patch).toHaveBeenCalledWith('/categories/cat-budget', {
+      status: 'disabled',
+    })
+    expect(requestMock.get).toHaveBeenCalledWith('/audit-logs', {
+      params: { target_type: 'document', result: 'success' },
     })
   })
 })

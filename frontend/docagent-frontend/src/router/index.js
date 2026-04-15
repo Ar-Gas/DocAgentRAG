@@ -1,21 +1,6 @@
-import { h } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
 import { canAccessRoles, sessionStore } from '@/stores/session'
-
-function createPlaceholderPage(title, description) {
-  return {
-    name: `${title}Placeholder`,
-    render() {
-      return h('section', { class: 'route-placeholder' }, [
-        h('div', { class: 'route-placeholder__card' }, [
-          h('h2', title),
-          h('p', description),
-        ]),
-      ])
-    },
-  }
-}
 
 const routes = [
   {
@@ -75,25 +60,37 @@ const routes = [
   {
     path: '/admin/users',
     name: 'user-admin',
-    component: createPlaceholderPage('用户管理', '用户、部门和角色管理页会在后续任务中接入。'),
+    component: () => import('@/pages/UserAdminPage.vue'),
     meta: {
       requiresAuth: true,
       roles: ['system_admin'],
       navLabel: '用户管理',
       title: '用户管理',
+      navOrder: 50,
+    },
+  },
+  {
+    path: '/admin/categories',
+    name: 'category-admin',
+    component: () => import('@/pages/CategoryAdminPage.vue'),
+    meta: {
+      requiresAuth: true,
+      roles: ['system_admin', 'department_admin'],
+      navLabel: '分类管理',
+      title: '分类管理',
       navOrder: 40,
     },
   },
   {
     path: '/admin/audit',
     name: 'audit-log',
-    component: createPlaceholderPage('审计日志', '审计日志界面会在后续任务中接入。'),
+    component: () => import('@/pages/AuditLogPage.vue'),
     meta: {
       requiresAuth: true,
       roles: ['system_admin', 'department_admin', 'audit_readonly'],
       navLabel: '审计日志',
       title: '审计日志',
-      navOrder: 50,
+      navOrder: 60,
     },
   },
   {

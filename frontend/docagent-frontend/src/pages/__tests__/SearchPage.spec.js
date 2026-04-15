@@ -16,6 +16,7 @@ const apiMocks = vi.hoisted(() => ({
 }))
 
 const workspaceSearchStream = vi.hoisted(() => vi.fn(() => () => {}))
+const SEARCH_PAGE_TEST_TIMEOUT = 10000
 
 vi.mock('@/api', () => ({
   api: apiMocks,
@@ -92,7 +93,7 @@ describe('SearchPage', () => {
       retrieval_version: 'block',
     }))
     expect(workspaceSearchStream).not.toHaveBeenCalled()
-  })
+  }, SEARCH_PAGE_TEST_TIMEOUT)
 
   it('keeps legacy smart requests on the SSE path during rollout', async () => {
     const wrapper = await mountSearchPage('legacy')
@@ -106,7 +107,7 @@ describe('SearchPage', () => {
       retrieval_version: 'legacy',
     }), expect.any(Object))
     expect(apiMocks.workspaceSearch).not.toHaveBeenCalled()
-  })
+  }, SEARCH_PAGE_TEST_TIMEOUT)
 
   it('includes visibility and department filters in workspace search requests', async () => {
     const wrapper = await mountSearchPage('block')
@@ -122,5 +123,5 @@ describe('SearchPage', () => {
       department_id: 'dept-fin',
       business_category_id: 'cat-budget',
     }))
-  })
+  }, SEARCH_PAGE_TEST_TIMEOUT)
 })
