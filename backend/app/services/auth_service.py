@@ -123,6 +123,18 @@ class AuthService:
             if primary_department_id not in seen_department_ids:
                 department_ids.insert(0, primary_department_id)
 
+        managed_department_ids: list[str] = []
+        list_managed_department_ids = getattr(self.store, "list_managed_department_ids", None)
+        if callable(list_managed_department_ids):
+            try:
+                managed_department_ids = [
+                    str(department_id)
+                    for department_id in (list_managed_department_ids(user["id"]) or [])
+                    if department_id
+                ]
+            except Exception:
+                managed_department_ids = []
+
         return {
             "id": user["id"],
             "username": user["username"],
@@ -131,7 +143,7 @@ class AuthService:
             "primary_department_id": primary_department_id,
             "department_ids": department_ids,
             "collaborative_department_ids": collaborative_department_ids,
-            "managed_department_ids": list(user.get("managed_department_ids") or []),
+            "managed_department_ids": managed_department_ids,
         }
 
     def get_current_user(self, token: str) -> dict | None:

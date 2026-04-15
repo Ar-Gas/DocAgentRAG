@@ -1003,6 +1003,19 @@ class DocumentMetadataStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_managed_department_ids(self, user_id: str) -> List[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM departments
+                WHERE manager_user_id = ? AND status = 'enabled'
+                ORDER BY rowid ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
     def upsert_business_category(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         category_id = payload.get("id") or f"cat-{uuid.uuid4().hex}"
         now = datetime.now().isoformat()

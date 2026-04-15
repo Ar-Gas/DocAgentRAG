@@ -147,7 +147,26 @@ def test_can_view_document_denies_anonymous_user_for_unrestricted_public_documen
     assert service.can_view_document(None, public_document) is False
 
 
-def test_department_admin_without_explicit_managed_departments_cannot_manage_document():
+def test_department_admin_with_explicit_empty_managed_departments_cannot_manage_document():
+    service = AuthorizationService()
+    department_admin_user = {
+        "id": "user-admin",
+        "role_code": "department_admin",
+        "department_ids": ["dept-fin", "dept-risk"],
+        "managed_department_ids": [],
+    }
+    department_document = {
+        "id": "doc-dept",
+        "visibility_scope": "department",
+        "owner_department_id": "dept-fin",
+        "shared_department_ids": [],
+        "role_restriction": None,
+    }
+
+    assert service.can_manage_document(department_admin_user, department_document) is False
+
+
+def test_department_admin_without_managed_departments_key_falls_back_to_memberships():
     service = AuthorizationService()
     department_admin_user = {
         "id": "user-admin",
@@ -162,7 +181,7 @@ def test_department_admin_without_explicit_managed_departments_cannot_manage_doc
         "role_restriction": None,
     }
 
-    assert service.can_manage_document(department_admin_user, department_document) is False
+    assert service.can_manage_document(department_admin_user, department_document) is True
 
 
 def test_audit_service_record_persists_user_snapshot_and_metadata(tmp_path: Path):

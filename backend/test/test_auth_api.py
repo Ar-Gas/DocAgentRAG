@@ -87,6 +87,11 @@ class FakeAuthStore:
             }
         ]
 
+    def list_managed_department_ids(self, user_id: str):
+        if user_id != self.user.get("id"):
+            return []
+        return list(self.user.get("managed_department_ids") or [])
+
 
 def create_test_client() -> FastAPI:
     app = FastAPI()
@@ -233,7 +238,33 @@ def test_dependency_actor_context_allows_department_document_authorization(monke
     )
 
     assert actor["primary_department_id"] == "dept-fin"
+    assert actor["managed_department_ids"] == []
     assert can_view is True
+
+
+def test_dependency_actor_context_includes_explicit_managed_department_ids(monkeypatch):
+    raw_user = {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "department_admin",
+        "password_hash": "salt$hash",
+        "status": "enabled",
+        "primary_department_id": "dept-fin",
+        "managed_department_ids": ["dept-fin"],
+    }
+    store = FakeAuthStore(raw_user)
+    service = AuthService(store=store)
+    store.create_auth_session(
+        user_id="user-1",
+        token="token-1",
+        expires_at="2099-01-01T00:00:00",
+    )
+    monkeypatch.setattr(api_dependencies, "auth_service", service)
+
+    actor = asyncio.run(api_dependencies.require_authenticated_user("Bearer token-1"))
+
+    assert actor["managed_department_ids"] == ["dept-fin"]
 
 
 def test_logout_api_deletes_current_token(monkeypatch):

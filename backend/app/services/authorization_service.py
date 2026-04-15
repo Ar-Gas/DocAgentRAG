@@ -43,6 +43,9 @@ class AuthorizationService:
         if not isinstance(user, dict):
             return set()
 
+        if "managed_department_ids" not in user:
+            return self._user_department_ids(user)
+
         managed_ids = user.get("managed_department_ids") or []
         result: set[str] = set()
         if isinstance(managed_ids, (list, tuple, set)):

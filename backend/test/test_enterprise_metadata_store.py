@@ -213,6 +213,41 @@ def test_upsert_business_category_updates_scope_department_and_creator(tmp_path:
     )
 
 
+def test_list_managed_department_ids_returns_departments_for_manager(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+    store.upsert_department(
+        {
+            "id": "dept-fin",
+            "name": "Finance",
+            "manager_user_id": "user-admin",
+            "status": "enabled",
+        }
+    )
+    store.upsert_department(
+        {
+            "id": "dept-risk",
+            "name": "Risk",
+            "manager_user_id": "user-admin",
+            "status": "enabled",
+        }
+    )
+    store.upsert_department(
+        {
+            "id": "dept-ops",
+            "name": "Ops",
+            "manager_user_id": "user-ops",
+            "status": "enabled",
+        }
+    )
+
+    managed_ids = store.list_managed_department_ids("user-admin")
+
+    assert managed_ids == ["dept-fin", "dept-risk"]
+
+
 def test_get_and_list_documents_include_enterprise_default_fields(tmp_path: Path):
     store = DocumentMetadataStore(
         db_path=tmp_path / "docagent.db",
