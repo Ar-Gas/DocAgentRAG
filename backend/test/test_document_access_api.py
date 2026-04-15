@@ -492,6 +492,36 @@ def test_update_document_metadata_denies_sharing_unmanaged_departments(monkeypat
     mock_update.assert_not_called()
 
 
+def test_update_document_metadata_allows_unrelated_update_with_unchanged_unmanaged_shared(monkeypatch):
+    existing_doc = {
+        "id": "doc-1",
+        "filename": "doc.pdf",
+        "visibility_scope": "department",
+        "owner_department_id": "dept-fin",
+        "shared_department_ids": ["dept-ops"],
+        "role_restriction": None,
+    }
+    mock_update = Mock(return_value=True)
+    monkeypatch.setattr(document_service_module, "get_document_info", lambda document_id: existing_doc)
+    monkeypatch.setattr(document_service_module, "update_document_info", mock_update)
+    service = DocumentService()
+    monkeypatch.setattr(service, "get_document", Mock(return_value={"id": "doc-1", "document_status": "published"}))
+
+    result = service.update_document_metadata(
+        "doc-1",
+        {"document_status": "published"},
+        current_user={
+            "id": "user-admin",
+            "role_code": "department_admin",
+            "managed_department_ids": ["dept-fin"],
+        },
+    )
+
+    assert result["document_status"] == "published"
+    patch_payload = mock_update.call_args.args[1]
+    assert patch_payload["document_status"] == "published"
+
+
 def test_document_service_get_document_denies_unviewable_document(monkeypatch):
     monkeypatch.setattr(
         document_service_module,
