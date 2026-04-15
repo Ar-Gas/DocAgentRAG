@@ -3,10 +3,14 @@ import os
 import sys
 from unittest.mock import Mock
 
+import pytest
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api as api_module  # noqa: E402
 import api.categories as categories_api  # noqa: E402
+from app.services.category_service import CategoryService  # noqa: E402
+from app.services.errors import AppServiceError  # noqa: E402
 
 
 def test_category_routes_use_explicit_system_department_and_patch_paths():
@@ -18,8 +22,8 @@ def test_category_routes_use_explicit_system_department_and_patch_paths():
 
     assert "POST" in route_methods_by_path.get("/categories/system", set())
     assert "GET" in route_methods_by_path.get("/categories/system", set())
-    assert "POST" in route_methods_by_path.get("/categories/departments/{department_id}", set())
-    assert "GET" in route_methods_by_path.get("/categories/departments/{department_id}", set())
+    assert "POST" in route_methods_by_path.get("/categories/department", set())
+    assert "GET" in route_methods_by_path.get("/categories/department", set())
     assert "PATCH" in route_methods_by_path.get("/categories/{category_id}", set())
 
 
@@ -31,6 +35,7 @@ def test_create_department_category_forwards_department_admin_scope(monkeypatch)
     }
     request = categories_api.CreateDepartmentCategoryRequest(
         name="财务制度",
+        department_id="dept-fin",
         sort_order=10,
         status="enabled",
     )
@@ -52,7 +57,6 @@ def test_create_department_category_forwards_department_admin_scope(monkeypatch)
 
     body = asyncio.run(
         categories_api.create_department_category(
-            department_id="dept-fin",
             request=request,
             current_user=current_user,
         )
@@ -62,8 +66,12 @@ def test_create_department_category_forwards_department_admin_scope(monkeypatch)
     assert body["data"]["scope_type"] == "department"
     assert body["data"]["department_id"] == "dept-fin"
     mock_create_department_category.assert_called_once_with(
-        "dept-fin",
-        {"name": "财务制度", "sort_order": 10, "status": "enabled"},
+        {
+            "name": "财务制度",
+            "department_id": "dept-fin",
+            "sort_order": 10,
+            "status": "enabled",
+        },
         current_user=current_user,
     )
 
@@ -137,9 +145,48 @@ def test_list_department_categories_forwards_department_scope(monkeypatch):
     assert body["code"] == 200
     assert body["data"][0]["id"] == "cat-fin-rules"
     mock_list_department_categories.assert_called_once_with(
-        "dept-fin",
+        department_id="dept-fin",
         status="enabled",
         current_user=current_user,
+    )
+
+
+def test_list_department_categories_requires_department_admin_scope():
+    store = Mock()
+    service = CategoryService(store=store)
+
+    with pytest.raises(AppServiceError) as exc_info:
+        service.list_department_categories(
+            department_id="dept-risk",
+            current_user={
+                "id": "user-admin",
+                "role_code": "department_admin",
+                "managed_department_ids": ["dept-fin"],
+            },
+        )
+
+    assert exc_info.value.code == 401
+    store.list_business_categories.assert_not_called()
+
+
+def test_list_department_categories_allows_system_admin_any_department():
+    store = Mock()
+    store.list_business_categories.return_value = [
+        {"id": "cat-risk", "scope_type": "department", "department_id": "dept-risk"}
+    ]
+    service = CategoryService(store=store)
+
+    categories = service.list_department_categories(
+        department_id="dept-risk",
+        current_user={"id": "user-sys", "role_code": "system_admin"},
+    )
+
+    assert categories == [
+        {"id": "cat-risk", "scope_type": "department", "department_id": "dept-risk"}
+    ]
+    store.list_business_categories.assert_called_once_with(
+        scope_type="department",
+        department_id="dept-risk",
     )
 
 

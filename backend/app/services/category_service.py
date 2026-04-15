@@ -41,6 +41,21 @@ class CategoryService:
 
         raise AppServiceError(401, "无权限管理分类")
 
+    def _assert_department_list_scope(
+        self,
+        *,
+        department_id: str,
+        current_user: dict | None,
+    ) -> None:
+        role_code = self._role_code(current_user)
+        if role_code == "system_admin":
+            return
+        if role_code == "department_admin":
+            normalized_department_id = str(department_id or "").strip()
+            if normalized_department_id and normalized_department_id in self._managed_department_ids(current_user):
+                return
+        raise AppServiceError(401, "无权限查看该部门分类")
+
     def _get_category_or_raise(self, category_id: str) -> dict:
         normalized_category_id = str(category_id or "").strip()
         if not normalized_category_id:
@@ -97,7 +112,6 @@ class CategoryService:
 
     def create_department_category(
         self,
-        department_id: str,
         payload: dict,
         *,
         current_user: dict | None,
@@ -106,7 +120,7 @@ class CategoryService:
             {
                 **(payload or {}),
                 "scope_type": "department",
-                "department_id": str(department_id or "").strip(),
+                "department_id": str((payload or {}).get("department_id") or "").strip(),
             },
             current_user=current_user,
         )
@@ -155,9 +169,16 @@ class CategoryService:
         status: str | None = None,
         current_user: dict | None,
     ) -> list[dict]:
+        normalized_department_id = str(department_id or "").strip()
+        if not normalized_department_id:
+            raise AppServiceError(2001, "department_id 不能为空")
+        self._assert_department_list_scope(
+            department_id=normalized_department_id,
+            current_user=current_user,
+        )
         return self.list_categories(
             scope_type="department",
-            department_id=str(department_id or "").strip(),
+            department_id=normalized_department_id,
             current_user=current_user,
             status=status,
         )
