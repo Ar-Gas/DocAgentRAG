@@ -199,4 +199,88 @@ describe('SearchPage', () => {
 
     expect(apiMocks.workspaceSearch).toHaveBeenCalledTimes(1)
   })
+
+  it('ignores stale reader response after a newer document selection', async () => {
+    const older = createDeferred()
+    const newer = createDeferred()
+    apiMocks.getDocumentReader
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise)
+
+    const wrapper = await mountSearchPage()
+    wrapper.vm.workspace = {
+      results: [],
+      documents: [
+        { document_id: 'doc-old', best_block_id: 'b-old' },
+        { document_id: 'doc-new', best_block_id: 'b-new' },
+      ],
+      total_results: 0,
+      total_documents: 2,
+      applied_filters: {},
+    }
+
+    const oldPromise = wrapper.vm.selectDocument('doc-old')
+    const newPromise = wrapper.vm.selectDocument('doc-new')
+
+    newer.resolve({ data: { filename: 'newer.docx' } })
+    await flushPromises()
+
+    expect(wrapper.vm.selectedDocumentId).toBe('doc-new')
+    expect(wrapper.vm.readerPayload).toEqual({ filename: 'newer.docx' })
+
+    older.resolve({ data: { filename: 'older.docx' } })
+    await flushPromises()
+    await Promise.allSettled([oldPromise, newPromise])
+
+    expect(wrapper.vm.selectedDocumentId).toBe('doc-new')
+    expect(wrapper.vm.readerPayload).toEqual({ filename: 'newer.docx' })
+  })
+
+  it('keeps stable empty workspace when workspace search request fails', async () => {
+    apiMocks.workspaceSearch.mockRejectedValueOnce(new Error('search failed'))
+
+    const wrapper = await mountSearchPage()
+    wrapper.vm.workspace = {
+      results: [{ id: 'res-1' }],
+      documents: [{ document_id: 'doc-1' }],
+      total_results: 1,
+      total_documents: 1,
+      applied_filters: {},
+    }
+    wrapper.vm.selectedDocumentId = 'doc-1'
+    wrapper.vm.readerPayload = { filename: 'doc-1.pdf' }
+
+    await expect(wrapper.vm.executeSearch()).resolves.toBeUndefined()
+
+    expect(wrapper.vm.workspace).toEqual({
+      results: [],
+      documents: [],
+      total_results: 0,
+      total_documents: 0,
+      applied_filters: {},
+    })
+    expect(wrapper.vm.selectedDocumentId).toBe('')
+    expect(wrapper.vm.readerPayload).toBeNull()
+    expect(wrapper.vm.searchLoading).toBe(false)
+  })
+
+  it('keeps reader cleared and stable when reader request fails', async () => {
+    apiMocks.getDocumentReader.mockRejectedValueOnce(new Error('reader failed'))
+
+    const wrapper = await mountSearchPage()
+    wrapper.vm.workspace = {
+      results: [],
+      documents: [{ document_id: 'doc-2', best_block_id: 'b2' }],
+      total_results: 0,
+      total_documents: 1,
+      applied_filters: {},
+    }
+    wrapper.vm.readerPayload = { filename: 'stale.pdf' }
+
+    await expect(wrapper.vm.selectDocument('doc-2')).resolves.toBeUndefined()
+
+    expect(wrapper.vm.selectedDocumentId).toBe('doc-2')
+    expect(wrapper.vm.readerPayload).toBeNull()
+    expect(wrapper.vm.readerLoading).toBe(false)
+  })
 })

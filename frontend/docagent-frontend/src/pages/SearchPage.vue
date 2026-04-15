@@ -152,53 +152,20 @@ const categories = computed(() => {
   })
 })
 
-const loadWorkspaceChrome = async () => {
-  const [statsRes, departmentsRes, systemCategoriesRes] = await Promise.all([
-    api.getStats(),
-    api.getDepartments(),
-    api.getSystemCategories(),
-  ])
-  stats.value = statsRes.data || {}
-  departments.value = departmentsRes.data || []
-  systemCategories.value = systemCategoriesRes.data || []
-}
-
-const loadDepartmentCategories = async (departmentId) => {
-  if (!departmentId) {
-    departmentCategories.value = []
-    return
-  }
-
-  const response = await api.getDepartmentCategories(departmentId)
-  departmentCategories.value = response.data || []
-}
-
-const loadDocumentReader = async (documentId, anchorBlockId = null) => {
-  if (!documentId) {
-    readerPayload.value = null
-    return
-  }
-  readerLoading.value = true
-  try {
-    const response = await api.getDocumentReader(documentId, filters.value.query?.trim() || '', anchorBlockId)
-    readerPayload.value = response.data || null
-  } finally {
-    readerLoading.value = false
-  }
-}
-
-const selectDocument = async (documentId, anchorBlockId = null) => {
-  if (!documentId) {
-    selectedDocumentId.value = ''
-    readerPayload.value = null
-    return
-  }
-  selectedDocumentId.value = documentId
-  const matched = workspace.value.documents.find((item) => item.document_id === documentId)
-  await loadDocumentReader(documentId, anchorBlockId || matched?.best_block_id || null)
-}
-
+let _readerRequestId = 0
 let _workspaceRequestId = 0
+
+const beginReaderRequest = () => {
+  _readerRequestId += 1
+  return _readerRequestId
+}
+
+const isActiveReaderRequest = (requestId) => requestId === _readerRequestId
+
+const invalidateReaderRequest = () => {
+  beginReaderRequest()
+  readerLoading.value = false
+}
 
 const beginWorkspaceRequest = () => {
   _workspaceRequestId += 1
@@ -207,11 +174,87 @@ const beginWorkspaceRequest = () => {
 
 const isActiveWorkspaceRequest = (requestId) => requestId === _workspaceRequestId
 
+const loadWorkspaceChrome = async () => {
+  try {
+    const [statsRes, departmentsRes, systemCategoriesRes] = await Promise.all([
+      api.getStats(),
+      api.getDepartments(),
+      api.getSystemCategories(),
+    ])
+    stats.value = statsRes.data || {}
+    departments.value = departmentsRes.data || []
+    systemCategories.value = systemCategoriesRes.data || []
+  } catch (error) {
+    stats.value = {}
+    departments.value = []
+    systemCategories.value = []
+  }
+}
+
+const loadDepartmentCategories = async (departmentId) => {
+  if (!departmentId) {
+    departmentCategories.value = []
+    return
+  }
+
+  try {
+    const response = await api.getDepartmentCategories(departmentId)
+    departmentCategories.value = response.data || []
+  } catch (error) {
+    departmentCategories.value = []
+  }
+}
+
+const loadDocumentReader = async (documentId, anchorBlockId = null) => {
+  if (!documentId) {
+    invalidateReaderRequest()
+    readerPayload.value = null
+    return
+  }
+
+  const requestId = beginReaderRequest()
+  readerLoading.value = true
+  try {
+    const response = await api.getDocumentReader(documentId, filters.value.query?.trim() || '', anchorBlockId)
+    if (!isActiveReaderRequest(requestId)) {
+      return
+    }
+    readerPayload.value = response.data || null
+  } catch (error) {
+    if (isActiveReaderRequest(requestId)) {
+      readerPayload.value = null
+    }
+  } finally {
+    if (isActiveReaderRequest(requestId)) {
+      readerLoading.value = false
+    }
+  }
+}
+
+const selectDocument = async (documentId, anchorBlockId = null) => {
+  if (!documentId) {
+    invalidateReaderRequest()
+    selectedDocumentId.value = ''
+    readerPayload.value = null
+    return
+  }
+  selectedDocumentId.value = documentId
+  readerPayload.value = null
+  const matched = workspace.value.documents.find((item) => item.document_id === documentId)
+  try {
+    await loadDocumentReader(documentId, anchorBlockId || matched?.best_block_id || null)
+  } catch (error) {
+    readerPayload.value = null
+    readerLoading.value = false
+  }
+}
+
 const _applyWorkspaceResult = async (data, requestId) => {
   if (!isActiveWorkspaceRequest(requestId)) {
     return
   }
 
+  invalidateReaderRequest()
   workspace.value = data?.data || data || emptyWorkspace()
   // 不再自动打开第一个文档——让用户主动展开
   selectedDocumentId.value = ''
@@ -227,6 +270,13 @@ const executeSearch = async () => {
   try {
     const response = await api.workspaceSearch(req)
     await _applyWorkspaceResult(response, requestId)
+  } catch (error) {
+    if (isActiveWorkspaceRequest(requestId)) {
+      invalidateReaderRequest()
+      workspace.value = emptyWorkspace()
+      selectedDocumentId.value = ''
+      readerPayload.value = null
+    }
   } finally {
     if (isActiveWorkspaceRequest(requestId)) {
       searchLoading.value = false
@@ -236,6 +286,7 @@ const executeSearch = async () => {
 
 const resetWorkspace = () => {
   beginWorkspaceRequest()
+  invalidateReaderRequest()
   searchLoading.value = false
   filters.value = createDefaultFilters()
   departmentCategories.value = []
@@ -250,6 +301,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   beginWorkspaceRequest()
+  invalidateReaderRequest()
 })
 
 watch(
