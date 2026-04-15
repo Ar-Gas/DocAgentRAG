@@ -54,3 +54,61 @@ def test_document_shared_departments_and_sessions_roundtrip(tmp_path: Path):
     assert token == "token-1"
     assert store.list_document_shared_departments("doc-1") == ["dept-ops", "dept-legal"]
     assert store.get_auth_session("token-1")["user_id"] == "user-1"
+
+
+def test_upsert_document_persists_enterprise_columns_in_documents_row(tmp_path: Path):
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=tmp_path / "data",
+    )
+
+    doc_info = {
+        "id": "doc-enterprise",
+        "filename": "governance.pdf",
+        "filepath": "/tmp/governance.pdf",
+        "file_type": ".pdf",
+        "visibility_scope": "shared",
+        "owner_department_id": "dept-fin",
+        "business_category_id": "cat-budget",
+        "role_restriction": "department_admin",
+        "confidentiality_level": "confidential",
+        "document_status": "published",
+        "is_public_restricted": 1,
+    }
+    assert store.upsert_document(doc_info, mirror=False)
+
+    updated = {
+        **doc_info,
+        "owner_department_id": "dept-legal",
+        "business_category_id": "cat-contract",
+        "role_restriction": "audit_readonly",
+        "confidentiality_level": "strict",
+        "document_status": "archived",
+        "is_public_restricted": 0,
+    }
+    assert store.upsert_document(updated, mirror=False)
+
+    with store._connect() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                visibility_scope,
+                owner_department_id,
+                business_category_id,
+                role_restriction,
+                confidentiality_level,
+                document_status,
+                is_public_restricted
+            FROM documents
+            WHERE id = ?
+            """,
+            ("doc-enterprise",),
+        ).fetchone()
+
+    assert row["visibility_scope"] == "shared"
+    assert row["owner_department_id"] == "dept-legal"
+    assert row["business_category_id"] == "cat-contract"
+    assert row["role_restriction"] == "audit_readonly"
+    assert row["confidentiality_level"] == "strict"
+    assert row["document_status"] == "archived"
+    assert row["is_public_restricted"] == 0

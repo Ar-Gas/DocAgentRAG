@@ -284,6 +284,13 @@ class DocumentMetadataStore:
             "created_at": payload.get("created_at"),
             "created_at_iso": payload.get("created_at_iso"),
             "updated_at": payload.get("updated_at"),
+            "visibility_scope": payload.get("visibility_scope", "department"),
+            "owner_department_id": payload.get("owner_department_id"),
+            "business_category_id": payload.get("business_category_id"),
+            "role_restriction": payload.get("role_restriction"),
+            "confidentiality_level": payload.get("confidentiality_level", "internal"),
+            "document_status": payload.get("document_status", "draft"),
+            "is_public_restricted": payload.get("is_public_restricted", 0),
             "payload": json.dumps(payload, ensure_ascii=False),
         }
 
@@ -313,8 +320,11 @@ class DocumentMetadataStore:
                 """
                 INSERT INTO documents (
                     id, filename, filepath, file_type, classification_result,
-                    created_at, created_at_iso, updated_at, payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, created_at_iso, updated_at,
+                    visibility_scope, owner_department_id, business_category_id,
+                    role_restriction, confidentiality_level, document_status,
+                    is_public_restricted, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     filename = excluded.filename,
                     filepath = excluded.filepath,
@@ -323,6 +333,13 @@ class DocumentMetadataStore:
                     created_at = excluded.created_at,
                     created_at_iso = excluded.created_at_iso,
                     updated_at = excluded.updated_at,
+                    visibility_scope = excluded.visibility_scope,
+                    owner_department_id = excluded.owner_department_id,
+                    business_category_id = excluded.business_category_id,
+                    role_restriction = excluded.role_restriction,
+                    confidentiality_level = excluded.confidentiality_level,
+                    document_status = excluded.document_status,
+                    is_public_restricted = excluded.is_public_restricted,
                     payload = excluded.payload
                 """,
                 (
@@ -334,6 +351,13 @@ class DocumentMetadataStore:
                     payload["created_at"],
                     payload["created_at_iso"],
                     payload["updated_at"],
+                    payload["visibility_scope"],
+                    payload["owner_department_id"],
+                    payload["business_category_id"],
+                    payload["role_restriction"],
+                    payload["confidentiality_level"],
+                    payload["document_status"],
+                    payload["is_public_restricted"],
                     payload["payload"],
                 ),
             )
