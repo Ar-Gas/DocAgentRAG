@@ -5,7 +5,25 @@ from unittest.mock import Mock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import api as api_module  # noqa: E402
 import api.audit as audit_api  # noqa: E402
+from app.services.audit_service import AuditService  # noqa: E402
+
+
+def test_audit_log_route_is_top_level_spec_path():
+    route_methods_by_path: dict[str, set[str]] = {}
+    for route in api_module.router.routes:
+        if not hasattr(route, "methods"):
+            continue
+        route_methods_by_path.setdefault(route.path, set()).update(route.methods or set())
+
+    assert "GET" in route_methods_by_path.get("/audit-logs", set())
+    assert "/audit/logs" not in route_methods_by_path
+
+
+def test_audit_service_allows_department_admin_to_list_logs():
+    service = AuditService(store=Mock())
+    service._ensure_list_permission({"id": "user-admin", "role_code": "department_admin"})
 
 
 def test_list_audit_logs_forwards_filters_and_paging(monkeypatch):
@@ -38,6 +56,7 @@ def test_list_audit_logs_forwards_filters_and_paging(monkeypatch):
             target_type="auth",
             target_id="alice",
             user_id="user-alice",
+            username="alice",
             start_time="2026-04-01T00:00:00",
             end_time="2026-04-15T23:59:59",
             current_user=current_user,
@@ -56,6 +75,7 @@ def test_list_audit_logs_forwards_filters_and_paging(monkeypatch):
         target_type="auth",
         target_id="alice",
         user_id="user-alice",
+        username="alice",
         start_time="2026-04-01T00:00:00",
         end_time="2026-04-15T23:59:59",
         current_user=current_user,

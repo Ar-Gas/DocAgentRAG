@@ -36,7 +36,7 @@ class AuditService:
 
     def _ensure_list_permission(self, current_user: dict | None) -> None:
         role_code = str((current_user or {}).get("role_code") or "")
-        if role_code not in {"system_admin", "audit_readonly"}:
+        if role_code not in {"system_admin", "audit_readonly", "department_admin"}:
             raise AppServiceError(401, "无权限查看审计日志")
 
     def list_logs(
@@ -49,6 +49,7 @@ class AuditService:
         target_type: str | None = None,
         target_id: str | None = None,
         user_id: str | None = None,
+        username: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
         current_user: dict | None = None,
@@ -75,6 +76,9 @@ class AuditService:
         if user_id:
             where_clauses.append("user_id = ?")
             params.append(user_id)
+        if username:
+            where_clauses.append("username_snapshot = ?")
+            params.append(username)
         if start_time:
             where_clauses.append("created_at >= ?")
             params.append(start_time)

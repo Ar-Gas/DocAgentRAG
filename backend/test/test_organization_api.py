@@ -5,7 +5,22 @@ from unittest.mock import Mock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import api as api_module  # noqa: E402
 import api.organization as organization_api  # noqa: E402
+
+
+def test_organization_routes_are_top_level_spec_paths():
+    route_methods_by_path: dict[str, set[str]] = {}
+    for route in api_module.router.routes:
+        if not hasattr(route, "methods"):
+            continue
+        route_methods_by_path.setdefault(route.path, set()).update(route.methods or set())
+
+    assert "POST" in route_methods_by_path.get("/users", set())
+    assert "GET" in route_methods_by_path.get("/users", set())
+    assert "GET" in route_methods_by_path.get("/departments", set())
+    assert "GET" in route_methods_by_path.get("/roles", set())
+    assert "/organization/users" not in route_methods_by_path
 
 
 def test_create_user_forwards_primary_and_collaborative_departments(monkeypatch):

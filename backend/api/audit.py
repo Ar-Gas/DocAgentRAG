@@ -8,7 +8,7 @@ from api.dependencies import require_authenticated_user
 router = APIRouter()
 
 
-@router.get("/logs")
+@router.get("/audit-logs")
 async def list_audit_logs(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=500, description="每页数量"),
@@ -17,6 +17,7 @@ async def list_audit_logs(
     target_type: str | None = Query(None, description="目标类型"),
     target_id: str | None = Query(None, description="目标 ID"),
     user_id: str | None = Query(None, description="操作者 ID"),
+    username: str | None = Query(None, description="用户名快照"),
     start_time: str | None = Query(None, description="起始时间(ISO8601)"),
     end_time: str | None = Query(None, description="结束时间(ISO8601)"),
     current_user: dict = Depends(require_authenticated_user),
@@ -30,6 +31,7 @@ async def list_audit_logs(
             target_type=target_type,
             target_id=target_id,
             user_id=user_id,
+            username=username,
             start_time=start_time,
             end_time=end_time,
             current_user=current_user,
