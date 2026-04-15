@@ -1111,6 +1111,11 @@ class DocumentMetadataStore:
             connection.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
             connection.commit()
 
+    def delete_auth_sessions_by_user(self, user_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM auth_sessions WHERE user_id = ?", (user_id,))
+            connection.commit()
+
     def insert_audit_log(self, payload: Dict[str, Any]) -> str:
         audit_id = payload.get("id") or f"audit-{uuid.uuid4().hex}"
         created_at = payload.get("created_at") or datetime.now().isoformat()

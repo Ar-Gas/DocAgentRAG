@@ -33,8 +33,9 @@ class BusinessException(Exception):
 
 async def business_exception_handler(request: Request, exc: BusinessException):
     logger.error(f"业务异常: code={exc.code}, message={exc.message}, detail={exc.detail}")
+    status_code = 401 if exc.code == 401 else 400
     return JSONResponse(
-        status_code=400,
+        status_code=status_code,
         content={
             "code": exc.code,
             "message": exc.message,

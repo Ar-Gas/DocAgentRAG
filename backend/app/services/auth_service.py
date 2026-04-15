@@ -86,3 +86,4 @@ class AuthService:
         if not user or not self.verify_password(old_password, user.get("password_hash", "")):
             raise AppServiceError(4002, "原密码错误")
         self.store.upsert_user({**user, "password_hash": self.hash_password(new_password)})
+        self.store.delete_auth_sessions_by_user(user_id)

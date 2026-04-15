@@ -7,18 +7,25 @@ auth_service = AuthService()
 
 
 def extract_bearer_token(authorization: str) -> str:
-    prefix = "Bearer "
-    if not authorization or not authorization.startswith(prefix):
+    if not authorization:
         raise BusinessException(code=401, message="未登录")
-    token = authorization[len(prefix):].strip()
+    scheme, _, token_part = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        raise BusinessException(code=401, message="未登录")
+    token = token_part.strip()
     if not token:
         raise BusinessException(code=401, message="未登录")
     return token
 
 
-async def require_authenticated_user(authorization: str = Header(default="")) -> dict:
+async def require_authenticated_session(authorization: str = Header(default="")) -> dict:
     token = extract_bearer_token(authorization)
     user = auth_service.get_current_user(token)
     if not user:
         raise BusinessException(code=401, message="未登录")
-    return user
+    return {"token": token, "user": user}
+
+
+async def require_authenticated_user(authorization: str = Header(default="")) -> dict:
+    session = await require_authenticated_session(authorization)
+    return session["user"]

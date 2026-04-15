@@ -1,10 +1,15 @@
 import asyncio
+import json
 import os
 import sys
 from unittest.mock import Mock
 
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import api as api_module  # noqa: E402
 import api.auth as auth_api  # noqa: E402
 import api.dependencies as api_dependencies  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
@@ -25,6 +30,7 @@ class FakeAuthStore:
     def __init__(self, user: dict):
         self.user = dict(user)
         self.sessions = {}
+        self.delete_auth_sessions_by_user_calls = []
 
     def get_user_by_username(self, username: str):
         if username == self.user.get("username"):
@@ -49,6 +55,67 @@ class FakeAuthStore:
 
     def delete_auth_session(self, token: str):
         self.sessions.pop(token, None)
+
+    def delete_auth_sessions_by_user(self, user_id: str):
+        self.delete_auth_sessions_by_user_calls.append(user_id)
+        tokens = [
+            token
+            for token, session in self.sessions.items()
+            if session["user_id"] == user_id
+        ]
+        for token in tokens:
+            self.sessions.pop(token, None)
+
+    def upsert_user(self, payload: dict):
+        self.user.update(payload)
+        return dict(self.user)
+
+
+def create_test_client() -> FastAPI:
+    app = FastAPI()
+    app.add_exception_handler(auth_api.BusinessException, api_module.business_exception_handler)
+    app.add_exception_handler(RequestValidationError, api_module.validation_exception_handler)
+    app.add_exception_handler(Exception, api_module.generic_exception_handler)
+    app.include_router(api_module.router, prefix="/api/v1")
+    return app
+
+
+def request_app(app: FastAPI, method: str, path: str, headers: dict | None = None) -> tuple[int, dict]:
+    raw_headers = []
+    for key, value in (headers or {}).items():
+        raw_headers.append((key.lower().encode("latin-1"), str(value).encode("latin-1")))
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method.upper(),
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"",
+        "headers": raw_headers,
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "root_path": "",
+    }
+    response = {"status": None, "body": b""}
+    received = {"done": False}
+
+    async def receive():
+        if not received["done"]:
+            received["done"] = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            response["status"] = message["status"]
+        if message["type"] == "http.response.body":
+            response["body"] += message.get("body", b"")
+
+    asyncio.run(app(scope, receive, send))
+    return int(response["status"]), json.loads(response["body"].decode("utf-8"))
 
 
 def test_login_api_returns_token_and_user_payload(monkeypatch):
@@ -92,6 +159,11 @@ def test_extract_bearer_token_returns_trimmed_token():
     assert token == "token-1"
 
 
+def test_extract_bearer_token_accepts_case_insensitive_scheme():
+    assert api_dependencies.extract_bearer_token("bearer token-1") == "token-1"
+    assert api_dependencies.extract_bearer_token("BEARER token-2") == "token-2"
+
+
 def test_require_authenticated_user_returns_user(monkeypatch):
     mock_get_current_user = Mock(return_value={"id": "user-1", "username": "alice"})
     monkeypatch.setattr(api_dependencies.auth_service, "get_current_user", mock_get_current_user)
@@ -108,8 +180,7 @@ def test_logout_api_deletes_current_token(monkeypatch):
 
     body = asyncio.run(
         auth_api.logout(
-            authorization="Bearer token-1",
-            current_user={"id": "user-1"},
+            current_session={"token": "token-1", "user": {"id": "user-1"}},
         )
     )
 
@@ -208,3 +279,113 @@ def test_me_api_hides_internal_user_fields_from_dependency(monkeypatch):
         "role_code": "employee",
     }
     assert not (INTERNAL_USER_FIELDS & set(body["data"].keys()))
+
+
+def test_change_password_revokes_all_sessions_for_user():
+    raw_user = {
+        "id": "user-1",
+        "username": "alice",
+        "display_name": "Alice",
+        "role_code": "employee",
+        "status": "enabled",
+    }
+    store = FakeAuthStore(raw_user)
+    service = AuthService(store=store)
+    store.user["password_hash"] = service.hash_password("old123")
+    store.create_auth_session("user-1", "token-1", "2099-01-01T00:00:00")
+    store.create_auth_session("user-1", "token-2", "2099-01-01T00:00:00")
+    store.create_auth_session("user-2", "token-3", "2099-01-01T00:00:00")
+
+    service.change_password("user-1", "old123", "new123")
+
+    assert store.delete_auth_sessions_by_user_calls == ["user-1"]
+    assert set(store.sessions.keys()) == {"token-3"}
+    assert service.verify_password("new123", store.user["password_hash"]) is True
+
+
+def test_auth_me_request_without_token_returns_http_401():
+    client = create_test_client()
+
+    status_code, payload = request_app(client, "GET", "/api/v1/auth/me")
+
+    assert status_code == 401
+    assert payload == {"code": 401, "message": "未登录", "data": None}
+
+
+def test_auth_logout_request_without_token_returns_http_401():
+    client = create_test_client()
+
+    status_code, payload = request_app(client, "POST", "/api/v1/auth/logout")
+
+    assert status_code == 401
+    assert payload == {"code": 401, "message": "未登录", "data": None}
+
+
+def test_auth_me_request_accepts_case_insensitive_bearer_scheme(monkeypatch):
+    class StubAuthService:
+        def get_current_user(self, token: str):
+            if token == "token-1":
+                return {
+                    "id": "user-1",
+                    "username": "alice",
+                    "display_name": "Alice",
+                    "role_code": "employee",
+                }
+            return None
+
+    monkeypatch.setattr(api_dependencies, "auth_service", StubAuthService())
+    client = create_test_client()
+
+    status_code, payload = request_app(
+        client,
+        "GET",
+        "/api/v1/auth/me",
+        headers={"Authorization": "bearer token-1"},
+    )
+
+    assert status_code == 200
+    assert payload["data"]["username"] == "alice"
+
+
+def test_auth_logout_request_parses_authorization_once(monkeypatch):
+    parse_call_count = {"count": 0}
+    original_extract = api_dependencies.extract_bearer_token
+
+    def counting_extract(authorization: str) -> str:
+        parse_call_count["count"] += 1
+        return original_extract(authorization)
+
+    class StubAuthService:
+        def __init__(self):
+            self.logged_out = []
+
+        def get_current_user(self, token: str):
+            if token == "token-1":
+                return {
+                    "id": "user-1",
+                    "username": "alice",
+                    "display_name": "Alice",
+                    "role_code": "employee",
+                }
+            return None
+
+        def logout(self, token: str):
+            self.logged_out.append(token)
+
+    stub = StubAuthService()
+    monkeypatch.setattr(api_dependencies, "extract_bearer_token", counting_extract)
+    monkeypatch.setattr(api_dependencies, "auth_service", stub)
+    monkeypatch.setattr(auth_api, "auth_service", stub)
+    client = create_test_client()
+
+    status_code, payload = request_app(
+        client,
+        "POST",
+        "/api/v1/auth/logout",
+        headers={"Authorization": "Bearer token-1"},
+    )
+
+    assert status_code == 200
+    assert payload["message"] == "退出成功"
+    assert stub.logged_out == ["token-1"]
+    assert parse_call_count["count"] == 1

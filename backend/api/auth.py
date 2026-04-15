@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.services.errors import AppServiceError
 from api import BusinessException, success
 from api.dependencies import (
     auth_service,
-    extract_bearer_token,
+    require_authenticated_session,
     require_authenticated_user,
 )
 
@@ -35,10 +35,9 @@ async def login(request: LoginRequest):
 
 @router.post("/logout")
 async def logout(
-    authorization: str = Header(default=""),
-    current_user: dict = Depends(require_authenticated_user),
+    current_session: dict = Depends(require_authenticated_session),
 ):
-    auth_service.logout(extract_bearer_token(authorization))
+    auth_service.logout(current_session["token"])
     return success(message="退出成功")
 
 
