@@ -90,7 +90,7 @@ const routes = [
     component: createPlaceholderPage('审计日志', '审计日志界面会在后续任务中接入。'),
     meta: {
       requiresAuth: true,
-      roles: ['system_admin', 'audit_readonly'],
+      roles: ['system_admin', 'department_admin', 'audit_readonly'],
       navLabel: '审计日志',
       title: '审计日志',
       navOrder: 50,

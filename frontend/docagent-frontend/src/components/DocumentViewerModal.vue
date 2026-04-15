@@ -208,12 +208,24 @@ const openInNewTab = async () => {
     return
   }
 
+  const previewWindow = window.open('', '_blank')
+  if (previewWindow) {
+    previewWindow.opener = null
+  }
+
   try {
     const targetUrl = await ensureFileUrl()
-    if (targetUrl) {
-      window.open(targetUrl, '_blank', 'noopener,noreferrer')
+    if (targetUrl && previewWindow) {
+      previewWindow.location.replace(targetUrl)
+      return
+    }
+    if (previewWindow) {
+      previewWindow.close()
     }
   } catch (_error) {
+    if (previewWindow) {
+      previewWindow.close()
+    }
     officeError.value = '原文件加载失败，请稍后重试。'
   }
 }

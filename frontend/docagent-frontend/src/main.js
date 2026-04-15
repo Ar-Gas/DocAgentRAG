@@ -21,34 +21,48 @@ import {
 import 'element-plus/dist/index.css'
 import '@/assets/styles/global.scss'
 
+import { api } from '@/api'
 import { createAppRouter } from '@/router'
 import { sessionStore } from '@/stores/session'
 
-sessionStore.hydrate()
+async function bootstrap() {
+  sessionStore.hydrate()
 
-const router = createAppRouter()
-const app = createApp(App)
+  if (sessionStore.state.token) {
+    try {
+      const response = await api.getCurrentUser()
+      sessionStore.updateUser(response.data || null)
+    } catch (_error) {
+      sessionStore.clear()
+    }
+  }
 
-;[
-  ElButton,
-  ElDatePicker,
-  ElDrawer,
-  ElEmpty,
-  ElIcon,
-  ElInput,
-  ElOption,
-  ElSelect,
-  ElSkeleton,
-  ElSlider,
-  ElSwitch,
-  ElTable,
-  ElTableColumn,
-  ElTag,
-  ElUpload,
-].forEach((component) => {
-  app.component(component.name, component)
-})
+  const router = createAppRouter()
+  const app = createApp(App)
 
-app.directive('loading', vLoading)
-app.use(router)
-app.mount('#app')
+  ;[
+    ElButton,
+    ElDatePicker,
+    ElDrawer,
+    ElEmpty,
+    ElIcon,
+    ElInput,
+    ElOption,
+    ElSelect,
+    ElSkeleton,
+    ElSlider,
+    ElSwitch,
+    ElTable,
+    ElTableColumn,
+    ElTag,
+    ElUpload,
+  ].forEach((component) => {
+    app.component(component.name, component)
+  })
+
+  app.directive('loading', vLoading)
+  app.use(router)
+  app.mount('#app')
+}
+
+bootstrap()

@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
@@ -254,5 +254,33 @@ describe('DocumentViewerModal', () => {
 
     expect(wrapper.text()).toContain('预览加载超时')
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
+  })
+
+  it('opens a blank tab first and then navigates it to the blob url', async () => {
+    const previewWindow = {
+      opener: {},
+      location: { replace: vi.fn() },
+      close: vi.fn(),
+    }
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(previewWindow)
+
+    const wrapper = mount(DocumentViewerModal, {
+      props: {
+        visible: true,
+        documentId: 'doc-12',
+        filename: 'budget.pdf',
+        fileType: '.pdf'
+      },
+      global: {
+        stubs: STUBS
+      }
+    })
+
+    await flushPromises()
+    await wrapper.find('button').trigger('click')
+    await flushPromises()
+
+    expect(openSpy).toHaveBeenCalledWith('', '_blank')
+    expect(previewWindow.location.replace).toHaveBeenCalledWith('blob:docagent-preview')
   })
 })
