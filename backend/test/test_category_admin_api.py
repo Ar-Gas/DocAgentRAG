@@ -224,3 +224,63 @@ def test_update_category_forwards_patch_fields(monkeypatch):
         {"name": "公司制度-更新", "status": "disabled", "sort_order": 20},
         current_user=current_user,
     )
+
+
+def test_department_admin_cannot_patch_unmanaged_department_category_into_managed_department():
+    store = Mock()
+    store.list_business_categories.return_value = [
+        {
+            "id": "cat-risk",
+            "name": "风控分类",
+            "scope_type": "department",
+            "department_id": "dept-risk",
+            "status": "enabled",
+            "sort_order": 1,
+            "created_by": "user-risk",
+        }
+    ]
+    service = CategoryService(store=store)
+
+    with pytest.raises(AppServiceError) as exc_info:
+        service.update_category(
+            "cat-risk",
+            {"department_id": "dept-fin"},
+            current_user={
+                "id": "user-admin",
+                "role_code": "department_admin",
+                "managed_department_ids": ["dept-fin"],
+            },
+        )
+
+    assert exc_info.value.code == 401
+    store.upsert_business_category.assert_not_called()
+
+
+def test_department_admin_cannot_convert_unmanaged_system_category_into_managed_department():
+    store = Mock()
+    store.list_business_categories.return_value = [
+        {
+            "id": "cat-system",
+            "name": "系统分类",
+            "scope_type": "system",
+            "department_id": None,
+            "status": "enabled",
+            "sort_order": 1,
+            "created_by": "user-sys",
+        }
+    ]
+    service = CategoryService(store=store)
+
+    with pytest.raises(AppServiceError) as exc_info:
+        service.update_category(
+            "cat-system",
+            {"scope_type": "department", "department_id": "dept-fin"},
+            current_user={
+                "id": "user-admin",
+                "role_code": "department_admin",
+                "managed_department_ids": ["dept-fin"],
+            },
+        )
+
+    assert exc_info.value.code == 401
+    store.upsert_business_category.assert_not_called()

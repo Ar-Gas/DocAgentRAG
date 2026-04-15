@@ -47,6 +47,8 @@ class OrganizationService:
         role_code = str((payload or {}).get("role_code") or "").strip()
         if not username or not password or not display_name or not role_code:
             raise AppServiceError(2001, "用户字段不完整")
+        if self.store.get_user_by_username(username):
+            raise AppServiceError(2001, "用户名已存在")
 
         primary_department_id, collaborative_department_ids = self._normalize_department_memberships(
             str((payload or {}).get("primary_department_id") or ""),

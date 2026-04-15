@@ -3,10 +3,14 @@ import os
 import sys
 from unittest.mock import Mock
 
+import pytest
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api as api_module  # noqa: E402
 import api.organization as organization_api  # noqa: E402
+from app.services.errors import AppServiceError  # noqa: E402
+from app.services.organization_service import OrganizationService  # noqa: E402
 
 
 def test_organization_routes_are_top_level_spec_paths():
@@ -133,3 +137,38 @@ def test_list_roles_forwards_actor_context(monkeypatch):
     assert body["code"] == 200
     assert body["data"][0]["code"] == "system_admin"
     mock_list_roles.assert_called_once_with(current_user=current_user)
+
+
+def test_create_user_rejects_duplicate_username():
+    store = Mock()
+    store.get_user_by_username.return_value = {"id": "user-existing", "username": "alice"}
+    store.upsert_user.return_value = {
+        "id": "user-existing",
+        "username": "alice",
+        "display_name": "Alice",
+        "status": "enabled",
+        "role_code": "employee",
+    }
+    auth_service = Mock()
+    auth_service.hash_password.return_value = "hashed"
+    service = OrganizationService(store=store, auth_service=auth_service)
+
+    with pytest.raises(AppServiceError) as exc_info:
+        service.create_user(
+            {
+                "username": "alice",
+                "password": "Secret@123",
+                "display_name": "Alice",
+                "role_code": "employee",
+                "primary_department_id": "dept-fin",
+                "collaborative_department_ids": [],
+                "status": "enabled",
+            },
+            current_user={"id": "user-admin", "role_code": "system_admin"},
+    )
+
+    assert exc_info.value.code == 2001
+    assert "用户名已存在" in str(exc_info.value.detail)
+    store.upsert_user.assert_not_called()
+    store.replace_user_department_memberships.assert_not_called()
+    auth_service.hash_password.assert_not_called()

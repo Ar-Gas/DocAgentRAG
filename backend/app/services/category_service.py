@@ -192,6 +192,10 @@ class CategoryService:
     ) -> dict:
         self._require_authenticated(current_user)
         existing = self._get_category_or_raise(category_id)
+        existing_scope_type = str(existing.get("scope_type") or "").strip()
+        existing_department_id = existing.get("department_id")
+        if existing_department_id is not None:
+            existing_department_id = str(existing_department_id).strip() or None
 
         merged_scope_type = str((payload or {}).get("scope_type") or existing.get("scope_type") or "").strip()
         merged_department_id = (payload or {}).get("department_id", existing.get("department_id"))
@@ -200,6 +204,11 @@ class CategoryService:
         if merged_scope_type not in {"system", "department"}:
             raise AppServiceError(2001, "scope_type 非法")
 
+        self._assert_manage_scope(
+            scope_type=existing_scope_type,
+            department_id=existing_department_id,
+            current_user=current_user,
+        )
         self._assert_manage_scope(
             scope_type=merged_scope_type,
             department_id=merged_department_id,

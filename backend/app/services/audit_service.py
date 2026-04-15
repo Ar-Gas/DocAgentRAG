@@ -60,6 +60,25 @@ class AuditService:
         safe_page_size = max(int(page_size or 20), 1)
         where_clauses: list[str] = []
         params: list[object] = []
+        role_code = str((current_user or {}).get("role_code") or "")
+
+        if role_code == "department_admin":
+            managed_department_ids = [
+                str(department_id).strip()
+                for department_id in ((current_user or {}).get("managed_department_ids") or [])
+                if str(department_id).strip()
+            ]
+            if not managed_department_ids:
+                return {
+                    "items": [],
+                    "total": 0,
+                    "page": safe_page,
+                    "page_size": safe_page_size,
+                    "total_pages": 0,
+                }
+            placeholders = ", ".join(["?"] * len(managed_department_ids))
+            where_clauses.append(f"department_id IN ({placeholders})")
+            params.extend(managed_department_ids)
 
         if action_type:
             where_clauses.append("action_type = ?")
