@@ -16,7 +16,7 @@ def test_backfill_dry_run_skips_unsupported_and_missing_documents(monkeypatch, c
     monkeypatch.setattr(
         backfill_module,
         "_select_candidates",
-        lambda document_id="", failed_only=False, limit=0: ["doc-xlsx", "doc-missing", "doc-ok"],
+        lambda document_id="", failed_only=False, limit=0, rebuild_all=False: ["doc-xlsx", "doc-missing", "doc-ok"],
     )
     monkeypatch.setattr(
         backfill_module,
@@ -65,7 +65,7 @@ def test_backfill_only_indexes_supported_readable_documents(monkeypatch, capsys,
     monkeypatch.setattr(
         backfill_module,
         "_select_candidates",
-        lambda document_id="", failed_only=False, limit=0: ["doc-txt", "doc-ok"],
+        lambda document_id="", failed_only=False, limit=0, rebuild_all=False: ["doc-txt", "doc-ok"],
     )
     monkeypatch.setattr(
         backfill_module,
@@ -101,7 +101,7 @@ def test_backfill_skips_invalid_docx_package(monkeypatch, capsys, tmp_path: Path
     monkeypatch.setattr(
         backfill_module,
         "_select_candidates",
-        lambda document_id="", failed_only=False, limit=0: ["doc-broken"],
+        lambda document_id="", failed_only=False, limit=0, rebuild_all=False: ["doc-broken"],
     )
     monkeypatch.setattr(
         backfill_module,
@@ -119,3 +119,58 @@ def test_backfill_skips_invalid_docx_package(monkeypatch, capsys, tmp_path: Path
     assert exit_code == 0
     assert "待处理文档数: 0" in output
     assert "[SKIP] doc-broken - invalid docx package" in output
+
+
+def test_select_candidates_includes_ready_documents_with_missing_blocks(monkeypatch):
+    class FakeIndexingService:
+        def list_rebuild_candidates(self, document_id="", failed_only=False, limit=0, rebuild_all=False):
+            assert document_id == ""
+            assert failed_only is False
+            assert limit == 2
+            assert rebuild_all is False
+            return ["doc-ready-missing", "doc-count-mismatch"]
+
+    monkeypatch.setattr(backfill_module, "IndexingService", FakeIndexingService)
+
+    result = backfill_module._select_candidates(limit=2)
+
+    assert result == ["doc-ready-missing", "doc-count-mismatch"]
+
+
+def test_backfill_rebuild_all_still_cleans_orphan_blocks(monkeypatch, capsys, tmp_path: Path):
+    readable_pdf = tmp_path / "sample.pdf"
+    readable_pdf.write_bytes(b"%PDF-1.4")
+    calls = []
+
+    class FakeIndexingService:
+        def cleanup_orphan_block_rows(self):
+            calls.append(("cleanup",))
+            return ["ghost:block-v1:0"]
+
+        def index_document(self, document_id: str, force: bool = False):
+            calls.append((document_id, force))
+            return {"document_id": document_id, "block_index_status": "ready"}
+
+    monkeypatch.setattr(
+        backfill_module,
+        "_select_candidates",
+        lambda document_id="", failed_only=False, limit=0, rebuild_all=False: ["doc-ok"],
+    )
+    monkeypatch.setattr(
+        backfill_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": "doc-ok",
+            "file_type": ".pdf",
+            "filepath": str(readable_pdf),
+        },
+    )
+    monkeypatch.setattr(backfill_module, "IndexingService", FakeIndexingService)
+
+    exit_code = backfill_module.backfill(rebuild_all=True)
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert calls == [("cleanup",), ("doc-ok", True)]
+    assert "[CLEAN] orphan blocks: 1" in output
+    assert "[OK]  doc-ok" in output

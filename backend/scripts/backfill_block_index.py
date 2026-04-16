@@ -4,6 +4,7 @@
 使用方法（在 backend/ 目录下执行）：
     python3 scripts/backfill_block_index.py
     python3 scripts/backfill_block_index.py --failed-only
+    python3 scripts/backfill_block_index.py --all
     python3 scripts/backfill_block_index.py --document-id <doc-id>
 """
 import argparse
@@ -69,32 +70,39 @@ def _get_skip_reason(doc_info: dict) -> str:
     return ""
 
 
-def _select_candidates(document_id: str = "", failed_only: bool = False, limit: int = 0) -> list[str]:
-    if document_id:
-        doc_info = get_document_info(document_id)
-        return [document_id] if doc_info else []
-
-    candidates: list[str] = []
-    for doc in get_all_documents():
-        doc_id = doc.get("id")
-        if not doc_id:
-            continue
-        status = (doc.get("block_index_status") or "").strip().lower()
-        if failed_only:
-            if status != "failed":
-                continue
-        else:
-            if status == "ready":
-                continue
-        candidates.append(doc_id)
-
-    if limit > 0:
-        candidates = candidates[:limit]
-    return candidates
+def _select_candidates(
+    document_id: str = "",
+    failed_only: bool = False,
+    limit: int = 0,
+    rebuild_all: bool = False,
+) -> list[str]:
+    service = IndexingService()
+    return service.list_rebuild_candidates(
+        document_id=document_id,
+        failed_only=failed_only,
+        limit=limit,
+        rebuild_all=rebuild_all,
+    )
 
 
-def backfill(document_id: str = "", failed_only: bool = False, limit: int = 0, dry_run: bool = False) -> int:
-    candidate_ids = _select_candidates(document_id=document_id, failed_only=failed_only, limit=limit)
+def backfill(
+    document_id: str = "",
+    failed_only: bool = False,
+    limit: int = 0,
+    dry_run: bool = False,
+    rebuild_all: bool = False,
+) -> int:
+    service = IndexingService()
+    cleanup_orphans = getattr(service, "cleanup_orphan_block_rows", lambda: [])
+    orphan_block_ids = cleanup_orphans() if not dry_run else []
+    candidate_ids = _select_candidates(
+        document_id=document_id,
+        failed_only=failed_only,
+        limit=limit,
+        rebuild_all=rebuild_all,
+    )
+    if orphan_block_ids:
+        print(f"[CLEAN] orphan blocks: {len(orphan_block_ids)}")
     if not candidate_ids:
         if document_id:
             print(f"未找到文档: {document_id}")
@@ -102,7 +110,6 @@ def backfill(document_id: str = "", failed_only: bool = False, limit: int = 0, d
             print("未找到需要回填的文档。")
         return 0
 
-    service = IndexingService()
     success_count = 0
     failed_count = 0
     skipped_count = 0
@@ -152,6 +159,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="回填文档 block 索引")
     parser.add_argument("--document-id", default="", help="仅处理指定文档ID")
     parser.add_argument("--failed-only", action="store_true", help="仅重试 block_index_status=failed 的文档")
+    parser.add_argument("--all", action="store_true", help="忽略状态，重建所有文档 block 索引")
     parser.add_argument("--limit", type=int, default=0, help="最多处理多少个文档，0 表示不限制")
     parser.add_argument("--dry-run", action="store_true", help="仅打印待处理文档，不实际执行")
     args = parser.parse_args()
@@ -161,5 +169,6 @@ if __name__ == "__main__":
         failed_only=args.failed_only,
         limit=max(args.limit, 0),
         dry_run=args.dry_run,
+        rebuild_all=args.all,
     )
     sys.exit(exit_code)

@@ -7,7 +7,6 @@ import logging
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from pathlib import Path
-from .retriever import search_documents
 
 logger = logging.getLogger(__name__)
 

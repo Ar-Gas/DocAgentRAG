@@ -295,6 +295,16 @@ class DoubaoConfigTests(unittest.TestCase):
         vector_store_module._chroma_client = None
         vector_store_module._chroma_collection = None
 
+        class _FakeIndexingService:
+            def audit_block_index(self):
+                return {"documents": [], "rebuild_candidates": [], "orphan_block_ids": []}
+
+            def index_document(self, document_id, force=False):
+                return {"document_id": document_id, "block_index_status": "ready"}
+
+        indexing_service_module = types.ModuleType("app.services.indexing_service")
+        indexing_service_module.IndexingService = _FakeIndexingService
+
         class _FakeDocumentVectorIndexService:
             def __init__(self, document_repository=None):
                 self.document_repository = document_repository
@@ -324,6 +334,7 @@ class DoubaoConfigTests(unittest.TestCase):
                 "app.infra.embedding_provider": embedding_provider_module,
                 "app.infra.repositories.document_repository": document_repository_module,
                 "app.infra.vector_store": vector_store_module,
+                "app.services.indexing_service": indexing_service_module,
                 "app.services.document_vector_index_service": document_vector_index_service_module,
                 "utils.logger": logger_module,
             },

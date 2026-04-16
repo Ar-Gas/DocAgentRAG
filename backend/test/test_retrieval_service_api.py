@@ -440,11 +440,6 @@ def test_stats_include_document_and_index_counts(monkeypatch):
     )
     monkeypatch.setattr(
         retrieval_service_module,
-        "get_document_content_record",
-        lambda document_id: {},
-    )
-    monkeypatch.setattr(
-        retrieval_service_module,
         "list_document_segments",
         lambda document_id: [{"segment_id": f"{document_id}#0"}] if document_id != "doc-3" else [],
     )

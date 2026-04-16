@@ -20,7 +20,7 @@ from app.services.legacy_classification_tree_bridge import (
     update_classification_tree_after_delete as _bridge_delete,
 )
 from config import ALLOWED_EXTENSIONS, BASE_DIR, DATA_DIR, DOC_DIR, EXTENSION_TO_DIR, MAX_FILE_SIZE
-from utils.retriever import get_query_parser, get_bm25_service
+from utils.retriever import get_query_parser
 from utils.search_cache import get_search_cache
 
 logger = logging.getLogger(__name__)
@@ -226,9 +226,8 @@ class DocumentService:
                 os.remove(file_path)
             raise AppServiceError(1003, "文档存入向量库失败，请检查后端日志了解详细原因")
 
-        # 3.1/3.2 新文档入库后使 BM25 索引和搜索缓存失效
+        # 3.1/3.2 新文档入库后使搜索缓存失效
         try:
-            get_bm25_service().invalidate()
             get_search_cache().invalidate_all()
         except Exception:
             pass
@@ -367,9 +366,8 @@ class DocumentService:
         if not delete_document(document_id):
             raise AppServiceError(1004, f"文档ID: {document_id}")
 
-        # 3.1/3.2 删除文档后使 BM25 索引和搜索缓存失效
+        # 3.1/3.2 删除文档后使搜索缓存失效
         try:
-            get_bm25_service().invalidate()
             get_search_cache().invalidate_all()
         except Exception:
             pass

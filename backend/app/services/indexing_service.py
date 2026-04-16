@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.infra.repositories.document_repository import DocumentRepository
@@ -29,8 +29,106 @@ def upsert_document_artifact(document_id: str, artifact_type: str, payload: Dict
     return _artifact_repository().upsert(document_id, artifact_type, payload)
 
 
+def get_all_documents():
+    return _document_repository().list_all()
+
+
 class IndexingService:
     READER_ARTIFACT_TYPE = "reader_blocks"
+
+    def audit_block_index(self, document_id: str = "") -> Dict[str, Any]:
+        documents = self._load_documents(document_id)
+        known_document_ids = {
+            item.get("id")
+            for item in documents
+            if item.get("id")
+        }
+        collection = get_block_collection()
+        block_snapshot = self._snapshot_all_blocks(collection)
+        actual_counts = block_snapshot["counts"]
+
+        reports: List[Dict[str, Any]] = []
+        rebuild_candidates: List[str] = []
+        for document in documents:
+            doc_id = document.get("id")
+            if not doc_id:
+                continue
+
+            status = (document.get("block_index_status") or "").strip().lower()
+            expected_block_count = self._coerce_optional_int(document.get("block_count"))
+            actual_block_count = actual_counts.get(doc_id, 0)
+            rebuild_reasons: List[str] = []
+
+            if status and status != "ready":
+                rebuild_reasons.append(f"status_{status}")
+            if actual_block_count == 0:
+                rebuild_reasons.append("missing_blocks")
+            elif expected_block_count is not None and expected_block_count != actual_block_count:
+                rebuild_reasons.append("block_count_mismatch")
+
+            report = {
+                "document_id": doc_id,
+                "filename": document.get("filename", ""),
+                "filepath": document.get("filepath", ""),
+                "block_index_status": status,
+                "expected_block_count": expected_block_count,
+                "actual_block_count": actual_block_count,
+                "needs_rebuild": bool(rebuild_reasons),
+                "rebuild_reasons": rebuild_reasons,
+            }
+            reports.append(report)
+            if report["needs_rebuild"]:
+                rebuild_candidates.append(doc_id)
+
+        orphan_block_ids = [
+            row_id
+            for row_id, metadata in zip(block_snapshot["ids"], block_snapshot["metadatas"])
+            if (metadata.get("document_id") or "") not in known_document_ids
+        ]
+        return {
+            "documents": reports,
+            "rebuild_candidates": rebuild_candidates,
+            "orphan_block_ids": orphan_block_ids,
+        }
+
+    def list_rebuild_candidates(
+        self,
+        document_id: str = "",
+        failed_only: bool = False,
+        limit: int = 0,
+        rebuild_all: bool = False,
+    ) -> List[str]:
+        if document_id:
+            doc_info = get_document_info(document_id)
+            return [document_id] if doc_info else []
+
+        audit = self.audit_block_index()
+        candidates: List[str] = []
+        for report in audit["documents"]:
+            if rebuild_all:
+                candidates.append(report["document_id"])
+                continue
+            if failed_only:
+                if report.get("block_index_status") == "failed":
+                    candidates.append(report["document_id"])
+                continue
+            if report.get("needs_rebuild"):
+                candidates.append(report["document_id"])
+
+        if limit > 0:
+            candidates = candidates[:limit]
+        return candidates
+
+    def cleanup_orphan_block_rows(self) -> List[str]:
+        collection = get_block_collection()
+        if collection is None:
+            return []
+
+        audit = self.audit_block_index()
+        orphan_block_ids = list(audit.get("orphan_block_ids") or [])
+        if orphan_block_ids:
+            collection.delete(ids=orphan_block_ids)
+        return orphan_block_ids
 
     def index_document(self, document_id: str, force: bool = False) -> Dict[str, Any]:
         doc_info = get_document_info(document_id)
@@ -167,6 +265,39 @@ class IndexingService:
     def _short_error(exc: Exception, max_len: int = 160) -> str:
         raw = str(exc).strip() or exc.__class__.__name__
         return raw[:max_len]
+
+    @staticmethod
+    def _coerce_optional_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _load_documents(document_id: str = "") -> List[Dict[str, Any]]:
+        if document_id:
+            doc_info = get_document_info(document_id)
+            return [doc_info] if doc_info else []
+        return get_all_documents()
+
+    @staticmethod
+    def _snapshot_all_blocks(block_collection) -> Dict[str, Any]:
+        if block_collection is None:
+            return {"ids": [], "metadatas": [], "counts": {}}
+
+        existing = block_collection.get(include=["metadatas"])
+        ids = list(existing.get("ids") or [])
+        metadatas = list(existing.get("metadatas") or [])
+        if len(metadatas) < len(ids):
+            metadatas.extend([{}] * (len(ids) - len(metadatas)))
+
+        counts: Dict[str, int] = {}
+        for metadata in metadatas:
+            document_id = (metadata or {}).get("document_id")
+            if document_id:
+                counts[document_id] = counts.get(document_id, 0) + 1
+
+        return {"ids": ids, "metadatas": metadatas, "counts": counts}
 
     @staticmethod
     def _snapshot_existing_blocks(block_collection, document_id: str) -> Dict[str, Any]:

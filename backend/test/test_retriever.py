@@ -12,6 +12,7 @@ from utils.retriever import (  # noqa: E402
     get_document_stats,
     hybrid_search,
     keyword_search,
+    multimodal_search,
     search_block_documents,
     search_documents,
 )
@@ -413,6 +414,77 @@ class TestRetriever(unittest.TestCase):
         stats = get_document_stats()
 
         self.assertEqual(stats, {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}})
+
+    @mock.patch("utils.retriever.get_query_embedding")
+    @mock.patch("utils.retriever.get_ready_block_document_ids")
+    @mock.patch("utils.retriever.get_block_collection")
+    def test_multimodal_search_queries_document_blocks(
+        self,
+        mock_get_block_collection,
+        mock_get_ready_block_document_ids,
+        mock_get_query_embedding,
+    ):
+        fake_collection = mock.MagicMock()
+        fake_collection.query.return_value = {
+            "documents": [["预算审批流程和采购说明", "孤儿结果"]],
+            "metadatas": [[
+                {
+                    "document_id": "doc-1",
+                    "filename": "budget-report.pdf",
+                    "filepath": "/docs/budget-report.pdf",
+                    "file_type": ".pdf",
+                    "block_id": "doc-1:block-v1:0",
+                    "block_index": 0,
+                },
+                {
+                    "document_id": "ghost",
+                    "filename": "ghost.pdf",
+                    "filepath": "/docs/ghost.pdf",
+                    "file_type": ".pdf",
+                    "block_id": "ghost:block-v1:0",
+                    "block_index": 0,
+                },
+            ]],
+            "distances": [[0.05, 0.01]],
+        }
+        mock_get_block_collection.return_value = fake_collection
+        mock_get_ready_block_document_ids.return_value = {"doc-1"}
+        mock_get_query_embedding.return_value = [0.1, 0.2, 0.3]
+
+        results = multimodal_search("预算", image_url="https://example.com/sample.png", limit=2, file_types=["pdf"])
+
+        self.assertEqual(mock_get_ready_block_document_ids.call_args.kwargs["file_types"], ["pdf"])
+        self.assertEqual(fake_collection.query.call_args.kwargs["n_results"], 10)
+        self.assertEqual(results, [
+            {
+                "document_id": "doc-1",
+                "filename": "budget-report.pdf",
+                "path": "/docs/budget-report.pdf",
+                "file_type": ".pdf",
+                "similarity": 0.95,
+                "content_snippet": "预算审批流程和采购说明",
+                "chunk_index": 0,
+                "block_id": "doc-1:block-v1:0",
+                "block_index": 0,
+                "embedding_model": mock.ANY,
+                "multimodal_query": True,
+            }
+        ])
+
+    @mock.patch("utils.retriever.search_documents")
+    @mock.patch("utils.retriever.get_query_embedding")
+    def test_multimodal_search_falls_back_to_block_vector_search_when_embedding_missing(
+        self,
+        mock_get_query_embedding,
+        mock_search_documents,
+    ):
+        mock_get_query_embedding.return_value = None
+        mock_search_documents.return_value = [{"document_id": "doc-1", "content_snippet": "预算审批"}]
+
+        results = multimodal_search("预算", limit=1, file_types=["pdf"])
+
+        self.assertEqual(results, [{"document_id": "doc-1", "content_snippet": "预算审批"}])
+        mock_search_documents.assert_called_once_with("预算", limit=1, file_types=["pdf"])
 
 
 if __name__ == "__main__":

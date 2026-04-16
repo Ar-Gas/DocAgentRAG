@@ -15,7 +15,6 @@ from app.services.errors import AppServiceError
 from app.services.retrieval_service import RetrievalService
 from utils.retriever import (
     multimodal_search,
-    hybrid_multimodal_search,
 )
 from utils.smart_retrieval import (
     smart_multimodal_retrieval,
@@ -479,12 +478,10 @@ async def hybrid_multimodal_search_api(request: HybridMultimodalSearchRequest):
     
     alpha = max(0.0, min(1.0, request.alpha))
     
-    results = hybrid_multimodal_search(
+    results = multimodal_search(
         query=request.query,
         image_url=request.image_url,
         limit=request.limit,
-        alpha=alpha,
-        use_rerank=request.use_rerank,
         file_types=request.file_types
     )
     
@@ -547,13 +544,11 @@ async def smart_multimodal_search_api(
     
     try:
         def search_wrapper(q, limit=10):
-            return hybrid_multimodal_search(
+            return multimodal_search(
                 query=q,
                 image_url=image_url,
                 image_path=image_path,
                 limit=limit,
-                alpha=0.5,
-                use_rerank=False,
                 file_types=file_type_list
             )
         

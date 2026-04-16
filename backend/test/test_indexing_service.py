@@ -66,6 +66,92 @@ class FakeCollection:
             self.rows[row_id] = {"document": document, "metadata": metadata}
 
 
+def test_audit_block_index_detects_missing_rows_and_count_mismatch(monkeypatch):
+    fake_collection = FakeCollection()
+    fake_collection.rows = {
+        "doc-2:block-v1:0": {
+            "document": "合同审批",
+            "metadata": {"document_id": "doc-2", "block_id": "doc-2:block-v1:0"},
+        },
+        "doc-2:block-v1:1": {
+            "document": "合同盖章",
+            "metadata": {"document_id": "doc-2", "block_id": "doc-2:block-v1:1"},
+        },
+        "ghost:block-v1:0": {
+            "document": "ghost",
+            "metadata": {"document_id": "ghost", "block_id": "ghost:block-v1:0"},
+        },
+    }
+
+    monkeypatch.setattr(
+        indexing_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "budget.pdf",
+                "block_index_status": "ready",
+                "block_count": 1,
+            },
+            {
+                "id": "doc-2",
+                "filename": "contract.docx",
+                "block_index_status": "ready",
+                "block_count": 3,
+            },
+            {
+                "id": "doc-3",
+                "filename": "notes.pdf",
+                "block_index_status": "failed",
+                "block_count": 0,
+            },
+        ],
+    )
+    monkeypatch.setattr(indexing_service_module, "get_block_collection", lambda: fake_collection)
+
+    payload = IndexingService().audit_block_index()
+
+    documents = {item["document_id"]: item for item in payload["documents"]}
+    assert payload["rebuild_candidates"] == ["doc-1", "doc-2", "doc-3"]
+    assert documents["doc-1"]["rebuild_reasons"] == ["missing_blocks"]
+    assert documents["doc-1"]["actual_block_count"] == 0
+    assert documents["doc-2"]["rebuild_reasons"] == ["block_count_mismatch"]
+    assert documents["doc-2"]["actual_block_count"] == 2
+    assert documents["doc-3"]["rebuild_reasons"] == ["status_failed", "missing_blocks"]
+    assert payload["orphan_block_ids"] == ["ghost:block-v1:0"]
+
+
+def test_cleanup_orphan_block_rows_deletes_only_unknown_documents(monkeypatch):
+    fake_collection = FakeCollection()
+    fake_collection.rows = {
+        "doc-1:block-v1:0": {
+            "document": "预算审批",
+            "metadata": {"document_id": "doc-1", "block_id": "doc-1:block-v1:0"},
+        },
+        "ghost:block-v1:0": {
+            "document": "ghost",
+            "metadata": {"document_id": "ghost", "block_id": "ghost:block-v1:0"},
+        },
+        "missing-meta:block-v1:0": {
+            "document": "ghost-meta",
+            "metadata": {},
+        },
+    }
+
+    monkeypatch.setattr(
+        indexing_service_module,
+        "get_all_documents",
+        lambda: [{"id": "doc-1", "filename": "budget.pdf", "block_index_status": "ready"}],
+    )
+    monkeypatch.setattr(indexing_service_module, "get_block_collection", lambda: fake_collection)
+
+    deleted_ids = IndexingService().cleanup_orphan_block_rows()
+
+    assert deleted_ids == ["ghost:block-v1:0", "missing-meta:block-v1:0"]
+    assert fake_collection.deleted_ids == [["ghost:block-v1:0", "missing-meta:block-v1:0"]]
+    assert sorted(fake_collection.rows.keys()) == ["doc-1:block-v1:0"]
+
+
 def test_index_document_replaces_old_block_entries_and_persists_reader_blocks(monkeypatch):
     fake_collection = FakeCollection(existing_ids=["doc-1:block-v0:0", "doc-1:block-v0:1"])
     captured_updates = []

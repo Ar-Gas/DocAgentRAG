@@ -1,8 +1,5 @@
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.infra.file_utils import enrich_document_file_state as _enrich_document_file_state
-from app.infra.repositories.document_content_repository import DocumentContentRepository
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
 from config import DOUBAO_API_KEY, DOUBAO_DEFAULT_LLM_MODEL
@@ -29,15 +26,11 @@ from utils.smart_retrieval import (
     smart_retrieval,
     summarize_retrieval_results,
 )
-from config import BASE_DIR, DATA_DIR, DOC_DIR
+from config import DATA_DIR
 
 
 def _document_repository() -> DocumentRepository:
     return DocumentRepository(data_dir=DATA_DIR)
-
-
-def _content_repository() -> DocumentContentRepository:
-    return DocumentContentRepository(data_dir=DATA_DIR)
 
 
 def _segment_repository() -> DocumentSegmentRepository:
@@ -48,31 +41,8 @@ def get_all_documents():
     return _document_repository().list_all()
 
 
-def get_document_info(document_id: str):
-    return _document_repository().get(document_id)
-
-
-def get_document_content_record(document_id: str):
-    return _content_repository().get(document_id)
-
-
 def list_document_segments(document_id: str):
     return _segment_repository().list(document_id)
-
-
-def update_document_info(document_id: str, updated_info: Dict) -> bool:
-    return _document_repository().update(document_id, updated_info)
-
-
-def enrich_document_file_state(doc_info: Optional[Dict], persist: bool = True) -> Dict:
-    return _enrich_document_file_state(
-        doc_info,
-        base_dir=BASE_DIR,
-        doc_dir=DOC_DIR,
-        get_document_info=get_document_info,
-        update_document_info=update_document_info,
-        persist=persist,
-    )
 
 
 class RetrievalService:
@@ -471,144 +441,6 @@ class RetrievalService:
         )
         return normalized_results
 
-    def _run_workspace_query_search(
-        self,
-        query: str,
-        mode: str,
-        limit: int,
-        alpha: float,
-        use_rerank: bool,
-        use_query_expansion: bool,
-        use_llm_rerank: bool,
-        expansion_method: str,
-        file_types: List[str],
-    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        if mode == "keyword":
-            return keyword_search(query=query, limit=limit, file_types=file_types), {}
-        if mode == "vector":
-            return search_documents(query, limit=limit, use_rerank=use_rerank, file_types=file_types), {}
-        if mode == "smart":
-            result = self.smart(
-                query=query,
-                limit=limit,
-                use_query_expansion=use_query_expansion,
-                use_llm_rerank=use_llm_rerank,
-                expansion_method=expansion_method,
-                file_types=file_types,
-            )
-            return result.get("results", []), result.get("meta", {})
-        return hybrid_search(
-            query=query,
-            limit=limit,
-            alpha=alpha,
-            use_rerank=use_rerank,
-            file_types=file_types,
-        ), {"alpha": alpha}
-
-    def _build_metadata_only_results(self) -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
-        for doc in get_all_documents():
-            document_id = doc.get("id")
-            if not document_id:
-                continue
-            content_record = get_document_content_record(document_id) or {}
-            segments = list_document_segments(document_id)
-            first_segment = segments[0] if segments else {}
-            snippet = (
-                content_record.get("preview_content")
-                or doc.get("preview_content")
-                or first_segment.get("content")
-                or ""
-            )
-            results.append(
-                {
-                    "document_id": document_id,
-                    "filename": doc.get("filename", ""),
-                    "path": doc.get("filepath", ""),
-                    "file_type": doc.get("file_type", ""),
-                    "similarity": 1.0,
-                    "content_snippet": snippet[:240],
-                    "chunk_index": first_segment.get("segment_index", 0),
-                }
-            )
-        return results
-
-    def _search_workspace_metadata(
-        self,
-        query: str,
-        file_types: List[str],
-        limit: int,
-    ) -> List[Dict[str, Any]]:
-        parser = get_query_parser()
-        parsed = parser.parse(query)
-        search_terms = self._collect_workspace_search_terms(parsed, query)
-        results: List[Dict[str, Any]] = []
-
-        for doc in get_all_documents():
-            document_id = doc.get("id")
-            if not document_id:
-                continue
-
-            file_type = (doc.get("file_type") or "").lower().lstrip(".")
-            parsed_file_types = [item.lower().lstrip(".") for item in parsed.file_types]
-            effective_file_types = list(dict.fromkeys([*file_types, *parsed_file_types]))
-            if effective_file_types and file_type not in effective_file_types:
-                continue
-
-            content_record = get_document_content_record(document_id) or {}
-            segments = list_document_segments(document_id)
-            first_segment = segments[0] if segments else {}
-            filename = doc.get("filename", "")
-            classification = doc.get("classification_result", "")
-            preview_content = (
-                content_record.get("preview_content")
-                or doc.get("preview_content")
-                or first_segment.get("content")
-                or ""
-            )
-            full_content = content_record.get("full_content") or ""
-            combined_text = "\n".join(
-                item
-                for item in [filename, classification, preview_content, full_content]
-                if item
-            )
-            if not combined_text.strip():
-                continue
-            if parser.should_exclude(combined_text, parsed):
-                continue
-
-            similarity = self._score_workspace_metadata_match(
-                parsed=parsed,
-                search_terms=search_terms,
-                filename=filename,
-                classification=classification,
-                preview_content=preview_content,
-                full_content=full_content,
-            )
-            if similarity <= 0:
-                continue
-
-            results.append(
-                {
-                    "document_id": document_id,
-                    "filename": filename,
-                    "path": doc.get("filepath", ""),
-                    "file_type": doc.get("file_type", ""),
-                    "similarity": similarity,
-                    "content_snippet": preview_content[:240],
-                    "chunk_index": first_segment.get("segment_index", 0),
-                }
-            )
-
-        results.sort(
-            key=lambda item: (
-                item.get("similarity", 0),
-                item.get("filename", ""),
-            ),
-            reverse=True,
-        )
-        return results[:limit]
-
     @staticmethod
     def _collect_workspace_search_terms(parsed: Any, raw_query: str) -> List[str]:
         terms: List[str] = []
@@ -622,149 +454,6 @@ class RetrievalService:
             terms.append(normalized_query)
         return terms
 
-    @staticmethod
-    def _score_workspace_metadata_match(
-        parsed: Any,
-        search_terms: List[str],
-        filename: str,
-        classification: str,
-        preview_content: str,
-        full_content: str,
-    ) -> float:
-        filename_lower = (filename or "").lower()
-        classification_lower = (classification or "").lower()
-        preview_lower = (preview_content or "").lower()
-        full_lower = (full_content or "").lower()
-        combined_lower = "\n".join(item for item in [filename_lower, classification_lower, preview_lower, full_lower] if item)
-
-        if not combined_lower:
-            return 0.0
-
-        score = 0.0
-        max_score = 0.0
-
-        for phrase in parsed.exact_phrases:
-            normalized = phrase.strip().lower()
-            if not normalized:
-                continue
-            max_score += 1.2
-            if normalized in filename_lower:
-                score += 1.2
-            elif normalized in preview_lower or normalized in full_lower:
-                score += 1.0
-            elif normalized in classification_lower:
-                score += 0.8
-
-        for term in search_terms:
-            if not term:
-                continue
-            max_score += 1.0
-            if term in filename_lower:
-                score += 1.0
-            elif term in classification_lower:
-                score += 0.85
-            elif term in preview_lower:
-                score += 0.75
-            elif term in full_lower:
-                score += 0.55
-
-        if parsed.original_query:
-            max_score += 1.0
-            original_query = parsed.original_query.lower()
-            if original_query in filename_lower:
-                score += 1.0
-            elif original_query in preview_lower:
-                score += 0.9
-            elif original_query in full_lower:
-                score += 0.7
-
-        if score <= 0 or max_score <= 0:
-            return 0.0
-
-        normalized = score / max_score
-        if parsed.exact_phrases and not any(
-            phrase.strip().lower() in combined_lower for phrase in parsed.exact_phrases
-        ):
-            normalized *= 0.5
-        return round(min(0.99, max(0.1, normalized)), 4)
-
-    @staticmethod
-    def _merge_workspace_results(primary: List[Dict[str, Any]], secondary: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not primary:
-            return list(secondary)
-        if not secondary:
-            return list(primary)
-
-        merged = list(primary)
-        existing_documents = {item.get("document_id") for item in primary if item.get("document_id")}
-        for item in secondary:
-            if item.get("document_id") not in existing_documents:
-                merged.append(item)
-        return merged
-
-    def _hydrate_workspace_result(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        document_id = result.get("document_id")
-        if not document_id:
-            return None
-
-        doc_info = get_document_info(document_id) or {}
-        doc_info = enrich_document_file_state(doc_info, persist=True)
-        content_record = get_document_content_record(document_id) or {}
-        segments = list_document_segments(document_id)
-        chunk_index = result.get("chunk_index", 0)
-        current_segment = next((item for item in segments if item.get("segment_index") == chunk_index), None)
-        preview_content = (
-            content_record.get("preview_content")
-            or doc_info.get("preview_content")
-            or result.get("content_snippet")
-            or ""
-        )
-
-        return {
-            **result,
-            "filename": result.get("filename") or doc_info.get("filename", ""),
-            "path": doc_info.get("filepath") or result.get("path") or "",
-            "file_type": result.get("file_type") or doc_info.get("file_type", ""),
-            "classification_result": doc_info.get("classification_result"),
-            "file_available": doc_info.get("file_available", False),
-            "created_at_iso": doc_info.get("created_at_iso"),
-            "parser_name": content_record.get("parser_name") or doc_info.get("parser_name"),
-            "extraction_status": content_record.get("extraction_status") or doc_info.get("extraction_status"),
-            "preview_content": preview_content,
-            "segment_count": len(segments),
-            "current_segment": current_segment,
-        }
-
-    def _matches_workspace_filters(
-        self,
-        result: Dict[str, Any],
-        file_types: List[str],
-        filename: Optional[str],
-        classification: Optional[str],
-        date_from: Optional[str],
-        date_to: Optional[str],
-    ) -> bool:
-        result_file_type = (result.get("file_type") or "").lower().lstrip(".")
-        if file_types and result_file_type not in file_types:
-            return False
-
-        if filename:
-            filename_filter = filename.strip().lower()
-            if filename_filter not in (result.get("filename") or "").lower():
-                return False
-
-        if classification:
-            result_classification = (result.get("classification_result") or "未分类").lower()
-            if classification.strip().lower() not in result_classification:
-                return False
-
-        created_at = result.get("created_at_iso")
-        if date_from and not self._is_on_or_after(created_at, date_from):
-            return False
-        if date_to and not self._is_on_or_before(created_at, date_to):
-            return False
-
-        return True
 
     def _group_workspace_results(self, results: List[Dict[str, Any]], query: str = "") -> List[Dict[str, Any]]:
         grouped: Dict[str, Dict[str, Any]] = {}
@@ -898,34 +587,3 @@ class RetrievalService:
             reverse=True,
         )
         return documents
-
-    @staticmethod
-    def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
-        if not value:
-            return None
-        normalized = value.strip()
-        if not normalized:
-            return None
-        try:
-            return datetime.fromisoformat(normalized.replace("Z", "+00:00"))
-        except ValueError:
-            try:
-                return datetime.fromisoformat(f"{normalized}T00:00:00")
-            except ValueError:
-                return None
-
-    def _is_on_or_after(self, created_at_iso: Optional[str], lower_bound: str) -> bool:
-        created_at = self._parse_datetime(created_at_iso)
-        lower = self._parse_datetime(lower_bound)
-        if created_at is None or lower is None:
-            return False
-        return created_at >= lower
-
-    def _is_on_or_before(self, created_at_iso: Optional[str], upper_bound: str) -> bool:
-        created_at = self._parse_datetime(created_at_iso)
-        upper = self._parse_datetime(upper_bound)
-        if created_at is None or upper is None:
-            return False
-        if len(upper_bound.strip()) == 10:
-            upper = upper.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return created_at <= upper

@@ -3,7 +3,6 @@ import os
 import re
 import math
 import base64
-import hashlib
 import json
 from collections import Counter
 from datetime import datetime
@@ -12,7 +11,7 @@ from dataclasses import dataclass
 
 from app.infra.embedding_provider import doubao_multimodal_embed
 from app.infra.repositories.document_repository import DocumentRepository
-from app.infra.vector_store import get_block_collection, init_chroma_client
+from app.infra.vector_store import get_block_collection
 from config import DATA_DIR, DOUBAO_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
@@ -20,46 +19,6 @@ logger = logging.getLogger(__name__)
 
 def get_all_documents():
     return DocumentRepository(data_dir=DATA_DIR).list_all()
-
-
-# ===================== BM25 索引缓存 =====================
-_bm25_cache = None
-_bm25_cache_hash = None
-_bm25_doc_count = 0
-
-
-def _compute_docs_hash(documents: List[str]) -> str:
-    """计算文档集合的哈希值"""
-    content = f"{len(documents)}:{documents[0][:100] if documents else ''}"
-    return hashlib.md5(content.encode()).hexdigest()
-
-
-def get_cached_bm25_index(documents: List[str], bm25_class):
-    """
-    获取缓存的 BM25 索引，如果缓存失效则重新构建
-    
-    :param documents: 文档列表
-    :param bm25_class: BM25 类
-    :return: BM25 索引实例
-    """
-    global _bm25_cache, _bm25_cache_hash, _bm25_doc_count
-    
-    current_hash = _compute_docs_hash(documents)
-    current_doc_count = len(documents)
-    
-    if (_bm25_cache is not None and
-        _bm25_cache_hash == current_hash and
-        _bm25_doc_count == current_doc_count):
-        logger.debug("使用缓存的 BM25 索引")
-        return _bm25_cache
-    
-    logger.info("重新构建 BM25 索引")
-    bm25 = bm25_class()
-    bm25.fit(documents)
-    _bm25_cache = bm25
-    _bm25_cache_hash = current_hash
-    _bm25_doc_count = current_doc_count
-    return bm25
 
 
 # ===================== 查询解析器 =====================
@@ -615,217 +574,89 @@ def multimodal_search(
         return []
     
     try:
-        client, collection = init_chroma_client()
-        if not client or not collection:
-            logger.error("初始化Chroma客户端失败")
+        collection = get_block_collection()
+        if collection is None:
+            logger.error("document_blocks collection 不可用")
             return []
-        
+
         query_embedding = get_query_embedding(query, image_url, image_path)
-        
         if query_embedding is None:
             logger.warning("豆包嵌入失败，回退到文本检索")
             return search_documents(query, limit=limit, file_types=file_types)
-        
-        search_limit = limit * 3 if file_types else limit
-        
+
+        normalized_file_types = _normalize_file_type_filters(file_types)
+        ready_document_ids = get_ready_block_document_ids(
+            file_types=normalized_file_types,
+            filename=None,
+            classification=None,
+            date_from=None,
+            date_to=None,
+        )
+        if not ready_document_ids:
+            return []
+
         results = collection.query(
             query_embeddings=[query_embedding],
-            n_results=search_limit,
-            include=["documents", "metadatas", "distances"]
+            n_results=max(limit * 5, 10),
+            include=["documents", "metadatas", "distances"],
         )
-        
-        search_results = []
-        
-        if (results and results.get('metadatas') and results['metadatas'][0] and
-            results.get('documents') and results['documents'][0] and
-            results.get('distances') and results['distances'][0]):
-            
-            min_len = min(
-                len(results['metadatas'][0]),
-                len(results['distances'][0]),
-                len(results['documents'][0])
+
+        document_lookup = {
+            document.get("id"): document
+            for document in get_all_documents()
+            if document.get("id") in ready_document_ids
+        }
+        candidates: Dict[str, Dict[str, Any]] = {}
+        for item in _flatten_query_results(results):
+            metadata = item.get("metadata") or {}
+            document_id = metadata.get("document_id")
+            if document_id not in ready_document_ids:
+                continue
+            candidate = _upsert_block_candidate(
+                candidates,
+                {
+                    "id": metadata.get("block_id"),
+                    "document": item.get("document") or "",
+                    "metadata": metadata,
+                },
+                document_lookup,
             )
-            
-            for i in range(min_len):
-                metadata = results['metadatas'][0][i]
-                distance = results['distances'][0][i]
-                snippet = results['documents'][0][i]
-                
-                if metadata is None:
-                    continue
-                
-                if file_types:
-                    file_type = metadata.get('file_type', '').lstrip('.')
-                    if file_type not in file_types:
-                        continue
-                
-                content_snippet = snippet[:200] + "..." if len(snippet) > 200 else snippet
-                similarity = max(0.0, min(1.0, 1 - distance))
-                
-                search_results.append({
-                    "document_id": metadata.get('document_id', ''),
-                    "filename": metadata.get('filename', ''),
-                    "path": metadata.get('filepath', ''),
-                    "file_type": metadata.get('file_type', ''),
-                    "similarity": similarity,
-                    "content_snippet": content_snippet,
-                    "chunk_index": metadata.get('chunk_index', 0),
-                    "embedding_model": DOUBAO_EMBEDDING_MODEL,
-                    "multimodal_query": bool(image_url or image_path)
-                })
-        
-        search_results.sort(key=lambda x: x['similarity'], reverse=True)
+            if candidate is None:
+                continue
+            score = max(0.0, min(1.0, 1 - float(item.get("distance", 1.0) or 1.0)))
+            candidate["score"] = max(candidate.get("score", 0.0), score)
+
+        search_results = [
+            {
+                "document_id": candidate.get("document_id"),
+                "filename": candidate.get("filename", ""),
+                "path": candidate.get("path", ""),
+                "file_type": candidate.get("file_type", ""),
+                "similarity": round(float(candidate.get("score", 0.0) or 0.0), 4),
+                "content_snippet": candidate.get("snippet", ""),
+                "chunk_index": candidate.get("block_index", 0),
+                "block_id": candidate.get("block_id"),
+                "block_index": candidate.get("block_index", 0),
+                "embedding_model": DOUBAO_EMBEDDING_MODEL,
+                "multimodal_query": bool(image_url or image_path),
+            }
+            for candidate in candidates.values()
+            if candidate.get("score", 0.0) > 0
+        ]
+        search_results.sort(
+            key=lambda item: (
+                item.get("similarity", 0.0),
+                -item.get("block_index", 0),
+            ),
+            reverse=True,
+        )
         search_results = search_results[:limit]
-        
+
         logger.info(f"多模态检索完成: query='{query[:50]}...', has_image={bool(image_url or image_path)}, results={len(search_results)}")
         return search_results
-        
-    except Exception as e:
-        logger.error(f"多模态检索失败: {str(e)}")
-        return []
 
-
-def hybrid_multimodal_search(
-    query: str,
-    image_url: Optional[str] = None,
-    image_path: Optional[str] = None,
-    limit: int = 10,
-    alpha: float = 0.5,
-    use_rerank: bool = True,
-    file_types: Optional[List[str]] = None
-) -> List[Dict]:
-    """
-    混合多模态检索：向量检索 + BM25 关键词检索，支持图片输入
-    
-    :param query: 查询文本
-    :param image_url: 图片URL（可选）
-    :param image_path: 图片本地路径（可选）
-    :param limit: 返回结果数量
-    :param alpha: 向量检索权重 (0-1)
-    :param use_rerank: 是否使用重排序
-    :param file_types: 文件类型过滤
-    :return: 混合检索结果
-    """
-    if not query and not image_url and not image_path:
-        logger.error("混合多模态检索失败：查询内容为空")
-        return []
-    
-    try:
-        client, collection = init_chroma_client()
-        if not client or not collection:
-            return []
-        
-        search_limit = limit * 3
-        
-        query_embedding = get_query_embedding(query, image_url, image_path)
-        
-        if query_embedding is None:
-            logger.warning("豆包嵌入失败，回退到普通混合检索")
-            return hybrid_search(query, limit=limit, alpha=alpha, use_rerank=use_rerank, file_types=file_types)
-        
-        vector_results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=search_limit,
-            include=["documents", "metadatas", "distances"]
-        )
-        
-        all_docs = collection.get(include=["documents", "metadatas"])
-        
-        if not all_docs or not all_docs.get('documents'):
-            logger.warning("向量库中没有文档")
-            return []
-        
-        bm25 = BM25()
-        bm25.fit(all_docs['documents'])
-        bm25_scores = bm25.search(query, all_docs['documents'], top_k=search_limit) if query else []
-        
-        bm25_score_dict = {}
-        max_bm25 = max([s for _, s in bm25_scores]) if bm25_scores else 1
-        for idx, score in bm25_scores:
-            bm25_score_dict[idx] = score / max_bm25 if max_bm25 > 0 else 0
-        
-        combined_results = {}
-        
-        if vector_results and vector_results.get('metadatas') and vector_results['metadatas'][0]:
-            for i in range(len(vector_results['metadatas'][0])):
-                metadata = vector_results['metadatas'][0][i]
-                distance = vector_results['distances'][0][i]
-                snippet = vector_results['documents'][0][i]
-                
-                if metadata is None:
-                    continue
-                
-                file_type = metadata.get('file_type', '').lstrip('.')
-                if file_types and file_type not in file_types:
-                    continue
-                
-                doc_id = metadata.get('document_id', '')
-                vector_score = max(0.0, min(1.0, 1 - distance))
-                
-                combined_results[doc_id] = {
-                    "document_id": doc_id,
-                    "filename": metadata.get('filename', ''),
-                    "path": metadata.get('filepath', ''),
-                    "file_type": metadata.get('file_type', ''),
-                    "vector_score": vector_score,
-                    "bm25_score": 0.0,
-                    "content_snippet": snippet[:200] + "..." if len(snippet) > 200 else snippet,
-                    "chunk_index": metadata.get('chunk_index', 0),
-                    "full_content": snippet,
-                    "embedding_model": DOUBAO_EMBEDDING_MODEL,
-                    "multimodal_query": bool(image_url or image_path)
-                }
-        
-        for idx, score in bm25_scores:
-            if idx >= len(all_docs['documents']):
-                continue
-            metadata = all_docs['metadatas'][idx] if all_docs.get('metadatas') and idx < len(all_docs['metadatas']) else {}
-            doc_id = metadata.get('document_id', '') if metadata else ''
-            
-            file_type = metadata.get('file_type', '').lstrip('.') if metadata else ''
-            if file_types and file_type not in file_types:
-                continue
-            
-            normalized_score = score / max_bm25 if max_bm25 > 0 else 0
-            snippet = all_docs['documents'][idx]
-            
-            if doc_id in combined_results:
-                combined_results[doc_id]['bm25_score'] = normalized_score
-            else:
-                combined_results[doc_id] = {
-                    "document_id": doc_id,
-                    "filename": metadata.get('filename', '') if metadata else '',
-                    "path": metadata.get('filepath', '') if metadata else '',
-                    "file_type": metadata.get('file_type', '') if metadata else '',
-                    "vector_score": 0.0,
-                    "bm25_score": normalized_score,
-                    "content_snippet": snippet[:200] + "..." if len(snippet) > 200 else snippet,
-                    "chunk_index": metadata.get('chunk_index', 0) if metadata else 0,
-                    "full_content": snippet,
-                    "embedding_model": DOUBAO_EMBEDDING_MODEL,
-                    "multimodal_query": bool(image_url or image_path)
-                }
-        
-        for doc_id, result in combined_results.items():
-            result['similarity'] = alpha * result['vector_score'] + (1 - alpha) * result['bm25_score']
-        
-        results = list(combined_results.values())
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        results = results[:limit]
-        
-        if use_rerank and results:
-            results = rerank_documents(query, results, top_k=limit)
-        
-        for result in results:
-            result.pop('full_content', None)
-            result.pop('vector_score', None)
-            result.pop('bm25_score', None)
-        
-        logger.info(f"混合多模态检索完成: has_image={bool(image_url or image_path)}, results={len(results)}")
-        return results
-        
-    except Exception as e:
-        logger.error(f"混合多模态检索失败: {str(e)}")
+    except Exception as exc:
+        logger.error(f"多模态检索失败: {str(exc)}")
         return []
 
 
@@ -1656,166 +1487,3 @@ def get_document_stats():
     except Exception as exc:
         logger.error(f"获取文档统计信息失败: {str(exc)}")
         return {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}}
-
-
-# ===================== BM25IndexService 单例（增量更新） =====================
-
-import threading as _threading
-from typing import Set as _Set
-
-
-class BM25IndexService:
-    """
-    线程安全的 BM25 索引单例。
-    文档增/删时通过 patch_add / patch_remove 增量更新，
-    避免每次 keyword_search 都重新从 ChromaDB 拉全量数据重建索引。
-    """
-
-    _instance: Optional["BM25IndexService"] = None
-    _class_lock = _threading.Lock()
-
-    def __init__(self):
-        self._index: Optional[BM25] = None
-        self._chunk_ids: List[str] = []       # ChromaDB chunk id 列表，与索引顺序对应
-        self._cached_docs: List[dict] = []    # [{id, document, metadata}, ...]
-        self._doc_count: int = 0
-        self._lock = _threading.RLock()
-
-    @classmethod
-    def get_instance(cls) -> "BM25IndexService":
-        if cls._instance is None:
-            with cls._class_lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
-
-    # ------------------------------------------------------------------
-    # 公开 API
-    # ------------------------------------------------------------------
-
-    def ensure_built(self) -> None:
-        """
-        懒加载：首次调用时从 ChromaDB 拉全量数据构建索引。
-        后续仅在索引为空时重建，增量操作通过 patch_add/patch_remove 维护。
-        """
-        with self._lock:
-            if self._index is not None:
-                return
-            self._rebuild_from_chroma()
-
-    def patch_add(self, new_chunks: List[dict]) -> None:
-        """
-        新增 chunks 后增量更新索引。
-        new_chunks: [{id, document, metadata}, ...]
-        """
-        with self._lock:
-            if self._index is None:
-                self._rebuild_from_chroma()
-                return
-            self._cached_docs.extend(new_chunks)
-            self._rebuild(self._cached_docs)
-
-    def patch_remove(self, removed_ids: _Set[str]) -> None:
-        """
-        删除 chunks 后增量更新索引。
-        removed_ids: ChromaDB chunk id 集合
-        """
-        with self._lock:
-            if self._index is None:
-                return
-            self._cached_docs = [d for d in self._cached_docs if d["id"] not in removed_ids]
-            self._rebuild(self._cached_docs)
-
-    def search(self, query: str, limit: int, parsed_query=None) -> List[dict]:
-        """
-        执行 BM25 关键词检索。
-        返回格式与原 keyword_search 兼容的 result 列表。
-        """
-        with self._lock:
-            if self._index is None:
-                self._rebuild_from_chroma()
-            if not self._cached_docs:
-                return []
-
-            parser = get_query_parser()
-            if parsed_query is None:
-                parsed_query = parser.parse(query)
-            search_str = parser.get_search_string(parsed_query)
-
-            raw_scores = self._index.search(
-                search_str,
-                [d["document"] for d in self._cached_docs],
-                top_k=limit * 3,
-            )
-            if not raw_scores:
-                return []
-
-            max_score = max(s for _, s in raw_scores) or 1.0
-            results = []
-            for idx, score in raw_scores:
-                if idx >= len(self._cached_docs):
-                    continue
-                item = self._cached_docs[idx]
-                snippet = item["document"]
-                metadata = item.get("metadata") or {}
-                if parser.should_exclude(snippet, parsed_query):
-                    continue
-                results.append({
-                    "document_id": metadata.get("document_id", ""),
-                    "filename": metadata.get("filename", ""),
-                    "path": metadata.get("filepath", ""),
-                    "file_type": metadata.get("file_type", ""),
-                    "similarity": round(score / max_score, 4),
-                    "content_snippet": snippet[:200] + "..." if len(snippet) > 200 else snippet,
-                    "chunk_index": metadata.get("chunk_index", 0),
-                    "has_exact_match": parser.has_exact_match(snippet, parsed_query),
-                })
-            results.sort(key=lambda x: (x["has_exact_match"], x["similarity"]), reverse=True)
-            return results[:limit]
-
-    def invalidate(self) -> None:
-        """强制清空索引，下次 ensure_built 时重建（用于 rechunk 等批量操作）"""
-        with self._lock:
-            self._index = None
-            self._cached_docs = []
-            self._chunk_ids = []
-            self._doc_count = 0
-
-    # ------------------------------------------------------------------
-    # 内部方法
-    # ------------------------------------------------------------------
-
-    def _rebuild_from_chroma(self) -> None:
-        """从 ChromaDB 拉全量数据重建索引"""
-        try:
-            collection = get_block_collection()
-            if collection is None:
-                logger.warning("BM25IndexService: document_blocks 不可用，跳过索引构建")
-                return
-            raw = collection.get(include=["documents", "metadatas"])
-            ids = raw.get("ids") or []
-            documents = raw.get("documents") or []
-            metadatas = raw.get("metadatas") or []
-            chunks = [
-                {"id": ids[i], "document": documents[i], "metadata": metadatas[i] or {}}
-                for i in range(len(ids))
-                if documents[i]
-            ]
-            self._rebuild(chunks)
-            logger.info(f"BM25IndexService: 索引构建完成，共 {len(chunks)} 个 chunks")
-        except Exception as exc:
-            logger.error(f"BM25IndexService: 重建索引失败: {exc}")
-
-    def _rebuild(self, chunks: List[dict]) -> None:
-        """从 chunks 列表重建 BM25 索引"""
-        bm25 = BM25()
-        bm25.fit([c["document"] for c in chunks])
-        self._index = bm25
-        self._cached_docs = list(chunks)
-        self._chunk_ids = [c["id"] for c in chunks]
-        self._doc_count = len(chunks)
-
-
-def get_bm25_service() -> BM25IndexService:
-    """获取全局 BM25IndexService 单例"""
-    return BM25IndexService.get_instance()

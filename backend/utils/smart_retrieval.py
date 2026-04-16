@@ -417,7 +417,7 @@ def smart_multimodal_retrieval(
     }
     
     try:
-        from .retriever import multimodal_search, hybrid_multimodal_search
+        from .retriever import multimodal_search
         
         if use_query_expansion and query:
             if expansion_method == 'llm' and is_llm_available():
