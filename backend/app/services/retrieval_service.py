@@ -1,17 +1,20 @@
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from config import DOUBAO_API_KEY, DOUBAO_DEFAULT_LLM_MODEL
-from app.services.authorization_service import AuthorizationService
 from app.services.errors import AppServiceError
 from utils.logger import get_logger, log_retrieval
 from utils.search_cache import get_search_cache
 from utils.retriever import (
+    batch_search_documents,
     get_document_by_id,
+    get_document_stats,
+    get_ready_block_document_ids,
     get_query_parser,
     hybrid_search,
     keyword_search,
     multimodal_search,
+    search_block_documents,
     search_documents,
     search_with_highlight,
 )
@@ -32,103 +35,31 @@ from utils.storage import (
 
 
 class RetrievalService:
-    _MAX_VISIBLE_RESULT_FETCH = 1000
-    _VISIBLE_RESULT_FETCH_FLOOR = 50
-
-    def __init__(self):
-        self.authorization_service = AuthorizationService()
-
-    def search(
-        self,
-        query: str,
-        limit: int,
-        use_rerank: bool,
-        file_types: Optional[List[str]] = None,
-        current_user: dict | None = None,
-    ) -> Dict:
+    def search(self, query: str, limit: int, use_rerank: bool, file_types: Optional[List[str]] = None) -> Dict:
         self._ensure_query(query)
-        results = self.collect_visible_results(
-            lambda fetch_limit: search_documents(
-                query,
-                limit=fetch_limit,
-                use_rerank=use_rerank,
-                file_types=file_types,
-            ),
-            limit,
-            current_user,
-        )
+        results = search_documents(query, limit=limit, use_rerank=use_rerank, file_types=file_types)
         return {"query": query, "total": len(results), "results": results}
 
-    def hybrid(
-        self,
-        query: str,
-        limit: int,
-        alpha: float,
-        use_rerank: bool,
-        file_types: Optional[List[str]] = None,
-        current_user: dict | None = None,
-    ) -> Dict:
+    def hybrid(self, query: str, limit: int, alpha: float, use_rerank: bool, file_types: Optional[List[str]] = None) -> Dict:
         self._ensure_query(query)
-        results = self.collect_visible_results(
-            lambda fetch_limit: hybrid_search(
-                query=query,
-                limit=fetch_limit,
-                alpha=alpha,
-                use_rerank=use_rerank,
-                file_types=file_types,
-            ),
-            limit,
-            current_user,
-        )
+        results = hybrid_search(query=query, limit=limit, alpha=alpha, use_rerank=use_rerank, file_types=file_types)
         return {"query": query, "total": len(results), "alpha": alpha, "results": results}
 
-    def keyword(
-        self,
-        query: str,
-        limit: int,
-        file_types: Optional[List[str]] = None,
-        current_user: dict | None = None,
-    ) -> Dict:
+    def keyword(self, query: str, limit: int, file_types: Optional[List[str]] = None) -> Dict:
         self._ensure_query(query)
-        results = self.collect_visible_results(
-            lambda fetch_limit: keyword_search(
-                query=query,
-                limit=fetch_limit,
-                file_types=file_types,
-            ),
-            limit,
-            current_user,
-        )
+        results = keyword_search(query=query, limit=limit, file_types=file_types)
         return {"query": query, "total": len(results), "results": results}
 
-    def smart(
-        self,
-        query: str,
-        limit: int,
-        use_query_expansion: bool,
-        use_llm_rerank: bool,
-        expansion_method: str,
-        file_types: Optional[List[str]] = None,
-        current_user: dict | None = None,
-        visible_document_ids: set[str] | None = None,
-    ) -> Dict:
+    def smart(self, query: str, limit: int, use_query_expansion: bool, use_llm_rerank: bool, expansion_method: str, file_types: Optional[List[str]] = None) -> Dict:
         self._ensure_query(query)
-        scoped_visible_document_ids = (
-            visible_document_ids if visible_document_ids is not None else self._visible_document_ids(current_user)
-        )
 
         def search_wrapper(expanded_query: str, limit: int = 10):
-            return self.collect_visible_results(
-                lambda fetch_limit: hybrid_search(
-                    query=expanded_query,
-                    limit=fetch_limit,
-                    alpha=0.5,
-                    use_rerank=False,
-                    file_types=file_types,
-                ),
-                limit,
-                current_user,
-                visible_document_ids=scoped_visible_document_ids,
+            return hybrid_search(
+                query=expanded_query,
+                limit=limit,
+                alpha=0.5,
+                use_rerank=False,
+                file_types=file_types,
             )
 
         results, meta_info = smart_retrieval(
@@ -139,7 +70,6 @@ class RetrievalService:
             use_llm_rerank=use_llm_rerank,
             expansion_method=expansion_method,
         )
-        results = self._filter_items_by_document_ids(results, scoped_visible_document_ids)[:limit]
         return {
             "query": query,
             "total": len(results),
@@ -152,39 +82,19 @@ class RetrievalService:
             },
         }
 
-    def batch(self, queries: List[str], limit: int, current_user: dict | None = None) -> Dict:
+    def batch(self, queries: List[str], limit: int) -> Dict:
         if not queries:
             raise AppServiceError(3002, "查询列表不能为空")
-        filtered_results = [
-            self.collect_visible_results(
-                lambda fetch_limit, query=query: search_documents(
-                    query,
-                    limit=fetch_limit,
-                    use_rerank=False,
-                ),
-                limit,
-                current_user,
-            )
-            for query in queries
-        ]
+        results = batch_search_documents(queries, limit=limit)
         return {
             "total_queries": len(queries),
             "batch_results": [
-                {
-                    "query": query,
-                    "total": len(filtered_results[index]) if index < len(filtered_results) else 0,
-                    "results": filtered_results[index] if index < len(filtered_results) else [],
-                }
+                {"query": query, "total": len(results[index]) if index < len(results) else 0, "results": results[index] if index < len(results) else []}
                 for index, query in enumerate(queries)
             ],
         }
 
-    def get_document_chunks(self, document_id: str, *, current_user: dict | None = None) -> Dict:
-        doc_info = get_document_info(document_id) or {}
-        if not doc_info:
-            raise AppServiceError(1001, f"文档ID: {document_id}")
-        if not self.authorization_service.can_view_document(current_user or {}, doc_info):
-            raise AppServiceError(401, "无权限查看该文档")
+    def get_document_chunks(self, document_id: str) -> Dict:
         result = get_document_by_id(document_id)
         if not result:
             raise AppServiceError(1001, f"文档ID: {document_id}")
@@ -206,30 +116,20 @@ class RetrievalService:
             ],
         }
 
-    def stats(self, current_user: dict | None = None) -> Dict:
-        visible_documents = self._visible_documents(current_user)
+    def stats(self) -> Dict:
+        stats = get_document_stats()
+        all_docs = get_all_documents()
         segment_document_ids = {
             doc.get("id")
-            for doc in visible_documents
+            for doc in all_docs
             if doc.get("id") and list_document_segments(doc.get("id"))
         }
-        vector_indexed_documents = 0
-        total_chunks = 0
-        file_types: Dict[str, int] = {}
-        for doc in visible_documents:
-            file_type = str(doc.get("file_type") or "")
-            if file_type:
-                file_types[file_type] = file_types.get(file_type, 0) + 1
-            indexed = get_document_by_id(str(doc.get("id")))
-            if indexed:
-                vector_indexed_documents += 1
-                total_chunks += len(indexed.get("chunks") or [])
         return {
-            "total_documents": len(visible_documents),
-            "vector_indexed_documents": vector_indexed_documents,
+            "total_documents": len(all_docs),
+            "vector_indexed_documents": stats.get("vector_indexed_documents", 0),
             "segment_documents": len(segment_document_ids),
-            "total_chunks": total_chunks,
-            "file_types": file_types,
+            "total_chunks": stats.get("total_chunks", 0),
+            "file_types": stats.get("file_types", {}),
         }
 
     def expand_query(self, query: str, method: str) -> Dict:
@@ -258,57 +158,21 @@ class RetrievalService:
             "default_model": DOUBAO_DEFAULT_LLM_MODEL,
         }
 
-    def multimodal(
-        self,
-        query: str,
-        image_url: Optional[str],
-        limit: int,
-        file_types: Optional[List[str]] = None,
-        current_user: dict | None = None,
-    ) -> Dict:
+    def multimodal(self, query: str, image_url: Optional[str], limit: int, file_types: Optional[List[str]] = None) -> Dict:
         if not query and not image_url:
             raise AppServiceError(3002, "查询文本和图片URL至少需要提供一个")
-        results = self.collect_visible_results(
-            lambda fetch_limit: multimodal_search(
-                query=query,
-                image_url=image_url,
-                limit=fetch_limit,
-                file_types=file_types,
-            ),
-            limit,
-            current_user,
-        )
+        results = multimodal_search(query=query, image_url=image_url, limit=limit, file_types=file_types)
         return {"query": query, "has_image": bool(image_url), "total": len(results), "results": results}
 
-    def search_highlight(
-        self,
-        query: str,
-        search_type: str,
-        limit: int,
-        alpha: float,
-        use_rerank: bool,
-        file_types: Optional[List[str]] = None,
-        current_user: dict | None = None,
-    ) -> Dict:
+    def search_highlight(self, query: str, search_type: str, limit: int, alpha: float, use_rerank: bool, file_types: Optional[List[str]] = None) -> Dict:
         self._ensure_query(query)
-        meta_info: Dict[str, Any] = {}
-
-        def fetch_highlighted_results(fetch_limit: int) -> List[Dict[str, Any]]:
-            nonlocal meta_info
-            raw_results, meta_info = search_with_highlight(
-                query=query,
-                search_type=search_type,
-                limit=fetch_limit,
-                alpha=alpha,
-                use_rerank=use_rerank,
-                file_types=file_types,
-            )
-            return raw_results
-
-        results = self.collect_visible_results(
-            fetch_highlighted_results,
-            limit,
-            current_user,
+        results, meta_info = search_with_highlight(
+            query=query,
+            search_type=search_type,
+            limit=limit,
+            alpha=alpha,
+            use_rerank=use_rerank,
+            file_types=file_types,
         )
         return {
             "query": query,
@@ -318,86 +182,134 @@ class RetrievalService:
             "results": results,
         }
 
-    def summarize_results(self, query: str, results: List[Dict], current_user: dict | None = None) -> Dict:
+    def summarize_results(self, query: str, results: List[Dict]) -> Dict:
         self._ensure_query(query)
-        return summarize_retrieval_results(
-            query,
-            self.filter_result_items_for_user(results, current_user),
-        )
+        return summarize_retrieval_results(query, results)
+
+    def regroup_workspace_payload(
+        self,
+        payload: Dict[str, Any],
+        results: List[Dict[str, Any]],
+        query: str = "",
+    ) -> Dict[str, Any]:
+        documents = self._group_workspace_results(results, query)
+        return {
+            **payload,
+            "results": results,
+            "documents": documents,
+            "total_results": len(results),
+            "total_documents": len(documents),
+        }
 
     @log_retrieval
     def workspace_search(
         self,
         query: str = "",
         mode: str = "hybrid",
+        retrieval_version: Optional[str] = None,
         limit: int = 10,
         alpha: float = 0.5,
         use_rerank: bool = False,
+        use_query_expansion: bool = True,
+        use_llm_rerank: bool = True,
+        expansion_method: str = "llm",
         file_types: Optional[List[str]] = None,
         filename: Optional[str] = None,
+        classification: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         group_by_document: bool = True,
-        visibility_scope: Optional[str] = None,
-        department_id: Optional[str] = None,
-        business_category_id: Optional[str] = None,
-        current_user: dict | None = None,
     ) -> Dict[str, Any]:
         normalized_query = (query or "").strip()
         normalized_mode = self._normalize_workspace_mode(mode)
+        requested_retrieval_version = self._resolve_requested_retrieval_version(retrieval_version)
         normalized_limit = max(1, min(limit, 100))
         normalized_file_types = self._normalize_file_types(file_types)
-        normalized_visibility_scope = (visibility_scope or "").strip() or None
-        normalized_department_id = (department_id or "").strip() or None
-        normalized_business_category_id = (business_category_id or "").strip() or None
-        all_documents = [doc for doc in get_all_documents() if doc.get("id")]
-        governed_documents = [
-            doc
-            for doc in all_documents
-            if self._matches_governance_filters(
-                doc,
-                visibility_scope=normalized_visibility_scope,
-                department_id=normalized_department_id,
-                business_category_id=normalized_business_category_id,
-            )
-        ]
-        visible_document_ids = self.authorization_service.list_visible_document_ids(
-            current_user or {},
-            governed_documents,
-        )
         applied_filters = {
             "file_types": normalized_file_types,
             "filename": filename or None,
+            "classification": classification or None,
             "date_from": date_from or None,
             "date_to": date_to or None,
-            "visibility_scope": normalized_visibility_scope,
-            "department_id": normalized_department_id,
-            "business_category_id": normalized_business_category_id,
             "group_by_document": group_by_document,
         }
 
         # 3.2 LRU 缓存：相同参数直接返回
         _cache = get_search_cache()
         _filter_key = {
+            "retrieval_version": requested_retrieval_version,
             "file_types": sorted(normalized_file_types or []),
             "filename": filename or "",
+            "classification": classification or "",
             "date_from": date_from or "",
             "date_to": date_to or "",
             "alpha": alpha,
             "use_rerank": use_rerank,
-            "visibility_scope": normalized_visibility_scope or "",
-            "department_id": normalized_department_id or "",
-            "business_category_id": normalized_business_category_id or "",
+            "use_query_expansion": use_query_expansion,
+            "use_llm_rerank": use_llm_rerank,
+            "expansion_method": expansion_method or "",
             "group_by_document": group_by_document,
-            "actor": self._build_actor_cache_key(current_user),
         }
         cached = _cache.get(normalized_query, normalized_mode, _filter_key)
         if cached is not None:
             return cached
 
+        if requested_retrieval_version == "block":
+            ready_document_ids = get_ready_block_document_ids(
+                file_types=normalized_file_types,
+                filename=filename,
+                classification=classification,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            if ready_document_ids:
+                block_payload = search_block_documents(
+                    query=normalized_query,
+                    mode=normalized_mode,
+                    limit=normalized_limit,
+                    alpha=alpha,
+                    use_rerank=use_rerank,
+                    use_llm_rerank=use_llm_rerank,
+                    file_types=normalized_file_types,
+                    classification=classification,
+                    date_from=date_from,
+                    date_to=date_to,
+                    ready_document_ids=ready_document_ids,
+                    group_by_document=group_by_document,
+                    use_query_expansion=use_query_expansion,
+                    expansion_method=expansion_method,
+                )
+                documents = list(block_payload.get("documents") or [])
+                results = list(block_payload.get("results") or [])
+                if group_by_document:
+                    documents = documents[:normalized_limit]
+                    results = self._flatten_surfaced_block_results(documents)
+                else:
+                    results = results[:normalized_limit]
+                result = {
+                    "query": normalized_query,
+                    "mode": normalized_mode,
+                    "retrieval_version_requested": requested_retrieval_version,
+                    "retrieval_version_used": "block",
+                    "total_results": len(results),
+                    "total_documents": len(documents),
+                    "results": results,
+                    "documents": documents,
+                    "meta": block_payload.get("meta") or {"fallback_used": False},
+                    "applied_filters": applied_filters,
+                }
+                _cache.set(normalized_query, normalized_mode, _filter_key, result)
+                return result
+            block_meta: Dict[str, Any] = {
+                "fallback_used": True,
+                "fallback_reason": "no_ready_block_documents",
+                "fallback_documents": [],
+            }
+        else:
+            block_meta = {}
+
         raw_results: List[Dict[str, Any]] = []
         meta: Dict[str, Any] = {}
-        visible_fallback_count = 0
         if normalized_query:
             raw_results, meta = self._run_workspace_query_search(
                 query=normalized_query,
@@ -405,24 +317,22 @@ class RetrievalService:
                 limit=normalized_limit * 3,
                 alpha=alpha,
                 use_rerank=use_rerank,
+                use_query_expansion=use_query_expansion,
+                use_llm_rerank=use_llm_rerank,
+                expansion_method=expansion_method,
                 file_types=normalized_file_types,
-                current_user=current_user,
-                visible_document_ids=visible_document_ids,
             )
             fallback_results = self._search_workspace_metadata(
                 query=normalized_query,
                 file_types=normalized_file_types,
                 limit=normalized_limit * 2,
             )
-            visible_fallback_count = len(
-                self._filter_items_by_document_ids(fallback_results, visible_document_ids)
-            )
             raw_results = self._merge_workspace_results(raw_results, fallback_results)
             if fallback_results:
                 meta = {
                     **meta,
                     "metadata_fallback_used": True,
-                    "metadata_fallback_count": visible_fallback_count,
+                    "metadata_fallback_count": len(fallback_results),
                 }
         else:
             raw_results = self._build_metadata_only_results()
@@ -430,10 +340,11 @@ class RetrievalService:
         filtered_results: List[Dict[str, Any]] = []
         for result in raw_results:
             hydrated = self._hydrate_workspace_result(result)
-            if hydrated and hydrated.get("document_id") in visible_document_ids and self._matches_workspace_filters(
+            if hydrated and self._matches_workspace_filters(
                 hydrated,
                 file_types=normalized_file_types,
                 filename=filename,
+                classification=classification,
                 date_from=date_from,
                 date_to=date_to,
             ):
@@ -452,14 +363,16 @@ class RetrievalService:
         result = {
             "query": normalized_query,
             "mode": normalized_mode,
+            "retrieval_version_requested": requested_retrieval_version,
+            "retrieval_version_used": "legacy",
             "total_results": len(filtered_results),
             "total_documents": len(documents),
             "results": filtered_results,
             "documents": documents,
-            "meta": meta,
+            "meta": {**meta, **block_meta},
             "applied_filters": applied_filters,
         }
-        # 3.2 写入缓存
+        # 3.2 写入缓存（smart 模式 LLM rerank 结果也缓存）
         _cache.set(normalized_query, normalized_mode, _filter_key, result)
         return result
 
@@ -476,7 +389,7 @@ class RetrievalService:
             "vector": "vector",
             "keyword": "keyword",
             "hybrid": "hybrid",
-            "smart": "hybrid",
+            "smart": "smart",
         }
         return aliases.get(normalized, "hybrid")
 
@@ -493,21 +406,38 @@ class RetrievalService:
                 normalized.append(value)
         return normalized
 
-    def _build_actor_cache_key(self, current_user: dict | None) -> Dict[str, Any]:
-        actor = current_user or {}
-        return {
-            "id": actor.get("id"),
-            "role_code": actor.get("role_code"),
-            "department_id": actor.get("department_id"),
-            "primary_department_id": actor.get("primary_department_id"),
-            "department_ids": sorted(str(item) for item in (actor.get("department_ids") or []) if item),
-            "collaborative_department_ids": sorted(
-                str(item) for item in (actor.get("collaborative_department_ids") or []) if item
+    @staticmethod
+    def _resolve_requested_retrieval_version(retrieval_version: Optional[str]) -> str:
+        normalized = (retrieval_version or "").strip().lower()
+        return "block" if normalized == "block" else "legacy"
+
+    @staticmethod
+    def _flatten_surfaced_block_results(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        flattened: List[Dict[str, Any]] = []
+        for document in documents:
+            document_id = document.get("document_id")
+            for evidence in document.get("evidence_blocks") or []:
+                flattened.append(
+                    {
+                        "document_id": document_id,
+                        "block_id": evidence.get("block_id"),
+                        "block_index": evidence.get("block_index", 0),
+                        "block_type": evidence.get("block_type", "paragraph"),
+                        "snippet": evidence.get("snippet", ""),
+                        "heading_path": evidence.get("heading_path", []),
+                        "page_number": evidence.get("page_number"),
+                        "score": evidence.get("score", 0.0),
+                        "match_reason": evidence.get("match_reason", ""),
+                    }
+                )
+        flattened.sort(
+            key=lambda item: (
+                item.get("score", 0.0),
+                -item.get("block_index", 0),
             ),
-            "managed_department_ids": sorted(
-                str(item) for item in (actor.get("managed_department_ids") or []) if item
-            ),
-        }
+            reverse=True,
+        )
+        return flattened
 
     def _run_workspace_query_search(
         self,
@@ -516,54 +446,32 @@ class RetrievalService:
         limit: int,
         alpha: float,
         use_rerank: bool,
+        use_query_expansion: bool,
+        use_llm_rerank: bool,
+        expansion_method: str,
         file_types: List[str],
-        current_user: dict | None,
-        visible_document_ids: set[str],
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         if mode == "keyword":
-            return (
-                self.collect_visible_results(
-                    lambda fetch_limit: keyword_search(
-                        query=query,
-                        limit=fetch_limit,
-                        file_types=file_types,
-                    ),
-                    limit,
-                    current_user,
-                    visible_document_ids=visible_document_ids,
-                ),
-                {},
-            )
+            return keyword_search(query=query, limit=limit, file_types=file_types), {}
         if mode == "vector":
-            return (
-                self.collect_visible_results(
-                    lambda fetch_limit: search_documents(
-                        query,
-                        limit=fetch_limit,
-                        use_rerank=use_rerank,
-                        file_types=file_types,
-                    ),
-                    limit,
-                    current_user,
-                    visible_document_ids=visible_document_ids,
-                ),
-                {},
+            return search_documents(query, limit=limit, use_rerank=use_rerank, file_types=file_types), {}
+        if mode == "smart":
+            result = self.smart(
+                query=query,
+                limit=limit,
+                use_query_expansion=use_query_expansion,
+                use_llm_rerank=use_llm_rerank,
+                expansion_method=expansion_method,
+                file_types=file_types,
             )
-        return (
-            self.collect_visible_results(
-                lambda fetch_limit: hybrid_search(
-                    query=query,
-                    limit=fetch_limit,
-                    alpha=alpha,
-                    use_rerank=use_rerank,
-                    file_types=file_types,
-                ),
-                limit,
-                current_user,
-                visible_document_ids=visible_document_ids,
-            ),
-            {"alpha": alpha},
-        )
+            return result.get("results", []), result.get("meta", {})
+        return hybrid_search(
+            query=query,
+            limit=limit,
+            alpha=alpha,
+            use_rerank=use_rerank,
+            file_types=file_types,
+        ), {"alpha": alpha}
 
     def _build_metadata_only_results(self) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
@@ -795,110 +703,12 @@ class RetrievalService:
             "current_segment": current_segment,
         }
 
-    def _visible_documents(self, current_user: dict | None) -> List[Dict[str, Any]]:
-        documents = [doc for doc in get_all_documents() if doc.get("id")]
-        visible_document_ids = self.authorization_service.list_visible_document_ids(current_user or {}, documents)
-        return [
-            doc
-            for doc in documents
-            if str(doc.get("id")) in visible_document_ids
-        ]
-
-    def _visible_document_ids(self, current_user: dict | None) -> set[str]:
-        return {
-            str(doc.get("id"))
-            for doc in self._visible_documents(current_user)
-            if doc.get("id")
-        }
-
-    def filter_result_items_for_user(
-        self,
-        results: List[Dict[str, Any]],
-        current_user: dict | None,
-    ) -> List[Dict[str, Any]]:
-        visible_document_ids = self._visible_document_ids(current_user)
-        return self._filter_items_by_document_ids(results, visible_document_ids)
-
-    def collect_visible_results(
-        self,
-        fetch_page: Callable[[int], List[Dict[str, Any]]],
-        limit: int,
-        current_user: dict | None,
-        *,
-        visible_document_ids: set[str] | None = None,
-    ) -> List[Dict[str, Any]]:
-        scoped_visible_document_ids = (
-            visible_document_ids if visible_document_ids is not None else self._visible_document_ids(current_user)
-        )
-        if limit <= 0 or not scoped_visible_document_ids:
-            return []
-
-        fetch_limit = min(
-            self._MAX_VISIBLE_RESULT_FETCH,
-            max(
-                limit,
-                limit * 3,
-                self._VISIBLE_RESULT_FETCH_FLOOR if limit <= 5 else 0,
-            ),
-        )
-        previous_raw_count = -1
-
-        while True:
-            raw_results = list(fetch_page(fetch_limit) or [])
-            filtered_results = self._filter_items_by_document_ids(raw_results, scoped_visible_document_ids)
-            if len(filtered_results) >= limit:
-                return filtered_results[:limit]
-            if (
-                len(raw_results) < fetch_limit
-                or fetch_limit >= self._MAX_VISIBLE_RESULT_FETCH
-                or len(raw_results) == previous_raw_count
-            ):
-                return filtered_results[:limit]
-            previous_raw_count = len(raw_results)
-            fetch_limit = min(self._MAX_VISIBLE_RESULT_FETCH, fetch_limit * 2)
-
-    @staticmethod
-    def _filter_items_by_document_ids(
-        items: List[Dict[str, Any]],
-        visible_document_ids: set[str],
-    ) -> List[Dict[str, Any]]:
-        return [
-            item
-            for item in (items or [])
-            if str(item.get("document_id") or item.get("id") or "") in visible_document_ids
-        ]
-
-    @staticmethod
-    def _matches_governance_filters(
-        doc: Dict[str, Any],
-        *,
-        visibility_scope: Optional[str],
-        department_id: Optional[str],
-        business_category_id: Optional[str],
-    ) -> bool:
-        if visibility_scope and str(doc.get("visibility_scope") or "") != visibility_scope:
-            return False
-
-        if business_category_id and str(doc.get("business_category_id") or "") != business_category_id:
-            return False
-
-        if not department_id:
-            return True
-
-        document_department_ids = set()
-        owner_department_id = doc.get("owner_department_id")
-        if owner_department_id:
-            document_department_ids.add(str(owner_department_id))
-        for shared_department_id in doc.get("shared_department_ids") or []:
-            if shared_department_id:
-                document_department_ids.add(str(shared_department_id))
-        return department_id in document_department_ids
-
     def _matches_workspace_filters(
         self,
         result: Dict[str, Any],
         file_types: List[str],
         filename: Optional[str],
+        classification: Optional[str],
         date_from: Optional[str],
         date_to: Optional[str],
     ) -> bool:
@@ -909,6 +719,11 @@ class RetrievalService:
         if filename:
             filename_filter = filename.strip().lower()
             if filename_filter not in (result.get("filename") or "").lower():
+                return False
+
+        if classification:
+            result_classification = (result.get("classification_result") or "未分类").lower()
+            if classification.strip().lower() not in result_classification:
                 return False
 
         created_at = result.get("created_at_iso")

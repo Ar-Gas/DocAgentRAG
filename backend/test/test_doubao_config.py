@@ -410,7 +410,6 @@ class DoubaoConfigTests(unittest.TestCase):
                         use_llm_rerank=False,
                         expansion_method="llm",
                         file_types=None,
-                        visible_document_ids={"doc-1"},
                     )
 
         self.assertGreaterEqual(payload["total"], 1)

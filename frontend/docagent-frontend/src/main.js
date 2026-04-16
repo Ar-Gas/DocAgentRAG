@@ -16,55 +16,34 @@ import {
   ElTableColumn,
   ElTag,
   ElUpload,
-  vLoading,
+  vLoading
 } from 'element-plus'
 import 'element-plus/dist/index.css'
 import '@/assets/styles/global.scss'
+import router from '@/router'
 
-import { api } from '@/api'
-import { createAppRouter } from '@/router'
-import { sessionStore } from '@/stores/session'
+const app = createApp(App)
 
-async function bootstrap() {
-  sessionStore.hydrate()
+;[
+  ElButton,
+  ElDatePicker,
+  ElDrawer,
+  ElEmpty,
+  ElIcon,
+  ElInput,
+  ElOption,
+  ElSelect,
+  ElSkeleton,
+  ElSlider,
+  ElSwitch,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+  ElUpload
+].forEach((component) => {
+  app.component(component.name, component)
+})
 
-  if (sessionStore.state.token) {
-    try {
-      const response = await api.getCurrentUser()
-      sessionStore.updateUser(response.data || null)
-    } catch (error) {
-      if (error?.status === 401) {
-        sessionStore.clear()
-      }
-    }
-  }
-
-  const router = createAppRouter()
-  const app = createApp(App)
-
-  ;[
-    ElButton,
-    ElDatePicker,
-    ElDrawer,
-    ElEmpty,
-    ElIcon,
-    ElInput,
-    ElOption,
-    ElSelect,
-    ElSkeleton,
-    ElSlider,
-    ElSwitch,
-    ElTable,
-    ElTableColumn,
-    ElTag,
-    ElUpload,
-  ].forEach((component) => {
-    app.component(component.name, component)
-  })
-
-  app.directive('loading', vLoading)
-  app.use(router)
-  app.mount('#app')
-}
-
-bootstrap()
+app.directive('loading', vLoading)
+app.use(router)
+app.mount('#app')

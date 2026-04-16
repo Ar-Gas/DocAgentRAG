@@ -24,8 +24,6 @@ from api import (
     validation_exception_handler,
     generic_exception_handler
 )
-from app.infra.metadata_store import get_metadata_store
-from app.services.auth_service import AuthService
 from utils.storage import init_chroma_client, get_chroma_collection, get_all_documents, detect_and_lock_embedding_dim
 from utils.logger import setup_logging
 
@@ -153,13 +151,6 @@ async def lifespan(app: FastAPI):
         type_path = DOC_DIR / type_dir
         type_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"创建文件类型目录：{type_path}")
-
-    auth_service = AuthService()
-    get_metadata_store(data_dir=DATA_DIR).ensure_enterprise_defaults(
-        admin_password_hash=auth_service.hash_password(
-            os.getenv("DOCAGENT_DEFAULT_ADMIN_PASSWORD", "Admin@123456")
-        )
-    )
     
     # 0.2 API Key 可用性检查
     sync_doubao_llm_availability(

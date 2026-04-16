@@ -86,11 +86,9 @@ const emit = defineEmits(['update:visible'])
 
 const OFFICE_RENDER_TIMEOUT_MS = 15000
 
-const fileUrl = ref('')
 const officeLoading = ref(false)
 const officeError = ref('')
 let renderTimeoutId = null
-let previewRequestId = 0
 
 const normalizeFileType = (fileType, filename) => {
   const rawType = (fileType || '').trim().toLowerCase()
@@ -107,6 +105,7 @@ const normalizeFileType = (fileType, filename) => {
   return filenameMatch?.[1] || ''
 }
 
+const fileUrl = computed(() => api.getDocumentFileUrl(props.documentId))
 const normalizedFileType = computed(() => normalizeFileType(props.fileType, props.filename))
 const fileUnavailable = computed(() => props.fileAvailable === false)
 const isPdf = computed(() => normalizedFileType.value === '.pdf')
@@ -116,27 +115,12 @@ const isSupportedOfficePreview = computed(() => isPdf.value || isDocx.value || i
 const displayFileType = computed(() => normalizedFileType.value || props.fileType || '未知')
 const title = computed(() => props.filename || '文档预览')
 
-const revokeObjectUrl = () => {
-  if (fileUrl.value) {
-    URL.revokeObjectURL(fileUrl.value)
-    fileUrl.value = ''
-  }
-}
-
 const clearRenderTimeout = () => {
   if (renderTimeoutId !== null) {
     window.clearTimeout(renderTimeoutId)
     renderTimeoutId = null
   }
 }
-
-const nextPreviewRequestId = () => {
-  previewRequestId += 1
-  return previewRequestId
-}
-
-const isActivePreviewRequest = (requestId, documentId) =>
-  requestId === previewRequestId && props.visible && props.documentId === documentId
 
 const scheduleRenderTimeout = () => {
   clearRenderTimeout()
@@ -151,51 +135,10 @@ const scheduleRenderTimeout = () => {
   }, OFFICE_RENDER_TIMEOUT_MS)
 }
 
-const ensureFileUrl = async (requestId = nextPreviewRequestId()) => {
-  if (fileUrl.value || !props.documentId) {
-    return fileUrl.value
-  }
-
-  const requestedDocumentId = props.documentId
-  const fileBlob = await api.getDocumentFileBlob(requestedDocumentId)
-
-  if (!isActivePreviewRequest(requestId, requestedDocumentId)) {
-    return ''
-  }
-
-  const nextFileUrl = URL.createObjectURL(fileBlob)
-
-  if (!isActivePreviewRequest(requestId, requestedDocumentId)) {
-    URL.revokeObjectURL(nextFileUrl)
-    return ''
-  }
-
-  fileUrl.value = nextFileUrl
-  return fileUrl.value
-}
-
-const resetViewerState = async () => {
-  const requestId = nextPreviewRequestId()
-  revokeObjectUrl()
+const resetViewerState = () => {
   officeLoading.value = props.visible && !fileUnavailable.value && isSupportedOfficePreview.value
   officeError.value = ''
   scheduleRenderTimeout()
-
-  if (!officeLoading.value) {
-    return
-  }
-
-  try {
-    await ensureFileUrl(requestId)
-  } catch (_error) {
-    if (!isActivePreviewRequest(requestId, props.documentId)) {
-      return
-    }
-
-    clearRenderTimeout()
-    officeLoading.value = false
-    officeError.value = '预览文件加载失败，请在新标签页打开查看。'
-  }
 }
 
 const handleOfficeRendered = () => {
@@ -211,15 +154,13 @@ const handleOfficeError = (error) => {
 
 watch(
   () => [props.visible, props.documentId, props.fileType, props.filename, props.fileAvailable],
-  async ([visible]) => {
+  ([visible]) => {
     if (visible) {
-      await resetViewerState()
+      resetViewerState()
       return
     }
 
-    nextPreviewRequestId()
     clearRenderTimeout()
-    revokeObjectUrl()
     officeLoading.value = false
     officeError.value = ''
   },
@@ -227,36 +168,15 @@ watch(
 )
 
 onBeforeUnmount(() => {
-  nextPreviewRequestId()
   clearRenderTimeout()
-  revokeObjectUrl()
 })
 
-const openInNewTab = async () => {
+const openInNewTab = () => {
   if (fileUnavailable.value) {
     return
   }
 
-  const previewWindow = window.open('', '_blank')
-  if (previewWindow) {
-    previewWindow.opener = null
-  }
-
-  try {
-    const targetUrl = fileUrl.value || await ensureFileUrl(nextPreviewRequestId())
-    if (targetUrl && previewWindow) {
-      previewWindow.location.replace(targetUrl)
-      return
-    }
-    if (previewWindow) {
-      previewWindow.close()
-    }
-  } catch (_error) {
-    if (previewWindow) {
-      previewWindow.close()
-    }
-    officeError.value = '原文件加载失败，请稍后重试。'
-  }
+  window.open(fileUrl.value, '_blank', 'noopener,noreferrer')
 }
 </script>
 

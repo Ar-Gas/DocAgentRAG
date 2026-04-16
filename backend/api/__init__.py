@@ -33,9 +33,8 @@ class BusinessException(Exception):
 
 async def business_exception_handler(request: Request, exc: BusinessException):
     logger.error(f"业务异常: code={exc.code}, message={exc.message}, detail={exc.detail}")
-    status_code = 401 if exc.code == 401 else 400
     return JSONResponse(
-        status_code=status_code,
+        status_code=400,
         content={
             "code": exc.code,
             "message": exc.message,
@@ -101,22 +100,14 @@ def paginated(items: List[Any], total: int, page: int, page_size: int) -> dict:
     }
 
 from .document import router as document_router
-from .directory import router as directory_router
+from .classification import router as classification_router
 from .retrieval import router as retrieval_router
-from .auth import router as auth_router
-from .organization import router as organization_router
-from .categories import router as categories_router
-from .audit import router as audit_router
 
 router = APIRouter()
 
-router.include_router(auth_router, prefix="/auth", tags=["认证"])
 router.include_router(document_router, prefix="/documents", tags=["文档管理"])
-router.include_router(directory_router, prefix="/directory", tags=["目录工作区"])
-router.include_router(retrieval_router, prefix="/retrieval", tags=["检索"])
-router.include_router(organization_router, tags=["组织管理"])
-router.include_router(categories_router, prefix="/categories", tags=["分类管理"])
-router.include_router(audit_router, tags=["审计管理"])
+router.include_router(classification_router, prefix="/classification", tags=["智能分类"])
+router.include_router(retrieval_router, prefix="/retrieval", tags=["语义检索"])
 
 __all__ = [
     "router", 

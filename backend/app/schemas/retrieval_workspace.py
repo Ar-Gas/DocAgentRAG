@@ -39,6 +39,8 @@ class DocumentSearchResult(BaseModel):
 class WorkspaceSearchResponse(BaseModel):
     query: str = ""
     mode: str = "hybrid"
+    retrieval_version_requested: str = "legacy"
+    retrieval_version_used: str = "legacy"
     total_results: int = 0
     total_documents: int = 0
     results: List[Dict[str, Any]] = Field(default_factory=list)

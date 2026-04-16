@@ -1,18 +1,18 @@
 <template>
   <section class="page-stack search-page">
-    <section class="shell-panel page-head">
-      <h2>具体检索</h2>
-      <p>按公共文档、部门文档和业务分类设置范围，检索可审计的文档证据与阅读内容。</p>
-    </section>
-
     <SearchToolbar
       v-model="filters"
       :stats="stats"
-      :departments="departments"
       :categories="categories"
       :loading="searchLoading"
+      :can-summarize="workspace.documents.length > 0"
+      :can-generate-report="workspace.documents.length > 0"
+      :rebuilding-topics="rebuildingTopics"
       @search="executeSearch"
       @reset="resetWorkspace"
+      @summarize="openSummaryDrawer"
+      @generate-report="openClassificationDrawer"
+      @rebuild-topics="rebuildTopicTree"
     />
 
     <div class="workspace-grid">
@@ -35,7 +35,7 @@
         />
       </div>
 
-      <!-- 右列：检索概览 -->
+      <!-- 右列：检索概览 + 语义主题树 -->
       <div class="sidebar-stack">
         <section class="shell-panel insight-card">
           <p class="section-label">检索概览</p>
@@ -55,8 +55,33 @@
               : '先检索文档，点击列表中的文档卡片展开证据。' }}
           </p>
         </section>
+
+        <TopicTreePanel
+          :tree="topicTree"
+          :loading="topicLoading"
+          :rebuilding="rebuildingTopics"
+          :selected-document-id="selectedDocumentId"
+          :show-rebuild="true"
+          @select-document="selectDocument"
+          @rebuild="rebuildTopicTree"
+        />
       </div>
     </div>
+
+    <!-- 汇总抽屉 -->
+    <SummaryDrawer
+      v-model:visible="summaryVisible"
+      :summary="summary"
+      :loading="summaryLoading"
+      @select-document="selectDocument"
+    />
+
+    <!-- 分类报告抽屉 -->
+    <ClassificationReportDrawer
+      v-model:visible="classificationVisible"
+      :report="classificationReport"
+      :loading="classificationLoading"
+    />
 
     <!-- 原文预览模态框 -->
     <DocumentViewerModal
@@ -71,23 +96,31 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onMounted, ref } from 'vue'
 
+import ClassificationReportDrawer from '@/components/ClassificationReportDrawer.vue'
 import DocumentReader from '@/components/DocumentReader.vue'
 import DocumentResultList from '@/components/DocumentResultList.vue'
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 import SearchToolbar from '@/components/SearchToolbar.vue'
-import { api } from '@/api'
+import SummaryDrawer from '@/components/SummaryDrawer.vue'
+import TopicTreePanel from '@/components/TopicTreePanel.vue'
+import { api, workspaceSearchStream } from '@/api'
+
+const WORKSPACE_RETRIEVAL_VERSION = import.meta.env.VITE_WORKSPACE_RETRIEVAL_VERSION || 'legacy'
 
 const createDefaultFilters = () => ({
   query: '',
   mode: 'hybrid',
-  visibility_scope: '',
-  department_id: '',
-  business_category_id: '',
   limit: 12,
+  alpha: 0.5,
+  use_rerank: false,
+  use_query_expansion: true,
+  use_llm_rerank: true,
+  expansion_method: 'llm',
   file_types: [],
   filename: '',
+  classification: '',
   date_range: []
 })
 
@@ -101,14 +134,22 @@ const emptyWorkspace = () => ({
 
 const filters = ref(createDefaultFilters())
 const stats = ref({})
-const departments = ref([])
-const systemCategories = ref([])
-const departmentCategories = ref([])
+const categories = ref([])
+const topicTree = ref({ topics: [], total_documents: 0 })
 const workspace = ref(emptyWorkspace())
 const selectedDocumentId = ref('')
 const readerPayload = ref(null)
+const summary = ref(null)
+const classificationReport = ref(null)
 const searchLoading = ref(false)
+const isReranking = ref(false)
 const readerLoading = ref(false)
+const summaryLoading = ref(false)
+const classificationLoading = ref(false)
+const topicLoading = ref(false)
+const rebuildingTopics = ref(false)
+const summaryVisible = ref(false)
+const classificationVisible = ref(false)
 
 // 原文预览状态
 const viewerVisible = ref(false)
@@ -119,142 +160,78 @@ const openViewer = (document) => {
   viewerVisible.value = true
 }
 
-const normalizeMode = (mode) => {
-  const allowedModes = ['hybrid', 'vector', 'keyword']
-  return allowedModes.includes(mode) ? mode : 'hybrid'
-}
-
 const buildSearchRequest = () => ({
   query: filters.value.query?.trim() || '',
-  mode: normalizeMode(filters.value.mode),
-  visibility_scope: filters.value.visibility_scope || null,
-  department_id: filters.value.department_id || null,
-  business_category_id: filters.value.business_category_id || null,
+  mode: filters.value.mode,
+  retrieval_version: WORKSPACE_RETRIEVAL_VERSION,
   limit: filters.value.limit,
+  alpha: filters.value.alpha,
+  use_rerank: filters.value.use_rerank,
+  use_query_expansion: filters.value.use_query_expansion,
+  use_llm_rerank: filters.value.use_llm_rerank,
+  expansion_method: filters.value.expansion_method,
   file_types: filters.value.file_types || [],
   filename: filters.value.filename?.trim() || null,
+  classification: filters.value.classification || null,
   date_from: filters.value.date_range?.[0] || null,
   date_to: filters.value.date_range?.[1] || null,
   group_by_document: true
 })
 
-const categories = computed(() => {
-  const merged = [...systemCategories.value, ...departmentCategories.value]
-  const seen = new Set()
-
-  return merged.filter((category) => {
-    const id = String(category?.id || '').trim()
-    if (!id || seen.has(id)) {
-      return false
-    }
-    seen.add(id)
-    return true
-  })
-})
-
-let _readerRequestId = 0
-let _workspaceRequestId = 0
-
-const beginReaderRequest = () => {
-  _readerRequestId += 1
-  return _readerRequestId
+const buildWorkspaceLabel = () => {
+  const parts = [
+    filters.value.query,
+    filters.value.filename,
+    filters.value.classification,
+    (filters.value.file_types || []).join(' ')
+  ].filter(Boolean).join(' / ')
+  return parts || '当前检索结果'
 }
-
-const isActiveReaderRequest = (requestId) => requestId === _readerRequestId
-
-const invalidateReaderRequest = () => {
-  beginReaderRequest()
-  readerLoading.value = false
-}
-
-const beginWorkspaceRequest = () => {
-  _workspaceRequestId += 1
-  return _workspaceRequestId
-}
-
-const isActiveWorkspaceRequest = (requestId) => requestId === _workspaceRequestId
 
 const loadWorkspaceChrome = async () => {
+  topicLoading.value = true
   try {
-    const [statsRes, departmentsRes, systemCategoriesRes] = await Promise.all([
+    const [statsRes, categoriesRes, topicRes] = await Promise.all([
       api.getStats(),
-      api.getDepartments(),
-      api.getSystemCategories(),
+      api.getCategories(),
+      api.getTopicTree()
     ])
     stats.value = statsRes.data || {}
-    departments.value = departmentsRes.data || []
-    systemCategories.value = systemCategoriesRes.data || []
-  } catch (error) {
-    stats.value = {}
-    departments.value = []
-    systemCategories.value = []
-  }
-}
-
-const loadDepartmentCategories = async (departmentId) => {
-  if (!departmentId) {
-    departmentCategories.value = []
-    return
-  }
-
-  try {
-    const response = await api.getDepartmentCategories(departmentId)
-    departmentCategories.value = response.data || []
-  } catch (error) {
-    departmentCategories.value = []
+    categories.value = categoriesRes.data?.categories || []
+    topicTree.value = topicRes.data || { topics: [], total_documents: 0 }
+  } finally {
+    topicLoading.value = false
   }
 }
 
 const loadDocumentReader = async (documentId, anchorBlockId = null) => {
   if (!documentId) {
-    invalidateReaderRequest()
     readerPayload.value = null
     return
   }
-
-  const requestId = beginReaderRequest()
   readerLoading.value = true
   try {
     const response = await api.getDocumentReader(documentId, filters.value.query?.trim() || '', anchorBlockId)
-    if (!isActiveReaderRequest(requestId)) {
-      return
-    }
     readerPayload.value = response.data || null
-  } catch (error) {
-    if (isActiveReaderRequest(requestId)) {
-      readerPayload.value = null
-    }
   } finally {
-    if (isActiveReaderRequest(requestId)) {
-      readerLoading.value = false
-    }
+    readerLoading.value = false
   }
 }
 
 const selectDocument = async (documentId, anchorBlockId = null) => {
   if (!documentId) {
-    invalidateReaderRequest()
     selectedDocumentId.value = ''
     readerPayload.value = null
     return
   }
   selectedDocumentId.value = documentId
-  readerPayload.value = null
   const matched = workspace.value.documents.find((item) => item.document_id === documentId)
-  try {
-    await loadDocumentReader(documentId, anchorBlockId || matched?.best_block_id || null)
-  } catch (error) {
-    readerPayload.value = null
-    readerLoading.value = false
-  }
+  await loadDocumentReader(documentId, anchorBlockId || matched?.best_block_id || null)
 }
 
-const _applyWorkspaceResult = async (data, requestId) => {
-  if (!isActiveWorkspaceRequest(requestId)) {
-    return
-  }
+let _cancelStream = null
 
-  invalidateReaderRequest()
+const _applyWorkspaceResult = async (data) => {
   workspace.value = data?.data || data || emptyWorkspace()
   // 不再自动打开第一个文档——让用户主动展开
   selectedDocumentId.value = ''
@@ -262,62 +239,94 @@ const _applyWorkspaceResult = async (data, requestId) => {
 }
 
 const executeSearch = async () => {
-  const requestId = beginWorkspaceRequest()
+  if (_cancelStream) { _cancelStream(); _cancelStream = null }
   searchLoading.value = true
+  isReranking.value = false
+  summary.value = null
+  classificationReport.value = null
 
   const req = buildSearchRequest()
 
+  if (req.mode === 'smart' && req.retrieval_version === 'legacy') {
+    _cancelStream = workspaceSearchStream(req, {
+      async onResults(data) {
+        searchLoading.value = false
+        isReranking.value = true
+        await _applyWorkspaceResult(data)
+      },
+      async onReranked(data) {
+        isReranking.value = false
+        await _applyWorkspaceResult(data)
+      },
+      onDone() {
+        searchLoading.value = false
+        isReranking.value = false
+      },
+      onError(err) {
+        searchLoading.value = false
+        isReranking.value = false
+        console.error('Smart search SSE error:', err)
+      },
+    })
+    return
+  }
+
   try {
     const response = await api.workspaceSearch(req)
-    await _applyWorkspaceResult(response, requestId)
-  } catch (error) {
-    if (isActiveWorkspaceRequest(requestId)) {
-      invalidateReaderRequest()
-      workspace.value = emptyWorkspace()
-      selectedDocumentId.value = ''
-      readerPayload.value = null
-    }
+    await _applyWorkspaceResult(response)
   } finally {
-    if (isActiveWorkspaceRequest(requestId)) {
-      searchLoading.value = false
-    }
+    searchLoading.value = false
+  }
+}
+
+const openSummaryDrawer = async () => {
+  if (!workspace.value.documents.length) return
+  summaryVisible.value = true
+  summaryLoading.value = true
+  try {
+    const response = await api.summarizeResults(buildWorkspaceLabel(), workspace.value.documents.slice(0, 12))
+    summary.value = response.data || null
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+const openClassificationDrawer = async () => {
+  if (!workspace.value.documents.length) return
+  classificationVisible.value = true
+  classificationLoading.value = true
+  try {
+    const response = await api.generateClassificationTable(buildWorkspaceLabel(), workspace.value.documents.slice(0, 20), false)
+    classificationReport.value = response.data || null
+  } finally {
+    classificationLoading.value = false
+  }
+}
+
+const rebuildTopicTree = async () => {
+  rebuildingTopics.value = true
+  try {
+    const response = await api.buildTopicTree(true)
+    topicTree.value = response.data || { topics: [], total_documents: 0 }
+  } finally {
+    rebuildingTopics.value = false
   }
 }
 
 const resetWorkspace = () => {
-  beginWorkspaceRequest()
-  invalidateReaderRequest()
-  searchLoading.value = false
   filters.value = createDefaultFilters()
-  departmentCategories.value = []
   workspace.value = emptyWorkspace()
   selectedDocumentId.value = ''
   readerPayload.value = null
+  summary.value = null
+  classificationReport.value = null
+  summaryVisible.value = false
+  classificationVisible.value = false
 }
 
 onMounted(() => {
   loadWorkspaceChrome()
 })
-
-onBeforeUnmount(() => {
-  beginWorkspaceRequest()
-  invalidateReaderRequest()
-})
-
-watch(
-  () => filters.value.department_id,
-  async (departmentId) => {
-    await loadDepartmentCategories(departmentId)
-    if (
-      filters.value.business_category_id &&
-      !categories.value.some(
-        (category) => String(category.id) === String(filters.value.business_category_id),
-      )
-    ) {
-      filters.value.business_category_id = ''
-    }
-  },
-)
 </script>
 
 <style scoped lang="scss">
@@ -325,21 +334,6 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 20px;
-}
-
-.page-head {
-  h2 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--ink-strong);
-    margin-bottom: 6px;
-  }
-
-  p {
-    font-size: 13px;
-    color: var(--ink-muted);
-    line-height: 1.65;
-  }
 }
 
 .workspace-grid {
@@ -356,7 +350,7 @@ watch(
   gap: 16px;
 }
 
-/* 右列：概览卡 */
+/* 右列：概览卡 + 主题树上下排列 */
 .sidebar-stack {
   display: flex;
   flex-direction: column;

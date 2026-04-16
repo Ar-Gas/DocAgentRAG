@@ -1,16 +1,16 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 
 const apiMocks = vi.hoisted(() => ({
-  getDocumentFileBlob: vi.fn(() => Promise.resolve(new Blob(['file']))),
+  getDocumentFileUrl: vi.fn((documentId) => `/api/v1/documents/${documentId}/file`),
   getDocumentReader: vi.fn()
 }))
 
 vi.mock('@/api', () => ({
   api: {
-    getDocumentFileBlob: apiMocks.getDocumentFileBlob,
+    getDocumentFileUrl: apiMocks.getDocumentFileUrl,
     getDocumentReader: apiMocks.getDocumentReader
   }
 }))
@@ -49,28 +49,16 @@ const STUBS = {
   }
 }
 
-const createDeferred = () => {
-  let resolve
-  let reject
-  const promise = new Promise((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-  return { promise, resolve, reject }
-}
-
 describe('DocumentViewerModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    URL.createObjectURL = vi.fn(() => 'blob:docagent-preview')
-    URL.revokeObjectURL = vi.fn()
   })
 
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  it('renders pdf files with the dedicated pdf viewer branch instead of native iframe', async () => {
+  it('renders pdf files with the dedicated pdf viewer branch instead of native iframe', () => {
     const wrapper = mount(DocumentViewerModal, {
       props: {
         visible: true,
@@ -83,11 +71,8 @@ describe('DocumentViewerModal', () => {
       }
     })
 
-    await flushPromises()
-
     expect(wrapper.find('.pdf-renderer-stub').exists()).toBe(true)
     expect(wrapper.find('iframe.native-iframe').exists()).toBe(false)
-    expect(apiMocks.getDocumentFileBlob).toHaveBeenCalledWith('doc-1')
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
   })
 
@@ -110,7 +95,7 @@ describe('DocumentViewerModal', () => {
     expect(wrapper.find('button').attributes('disabled')).toBeDefined()
   })
 
-  it('renders docx files with the docx office viewer', async () => {
+  it('renders docx files with the docx office viewer', () => {
     const wrapper = mount(DocumentViewerModal, {
       props: {
         visible: true,
@@ -123,14 +108,11 @@ describe('DocumentViewerModal', () => {
       }
     })
 
-    await flushPromises()
-
     expect(wrapper.find('.docx-renderer-stub').exists()).toBe(true)
-    expect(apiMocks.getDocumentFileBlob).toHaveBeenCalledWith('doc-3')
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
   })
 
-  it('renders xlsx files with the excel office viewer', async () => {
+  it('renders xlsx files with the excel office viewer', () => {
     const wrapper = mount(DocumentViewerModal, {
       props: {
         visible: true,
@@ -143,10 +125,7 @@ describe('DocumentViewerModal', () => {
       }
     })
 
-    await flushPromises()
-
     expect(wrapper.find('.excel-renderer-stub').exists()).toBe(true)
-    expect(apiMocks.getDocumentFileBlob).toHaveBeenCalledWith('doc-4')
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
   })
 
@@ -273,77 +252,5 @@ describe('DocumentViewerModal', () => {
 
     expect(wrapper.text()).toContain('预览加载超时')
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
-  })
-
-  it('opens a blank tab first and then navigates it to the blob url', async () => {
-    const previewWindow = {
-      opener: {},
-      location: { replace: vi.fn() },
-      close: vi.fn(),
-    }
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(previewWindow)
-
-    const wrapper = mount(DocumentViewerModal, {
-      props: {
-        visible: true,
-        documentId: 'doc-12',
-        filename: 'budget.pdf',
-        fileType: '.pdf'
-      },
-      global: {
-        stubs: STUBS
-      }
-    })
-
-    await flushPromises()
-    await wrapper.find('button').trigger('click')
-    await flushPromises()
-
-    expect(openSpy).toHaveBeenCalledWith('', '_blank')
-    expect(previewWindow.location.replace).toHaveBeenCalledWith('blob:docagent-preview')
-  })
-
-  it('ignores stale blob responses after the document changes', async () => {
-    const firstBlob = new Blob(['first'])
-    const secondBlob = new Blob(['second'])
-    const firstRequest = createDeferred()
-    const secondRequest = createDeferred()
-
-    apiMocks.getDocumentFileBlob
-      .mockReturnValueOnce(firstRequest.promise)
-      .mockReturnValueOnce(secondRequest.promise)
-
-    URL.createObjectURL = vi.fn((blob) => {
-      if (blob === firstBlob) return 'blob:first-preview'
-      if (blob === secondBlob) return 'blob:second-preview'
-      return 'blob:docagent-preview'
-    })
-
-    const wrapper = mount(DocumentViewerModal, {
-      props: {
-        visible: true,
-        documentId: 'doc-race-1',
-        filename: 'first.pdf',
-        fileType: '.pdf'
-      },
-      global: {
-        stubs: STUBS
-      }
-    })
-
-    await wrapper.setProps({
-      documentId: 'doc-race-2',
-      filename: 'second.pdf',
-    })
-
-    firstRequest.resolve(firstBlob)
-    await flushPromises()
-
-    expect(wrapper.find('.pdf-renderer-stub').attributes('data-src')).not.toBe('blob:first-preview')
-
-    secondRequest.resolve(secondBlob)
-    await flushPromises()
-
-    expect(wrapper.find('.pdf-renderer-stub').attributes('data-src')).toBe('blob:second-preview')
   })
 })
