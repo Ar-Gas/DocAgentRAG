@@ -15,4 +15,12 @@ describe('frontend bootstrap entry', () => {
     expect(source).not.toMatch(/app\.use\(ElementPlus\)/)
     expect(source).not.toMatch(/\*\s+as\s+ElementPlusIconsVue/)
   })
+
+  it('rehydrates and revalidates persisted sessions before mounting', () => {
+    const source = fs.readFileSync(mainEntryPath, 'utf8')
+
+    expect(source).toContain('sessionStore.hydrate()')
+    expect(source).toContain('api.getCurrentUser()')
+    expect(source).toContain('error?.status === 401')
+  })
 })

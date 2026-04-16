@@ -15,6 +15,9 @@ const DOC = {
   filename: 'budget-report.pdf',
   file_type: '.pdf',
   classification_result: '财务制度',
+  visibility_scope: 'department',
+  business_category_name: '预算管理',
+  owner_department_name: '财务部',
   score: 0.92,
   hit_count: 2,
   best_block_id: 'doc-1#2',
@@ -65,6 +68,17 @@ describe('DocumentResultList', () => {
     // 并且发射了 select-document 事件
     expect(wrapper.emitted('select-document')).toBeTruthy()
     expect(wrapper.emitted('select-document')[0][0]).toBe('doc-1')
+  })
+
+  it('renders governed visibility and business badges in the collapsed card header', () => {
+    const wrapper = mount(DocumentResultList, {
+      props: { loading: false, query: '', selectedDocumentId: '', documents: [DOC] },
+      global: { stubs: STUBS },
+    })
+
+    expect(wrapper.text()).toContain('部门文档')
+    expect(wrapper.text()).toContain('预算管理')
+    expect(wrapper.text()).toContain('财务部')
   })
 
   it('emits open-viewer when "原文预览" button is clicked', async () => {

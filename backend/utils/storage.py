@@ -468,13 +468,43 @@ def _init_ephemeral_chroma_client() -> tuple[object, object]:
     )
     return client, collection
 
+
+def _normalize_shared_department_ids(raw_department_ids) -> List[str]:
+    if not isinstance(raw_department_ids, (list, tuple, set)):
+        return []
+    normalized: List[str] = []
+    for department_id in raw_department_ids:
+        value = str(department_id).strip() if department_id is not None else ""
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _attach_shared_department_ids(doc_info: Optional[dict], store=None) -> Optional[dict]:
+    if doc_info is None:
+        return None
+    metadata_store = store or _metadata_store()
+    document_id = doc_info.get("id")
+    if not document_id:
+        return dict(doc_info)
+    enriched = dict(doc_info)
+    enriched["shared_department_ids"] = metadata_store.list_document_shared_departments(document_id)
+    return enriched
+
 # 保存文档信息到JSON
 def save_document_info(doc_info):
     if not isinstance(doc_info, dict) or 'id' not in doc_info:
         logger.error("保存文档信息失败：无效的文档信息（缺少ID）")
         return False
     try:
-        return _metadata_store().upsert_document(doc_info)
+        metadata_store = _metadata_store()
+        saved = metadata_store.upsert_document(doc_info)
+        if saved and "shared_department_ids" in doc_info:
+            metadata_store.replace_document_shared_departments(
+                doc_info["id"],
+                _normalize_shared_department_ids(doc_info.get("shared_department_ids")),
+            )
+        return saved
     except Exception as e:
         logger.error(f"保存文档信息失败: {str(e)}")
         return False
@@ -485,7 +515,9 @@ def get_document_info(document_id):
         logger.error("获取文档信息失败：文档ID为空或非法")
         return None
     try:
-        return _metadata_store().get_document(document_id)
+        metadata_store = _metadata_store()
+        doc_info = metadata_store.get_document(document_id)
+        return _attach_shared_department_ids(doc_info, store=metadata_store)
     except Exception as e:
         logger.error(f"获取文档信息失败: {str(e)}")
         return None
@@ -513,7 +545,12 @@ def get_classification_result(document_id):
 # 获取所有文档信息
 def get_all_documents():
     try:
-        return _metadata_store().list_documents()
+        metadata_store = _metadata_store()
+        documents = metadata_store.list_documents()
+        return [
+            _attach_shared_department_ids(doc_info, store=metadata_store)
+            for doc_info in documents
+        ]
     except Exception as e:
         logger.error(f"获取所有文档失败: {str(e)}")
         return []
@@ -962,52 +999,11 @@ def save_document_summary_for_classification(filepath, full_content: Optional[st
                 extraction_status='ready',
                 parser_name=parser_name or ext.lstrip('.'),
             )
-            update_classification_tree_after_add(doc_info)
             return document_id, doc_info
         return None, None
     except Exception as e:
         logger.error(f"保存文档摘要失败: {str(e)}")
         return None, None
-
-# 新增文档后更新分类树
-def update_classification_tree_after_add(doc_info):
-    """新增文档后增量更新分类树"""
-    try:
-        from utils.multi_level_classifier import get_multi_level_classifier, build_and_save_classification_tree
-        
-        classifier = get_multi_level_classifier()
-        tree = classifier.load_classification_tree()
-        
-        if not tree or 'tree' not in tree:
-            build_and_save_classification_tree()
-            return
-        
-        # 对新文档进行分类
-        classification = classifier.classify_document(doc_info)
-        if not classification:
-            return
-        
-        content_cat = classification['content_category']
-        file_type = classification['file_type']
-        time_group = classification['time_group']
-        
-        # 确保树结构存在
-        if content_cat not in tree['tree']:
-            tree['tree'][content_cat] = {}
-        if file_type not in tree['tree'][content_cat]:
-            tree['tree'][content_cat][file_type] = {}
-        if time_group not in tree['tree'][content_cat][file_type]:
-            tree['tree'][content_cat][file_type][time_group] = []
-        
-        # 添加新文档
-        tree['tree'][content_cat][file_type][time_group].append(classification)
-        tree['total_documents'] = tree.get('total_documents', 0) + 1
-        tree['updated_at'] = datetime.now().isoformat()
-        
-        classifier.save_classification_tree(tree)
-        logger.info(f"分类树已更新（新增文档）: {doc_info.get('filename')}")
-    except Exception as e:
-        logger.error(f"新增文档后更新分类树失败: {str(e)}")
 
 # 保存文档到Chroma（使用内容提炼引擎）
 def save_document_to_chroma(filepath, document_id=None, use_refiner=True, save_chunk_info=True, full_content: Optional[str] = None):
@@ -1256,8 +1252,7 @@ def delete_document(document_id):
                     collection.delete(ids=results["ids"])
             except Exception:
                 pass
-        
-        update_classification_tree_after_delete(document_id)
+
         _metadata_store().delete_document(document_id)
         
         logger.info(f"文档{document_id}删除成功")
@@ -1266,122 +1261,48 @@ def delete_document(document_id):
         logger.error(f"删除文档失败: {str(e)}")
         return False
 
-# 删除文档后更新分类树
-def update_classification_tree_after_reclassify(document_id, old_classification, new_classification):
-    """重新分类后更新分类树"""
-    try:
-        from utils.multi_level_classifier import get_multi_level_classifier
-        
-        classifier = get_multi_level_classifier()
-        tree = classifier.load_classification_tree()
-        
-        if not tree or 'tree' not in tree:
-            return
-        
-        doc_info = get_document_info(document_id)
-        if not doc_info:
-            return
-        
-        tree_modified = False
-        
-        if old_classification:
-            for content_cat, types in list(tree['tree'].items()):
-                for file_type, times in list(types.items()):
-                    for time_group, docs in list(times.items()):
-                        original_count = len(docs)
-                        tree['tree'][content_cat][file_type][time_group] = [
-                            doc for doc in docs 
-                            if doc.get('document_id') != document_id
-                        ]
-                        new_count = len(tree['tree'][content_cat][file_type][time_group])
-                        
-                        if original_count != new_count:
-                            tree_modified = True
-                        
-                        if not tree['tree'][content_cat][file_type][time_group]:
-                            del tree['tree'][content_cat][file_type][time_group]
-                    
-                    if not tree['tree'][content_cat][file_type]:
-                        del tree['tree'][content_cat][file_type]
-                
-                if not tree['tree'][content_cat]:
-                    del tree['tree'][content_cat]
-        
-        if new_classification:
-            content_cat = new_classification.get('content_category')
-            file_type = new_classification.get('file_type')
-            time_group = new_classification.get('time_group')
-            
-            if content_cat and file_type and time_group:
-                if content_cat not in tree['tree']:
-                    tree['tree'][content_cat] = {}
-                if file_type not in tree['tree'][content_cat]:
-                    tree['tree'][content_cat][file_type] = {}
-                if time_group not in tree['tree'][content_cat][file_type]:
-                    tree['tree'][content_cat][file_type][time_group] = []
-                
-                tree['tree'][content_cat][file_type][time_group].append(new_classification)
-                tree_modified = True
-        
-        if tree_modified:
-            tree['updated_at'] = datetime.now().isoformat()
-            classifier.save_classification_tree(tree)
-            logger.info(f"分类树已更新（重新分类）: {document_id}")
-    except Exception as e:
-        logger.error(f"重新分类后更新分类树失败: {str(e)}")
-
-def update_classification_tree_after_delete(document_id):
-    """删除文档后增量更新分类树"""
-    try:
-        from utils.multi_level_classifier import get_multi_level_classifier
-        
-        classifier = get_multi_level_classifier()
-        tree = classifier.load_classification_tree()
-        
-        if not tree or 'tree' not in tree:
-            return
-        
-        tree_modified = False
-        for content_cat, types in list(tree['tree'].items()):
-            for file_type, times in list(types.items()):
-                for time_group, docs in list(times.items()):
-                    original_count = len(docs)
-                    tree['tree'][content_cat][file_type][time_group] = [
-                        doc for doc in docs 
-                        if doc.get('document_id') != document_id
-                    ]
-                    new_count = len(tree['tree'][content_cat][file_type][time_group])
-                    
-                    if original_count != new_count:
-                        tree_modified = True
-                    
-                    if not tree['tree'][content_cat][file_type][time_group]:
-                        del tree['tree'][content_cat][file_type][time_group]
-                
-                if not tree['tree'][content_cat][file_type]:
-                    del tree['tree'][content_cat][file_type]
-            
-            if not tree['tree'][content_cat]:
-                del tree['tree'][content_cat]
-        
-        if tree_modified:
-            tree['total_documents'] = max(0, tree.get('total_documents', 0) - 1)
-            tree['updated_at'] = datetime.now().isoformat()
-            classifier.save_classification_tree(tree)
-            logger.info(f"分类树已更新（删除文档）: {document_id}")
-    except Exception as e:
-        logger.error(f"删除文档后更新分类树失败: {str(e)}")
-
 # 更新文档信息
 def update_document_info(document_id, updated_info):
     if not document_id or not isinstance(updated_info, dict):
         logger.error("更新失败：ID为空或更新信息非法")
         return False
     try:
-        return _metadata_store().update_document(document_id, updated_info)
+        metadata_store = _metadata_store()
+        updated = metadata_store.update_document(document_id, updated_info)
+        if updated and "shared_department_ids" in updated_info:
+            metadata_store.replace_document_shared_departments(
+                document_id,
+                _normalize_shared_department_ids(updated_info.get("shared_department_ids")),
+            )
+        return updated
     except Exception as e:
         logger.error(f"更新文档信息失败: {str(e)}")
         return False
+
+
+def replace_document_shared_departments(document_id: str, department_ids: List[str]) -> bool:
+    if not document_id:
+        logger.error("更新共享部门失败：文档ID为空")
+        return False
+    try:
+        _metadata_store().replace_document_shared_departments(
+            document_id,
+            _normalize_shared_department_ids(department_ids),
+        )
+        return True
+    except Exception as e:
+        logger.error(f"更新共享部门失败: {str(e)}")
+        return False
+
+
+def list_document_shared_departments(document_id: str) -> List[str]:
+    if not document_id:
+        return []
+    try:
+        return _metadata_store().list_document_shared_departments(document_id)
+    except Exception as e:
+        logger.error(f"获取共享部门失败: {str(e)}")
+        return []
 
 # 根据分类结果获取文档
 def get_documents_by_classification(classification):

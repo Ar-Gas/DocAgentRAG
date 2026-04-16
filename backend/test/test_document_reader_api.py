@@ -143,11 +143,17 @@ def test_document_reader_api_returns_reader_payload(monkeypatch):
     )
     monkeypatch.setattr(document_api.document_service, "get_reader_payload", mock_get_reader_payload)
 
-    body = asyncio.run(document_api.get_document_reader("doc-1", query="预算"))
+    current_user = {"id": "user-1", "role_code": "employee"}
+    body = asyncio.run(document_api.get_document_reader("doc-1", query="预算", current_user=current_user))
 
     assert body["code"] == 200
     assert body["data"]["document_id"] == "doc-1"
-    mock_get_reader_payload.assert_called_once_with("doc-1", query="预算", anchor_block_id=None)
+    mock_get_reader_payload.assert_called_once_with(
+        "doc-1",
+        query="预算",
+        anchor_block_id=None,
+        current_user=current_user,
+    )
 
 
 def test_get_document_file_quotes_unicode_filename(monkeypatch, tmp_path: Path):
@@ -157,7 +163,7 @@ def test_get_document_file_quotes_unicode_filename(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         document_api.document_service,
         "get_document",
-        lambda document_id: {
+        lambda document_id, current_user=None: {
             "id": document_id,
             "filename": "指导教师名册.pdf",
             "filepath": str(pdf_path),
@@ -165,7 +171,12 @@ def test_get_document_file_quotes_unicode_filename(monkeypatch, tmp_path: Path):
         },
     )
 
-    response = asyncio.run(document_api.get_document_file("doc-1"))
+    response = asyncio.run(
+        document_api.get_document_file(
+            "doc-1",
+            current_user={"id": "user-1", "role_code": "employee"},
+        )
+    )
 
     assert response.media_type == "application/pdf"
     assert response.headers["content-disposition"].startswith("inline; filename*=UTF-8''")

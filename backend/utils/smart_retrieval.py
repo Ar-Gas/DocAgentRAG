@@ -417,8 +417,6 @@ def smart_multimodal_retrieval(
     }
     
     try:
-        from .retriever import multimodal_search, hybrid_multimodal_search
-        
         if use_query_expansion and query:
             if expansion_method == 'llm' and is_llm_available():
                 queries = expand_query_with_llm(query)
@@ -435,12 +433,7 @@ def smart_multimodal_retrieval(
             
             for i, q in enumerate(queries):
                 try:
-                    results = multimodal_search(
-                        query=q,
-                        image_url=image_url,
-                        image_path=image_path,
-                        limit=max(3, limit // 2)
-                    )
+                    results = search_func(q, limit=max(3, limit // 2))
                     
                     for result in results:
                         doc_id = result.get('document_id', '') + '_' + str(result.get('chunk_index', 0))
@@ -469,12 +462,7 @@ def smart_multimodal_retrieval(
                 result['multi_query_hit'] = result['query_count'] > 1
                 results.append(result)
         else:
-            results = multimodal_search(
-                query=query,
-                image_url=image_url,
-                image_path=image_path,
-                limit=limit * 2
-            )
+            results = search_func(query, limit=limit * 2)
         
         meta_info['total_candidates'] = len(results)
         

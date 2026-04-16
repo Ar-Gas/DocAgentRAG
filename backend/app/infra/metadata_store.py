@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.core.database import connect_sqlite
+from app.core.document_governance import normalize_document_governance
 from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,109 @@ class DocumentMetadataStore:
                     """
                 )
                 connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS roles (
+                        code TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        builtin INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        id TEXT PRIMARY KEY,
+                        username TEXT NOT NULL UNIQUE,
+                        password_hash TEXT NOT NULL,
+                        display_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        primary_department_id TEXT,
+                        role_code TEXT NOT NULL,
+                        last_login_at TEXT,
+                        external_identity_id TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS departments (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        parent_id TEXT,
+                        manager_user_id TEXT,
+                        status TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_department_memberships (
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        department_id TEXT NOT NULL,
+                        membership_type TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS business_categories (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        scope_type TEXT NOT NULL,
+                        department_id TEXT,
+                        status TEXT NOT NULL,
+                        sort_order INTEGER NOT NULL DEFAULT 0,
+                        created_by TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS document_shared_departments (
+                        id TEXT PRIMARY KEY,
+                        document_id TEXT NOT NULL,
+                        department_id TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS auth_sessions (
+                        token TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        last_seen_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_logs (
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT,
+                        username_snapshot TEXT,
+                        department_id TEXT,
+                        role_code TEXT,
+                        action_type TEXT NOT NULL,
+                        target_type TEXT NOT NULL,
+                        target_id TEXT NOT NULL,
+                        result TEXT NOT NULL,
+                        ip_address TEXT,
+                        metadata_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_document_segments_document_id ON document_segments(document_id, segment_index)"
                 )
                 connection.execute(
@@ -132,6 +236,19 @@ class DocumentMetadataStore:
                         connection.execute(_col_sql)
                     except Exception:
                         pass  # 列已存在时忽略
+                for _col_sql in [
+                    "ALTER TABLE documents ADD COLUMN visibility_scope TEXT DEFAULT 'department'",
+                    "ALTER TABLE documents ADD COLUMN owner_department_id TEXT",
+                    "ALTER TABLE documents ADD COLUMN business_category_id TEXT",
+                    "ALTER TABLE documents ADD COLUMN role_restriction TEXT",
+                    "ALTER TABLE documents ADD COLUMN confidentiality_level TEXT DEFAULT 'internal'",
+                    "ALTER TABLE documents ADD COLUMN document_status TEXT DEFAULT 'draft'",
+                    "ALTER TABLE documents ADD COLUMN is_public_restricted INTEGER DEFAULT 0",
+                ]:
+                    try:
+                        connection.execute(_col_sql)
+                    except Exception:
+                        pass
                 connection.commit()
 
             self._sync_from_json_files()
@@ -152,13 +269,18 @@ class DocumentMetadataStore:
             try:
                 with open(json_path, "r", encoding="utf-8") as handle:
                     doc_info = json.load(handle)
-                if doc_info.get("id") and doc_info.get("filename"):
-                    self.upsert_document(doc_info, mirror=False)
+                normalized_doc = self._apply_enterprise_document_defaults(doc_info)
+                if normalized_doc.get("id") and normalized_doc.get("filename"):
+                    self.upsert_document(normalized_doc, mirror=False)
+                    self.replace_document_shared_departments(
+                        normalized_doc["id"],
+                        list(normalized_doc.get("shared_department_ids") or []),
+                    )
             except Exception as exc:
                 logger.warning("同步元数据 JSON 失败 %s: %s", json_path.name, exc)
 
     def _serialize_doc(self, doc_info: Dict[str, Any]) -> Dict[str, Any]:
-        payload = dict(doc_info)
+        payload = self._apply_enterprise_document_defaults(dict(doc_info))
         return {
             "id": payload["id"],
             "filename": payload.get("filename", ""),
@@ -168,8 +290,22 @@ class DocumentMetadataStore:
             "created_at": payload.get("created_at"),
             "created_at_iso": payload.get("created_at_iso"),
             "updated_at": payload.get("updated_at"),
+            "visibility_scope": payload.get("visibility_scope", "department"),
+            "owner_department_id": payload.get("owner_department_id"),
+            "business_category_id": payload.get("business_category_id"),
+            "role_restriction": payload.get("role_restriction"),
+            "confidentiality_level": payload.get("confidentiality_level", "internal"),
+            "document_status": payload.get("document_status", "draft"),
+            "is_public_restricted": payload.get("is_public_restricted", 0),
             "payload": json.dumps(payload, ensure_ascii=False),
         }
+
+    def _apply_enterprise_document_defaults(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return normalize_document_governance(
+            payload,
+            current_user=None,
+            use_owner_fallback=False,
+        )
 
     def _write_document_json(self, doc_info: Dict[str, Any]) -> None:
         output_path = self.data_dir / f"{doc_info['id']}.json"
@@ -197,8 +333,11 @@ class DocumentMetadataStore:
                 """
                 INSERT INTO documents (
                     id, filename, filepath, file_type, classification_result,
-                    created_at, created_at_iso, updated_at, payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, created_at_iso, updated_at,
+                    visibility_scope, owner_department_id, business_category_id,
+                    role_restriction, confidentiality_level, document_status,
+                    is_public_restricted, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     filename = excluded.filename,
                     filepath = excluded.filepath,
@@ -207,6 +346,13 @@ class DocumentMetadataStore:
                     created_at = excluded.created_at,
                     created_at_iso = excluded.created_at_iso,
                     updated_at = excluded.updated_at,
+                    visibility_scope = excluded.visibility_scope,
+                    owner_department_id = excluded.owner_department_id,
+                    business_category_id = excluded.business_category_id,
+                    role_restriction = excluded.role_restriction,
+                    confidentiality_level = excluded.confidentiality_level,
+                    document_status = excluded.document_status,
+                    is_public_restricted = excluded.is_public_restricted,
                     payload = excluded.payload
                 """,
                 (
@@ -218,13 +364,20 @@ class DocumentMetadataStore:
                     payload["created_at"],
                     payload["created_at_iso"],
                     payload["updated_at"],
+                    payload["visibility_scope"],
+                    payload["owner_department_id"],
+                    payload["business_category_id"],
+                    payload["role_restriction"],
+                    payload["confidentiality_level"],
+                    payload["document_status"],
+                    payload["is_public_restricted"],
                     payload["payload"],
                 ),
             )
             connection.commit()
 
         if mirror:
-            self._write_document_json(doc_info)
+            self._write_document_json(json.loads(payload["payload"]))
         return True
 
     def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
@@ -236,7 +389,7 @@ class DocumentMetadataStore:
 
         if not row:
             return None
-        return json.loads(row["payload"])
+        return self._apply_enterprise_document_defaults(json.loads(row["payload"]))
 
     def list_documents(self) -> List[Dict[str, Any]]:
         with self._connect() as connection:
@@ -249,10 +402,11 @@ class DocumentMetadataStore:
                     COALESCE(created_at, 0) DESC
                 """
             ).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
+        return [self._apply_enterprise_document_defaults(json.loads(row["payload"])) for row in rows]
 
     def delete_document(self, document_id: str, mirror: bool = True) -> bool:
         with self._connect() as connection:
+            connection.execute("DELETE FROM document_shared_departments WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM document_contents WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM document_segments WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM document_artifacts WHERE document_id = ?", (document_id,))
@@ -282,7 +436,7 @@ class DocumentMetadataStore:
                 "SELECT payload FROM documents WHERE classification_result = ? ORDER BY COALESCE(updated_at, created_at_iso, '') DESC",
                 (classification,),
             ).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
+        return [self._apply_enterprise_document_defaults(json.loads(row["payload"])) for row in rows]
 
     def save_classification_result(self, document_id: str, classification_result: str) -> bool:
         current = self.get_document(document_id)
@@ -652,6 +806,392 @@ class DocumentMetadataStore:
                 (limit,),
             ).fetchall()
         return [json.loads(row["payload"]) for row in rows]
+
+    def _ensure_builtin_roles(self) -> None:
+        builtin_roles = [
+            ("system_admin", "系统管理员", "平台级治理、配置与审计管理", 1),
+            ("department_admin", "部门管理员", "部门内文档治理与成员管理", 1),
+            ("employee", "普通员工", "文档上传、检索与协作访问", 1),
+            ("audit_readonly", "审计只读", "审计日志与合规信息只读访问", 1),
+        ]
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO roles (code, name, description, builtin)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    builtin = excluded.builtin
+                """,
+                builtin_roles,
+            )
+            connection.commit()
+
+    def list_roles(self) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT code, name, description, builtin FROM roles ORDER BY builtin DESC, code ASC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def ensure_enterprise_defaults(self, admin_password_hash: str) -> Dict[str, Any]:
+        self._ensure_builtin_roles()
+        pending_department_id = self.upsert_department(
+            {"id": "dept-pending", "name": "待归属", "status": "enabled", "parent_id": None}
+        )
+        self.upsert_business_category(
+            {
+                "id": "cat-pending",
+                "name": "待整理",
+                "scope_type": "system",
+                "department_id": None,
+                "status": "enabled",
+                "sort_order": 999,
+                "created_by": "system",
+            }
+        )
+        if not self.get_user_by_username("admin"):
+            self.upsert_user(
+                {
+                    "id": "user-admin",
+                    "username": "admin",
+                    "password_hash": admin_password_hash,
+                    "display_name": "系统管理员",
+                    "status": "enabled",
+                    "primary_department_id": pending_department_id,
+                    "role_code": "system_admin",
+                }
+            )
+        return {"admin_username": "admin", "pending_department_id": pending_department_id}
+
+    def upsert_user(
+        self,
+        payload: Dict[str, Any],
+        *,
+        reuse_existing_username: bool = True,
+    ) -> Dict[str, Any]:
+        now = datetime.now().isoformat()
+        existing = self.get_user_by_username(payload["username"]) if reuse_existing_username else None
+        user_id = existing["id"] if existing else payload.get("id") or f"user-{uuid.uuid4().hex}"
+        created_at = payload.get("created_at") or (existing["created_at"] if existing else now)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO users (
+                    id, username, password_hash, display_name, status,
+                    primary_department_id, role_code, last_login_at,
+                    external_identity_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    username = excluded.username,
+                    password_hash = excluded.password_hash,
+                    display_name = excluded.display_name,
+                    status = excluded.status,
+                    primary_department_id = excluded.primary_department_id,
+                    role_code = excluded.role_code,
+                    last_login_at = excluded.last_login_at,
+                    external_identity_id = excluded.external_identity_id,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    payload["username"],
+                    payload["password_hash"],
+                    payload["display_name"],
+                    payload.get("status", "enabled"),
+                    payload.get("primary_department_id"),
+                    payload["role_code"],
+                    payload.get("last_login_at"),
+                    payload.get("external_identity_id"),
+                    created_at,
+                    now,
+                ),
+            )
+            connection.commit()
+        return self.get_user(user_id)
+
+    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE username = ?",
+                (username,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def touch_user_last_login(self, user_id: str, last_login_at: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
+                (last_login_at, last_login_at, user_id),
+            )
+            connection.commit()
+
+    def upsert_department(self, payload: Dict[str, Any]) -> str:
+        department_id = payload.get("id") or f"dept-{uuid.uuid4().hex}"
+        now = datetime.now().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO departments (
+                    id, name, parent_id, manager_user_id, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    parent_id = excluded.parent_id,
+                    manager_user_id = excluded.manager_user_id,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    department_id,
+                    payload["name"],
+                    payload.get("parent_id"),
+                    payload.get("manager_user_id"),
+                    payload.get("status", "enabled"),
+                    payload.get("created_at", now),
+                    now,
+                ),
+            )
+            connection.commit()
+        return department_id
+
+    def list_departments(self) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, name, parent_id, manager_user_id, status, created_at, updated_at
+                FROM departments
+                ORDER BY name ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def replace_user_department_memberships(
+        self,
+        user_id: str,
+        primary_department_id: str,
+        collaborative_department_ids: List[str],
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM user_department_memberships WHERE user_id = ?", (user_id,))
+            connection.execute(
+                """
+                INSERT INTO user_department_memberships (id, user_id, department_id, membership_type)
+                VALUES (?, ?, ?, ?)
+                """,
+                (f"{user_id}:primary", user_id, primary_department_id, "primary"),
+            )
+            for department_id in dict.fromkeys(collaborative_department_ids):
+                connection.execute(
+                    """
+                    INSERT INTO user_department_memberships (id, user_id, department_id, membership_type)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (f"{user_id}:{department_id}", user_id, department_id, "collaborative"),
+                )
+            connection.commit()
+
+    def list_user_department_memberships(self, user_id: str) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT department_id, membership_type
+                FROM user_department_memberships
+                WHERE user_id = ?
+                ORDER BY rowid ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_managed_department_ids(self, user_id: str) -> List[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM departments
+                WHERE manager_user_id = ? AND status = 'enabled'
+                ORDER BY rowid ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def upsert_business_category(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        category_id = payload.get("id") or f"cat-{uuid.uuid4().hex}"
+        now = datetime.now().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO business_categories (
+                    id, name, scope_type, department_id, status, sort_order,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    scope_type = excluded.scope_type,
+                    department_id = excluded.department_id,
+                    status = excluded.status,
+                    sort_order = excluded.sort_order,
+                    created_by = excluded.created_by,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    category_id,
+                    payload["name"],
+                    payload["scope_type"],
+                    payload.get("department_id"),
+                    payload.get("status", "enabled"),
+                    payload.get("sort_order", 0),
+                    payload["created_by"],
+                    payload.get("created_at", now),
+                    now,
+                ),
+            )
+            connection.commit()
+        return {
+            "id": category_id,
+            "name": payload["name"],
+            "scope_type": payload["scope_type"],
+            "department_id": payload.get("department_id"),
+            "status": payload.get("status", "enabled"),
+            "sort_order": payload.get("sort_order", 0),
+        }
+
+    def list_business_categories(
+        self,
+        scope_type: Optional[str] = None,
+        department_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        sql = """
+            SELECT id, name, scope_type, department_id, status, sort_order, created_by, created_at, updated_at
+            FROM business_categories
+            WHERE 1 = 1
+        """
+        params: List[Any] = []
+        if scope_type:
+            sql += " AND scope_type = ?"
+            params.append(scope_type)
+        if department_id is not None:
+            sql += " AND department_id = ?"
+            params.append(department_id)
+        sql += " ORDER BY sort_order ASC, name ASC"
+
+        with self._connect() as connection:
+            rows = connection.execute(sql, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def replace_document_shared_departments(self, document_id: str, department_ids: List[str]) -> None:
+        unique_ids = [department_id for department_id in dict.fromkeys(department_ids) if department_id]
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM document_shared_departments WHERE document_id = ?",
+                (document_id,),
+            )
+            for department_id in unique_ids:
+                connection.execute(
+                    """
+                    INSERT INTO document_shared_departments (id, document_id, department_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    (f"{document_id}:{department_id}", document_id, department_id),
+                )
+            connection.commit()
+
+    def list_document_shared_departments(self, document_id: str) -> List[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT department_id
+                FROM document_shared_departments
+                WHERE document_id = ?
+                ORDER BY rowid ASC
+                """,
+                (document_id,),
+            ).fetchall()
+        return [row["department_id"] for row in rows]
+
+    def create_auth_session(self, user_id: str, token: str, expires_at: str) -> str:
+        now = datetime.now().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO auth_sessions (
+                    token, user_id, expires_at, created_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (token, user_id, expires_at, now, now),
+            )
+            connection.commit()
+        return token
+
+    def get_auth_session(self, token: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM auth_sessions WHERE token = ?",
+                (token,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_auth_session(self, token: str) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
+            connection.commit()
+
+    def delete_auth_sessions_by_user(self, user_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM auth_sessions WHERE user_id = ?", (user_id,))
+            connection.commit()
+
+    def insert_audit_log(self, payload: Dict[str, Any]) -> str:
+        audit_id = payload.get("id") or f"audit-{uuid.uuid4().hex}"
+        created_at = payload.get("created_at") or datetime.now().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO audit_logs (
+                    id, user_id, username_snapshot, department_id, role_code,
+                    action_type, target_type, target_id, result, ip_address,
+                    metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    audit_id,
+                    payload.get("user_id"),
+                    payload.get("username_snapshot"),
+                    payload.get("department_id"),
+                    payload.get("role_code"),
+                    payload["action_type"],
+                    payload["target_type"],
+                    payload["target_id"],
+                    payload["result"],
+                    payload.get("ip_address"),
+                    json.dumps(payload.get("metadata_json") or {}, ensure_ascii=False),
+                    created_at,
+                ),
+            )
+            connection.commit()
+        return audit_id
+
+    def list_audit_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "metadata_json": json.loads(row["metadata_json"] or "{}"),
+            }
+            for row in rows
+        ]
 
 
 _metadata_stores: Dict[str, DocumentMetadataStore] = {}

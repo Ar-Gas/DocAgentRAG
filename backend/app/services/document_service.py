@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.core.document_governance import normalize_document_governance
+from app.services.authorization_service import authorization_service
 from app.services.errors import AppServiceError
 from app.services.extraction_service import ExtractionService
 from app.services.indexing_service import IndexingService
@@ -32,6 +34,17 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentService:
+    GOVERNANCE_FIELDS = (
+        "visibility_scope",
+        "owner_department_id",
+        "shared_department_ids",
+        "business_category_id",
+        "role_restriction",
+        "is_public_restricted",
+        "confidentiality_level",
+        "document_status",
+    )
+
     def __init__(self):
         self.extraction_service = ExtractionService()
         self.indexing_service = IndexingService()
@@ -40,7 +53,84 @@ class DocumentService:
     def _hydrate_document(doc_info: Dict) -> Dict:
         return enrich_document_file_state(doc_info, persist=True)
 
-    def upload(self, filename: str, file_stream) -> Dict:
+    def _apply_governance_defaults(
+        self,
+        doc_info: Dict,
+        current_user: Optional[Dict] = None,
+        use_owner_fallback: bool = False,
+    ) -> Dict:
+        return normalize_document_governance(
+            doc_info or {},
+            current_user=current_user,
+            use_owner_fallback=use_owner_fallback,
+        )
+
+    @staticmethod
+    def _ensure_view_permission(current_user: Optional[Dict], doc_info: Dict) -> None:
+        if current_user is not None and not authorization_service.can_view_document(current_user, doc_info):
+            raise AppServiceError(401, "无权限访问文档")
+
+    @staticmethod
+    def _ensure_manage_permission(current_user: Optional[Dict], doc_info: Dict) -> None:
+        if current_user is not None and not authorization_service.can_manage_document(current_user, doc_info):
+            raise AppServiceError(401, "无权限管理文档")
+
+    @staticmethod
+    def _ensure_target_manage_scope(
+        current_user: Optional[Dict],
+        existing_doc: Dict,
+        merged_doc: Dict,
+        updated_fields: Dict,
+    ) -> None:
+        if current_user is None:
+            return
+        if str(current_user.get("role_code") or "") == "system_admin":
+            return
+
+        managed_department_ids = {
+            str(department_id)
+            for department_id in authorization_service._managed_department_ids(current_user)
+            if department_id
+        }
+
+        existing_owner_department_id = (
+            str(existing_doc.get("owner_department_id"))
+            if existing_doc.get("owner_department_id")
+            else None
+        )
+        merged_owner_department_id = (
+            str(merged_doc.get("owner_department_id"))
+            if merged_doc.get("owner_department_id")
+            else None
+        )
+        owner_changed = merged_owner_department_id != existing_owner_department_id
+        if owner_changed and merged_owner_department_id and merged_owner_department_id not in managed_department_ids:
+            raise AppServiceError(401, "无权限管理文档")
+
+        if "shared_department_ids" not in (updated_fields or {}):
+            return
+
+        existing_shared_department_ids = {
+            str(department_id)
+            for department_id in (existing_doc.get("shared_department_ids") or [])
+            if department_id
+        }
+        merged_shared_department_ids = {
+            str(department_id)
+            for department_id in (merged_doc.get("shared_department_ids") or [])
+            if department_id
+        }
+        newly_added_shared_department_ids = merged_shared_department_ids - existing_shared_department_ids
+        if newly_added_shared_department_ids and not newly_added_shared_department_ids.issubset(managed_department_ids):
+            raise AppServiceError(401, "无权限管理文档")
+
+    def upload(
+        self,
+        filename: str,
+        file_stream,
+        current_user: Optional[Dict] = None,
+        governance_metadata: Optional[Dict] = None,
+    ) -> Dict:
         # 0.1 路径遍历防护：只取纯文件名，剥离任何目录部分
         safe_name = Path(filename).name
         ext = os.path.splitext(safe_name)[1].lower()
@@ -109,48 +199,61 @@ class DocumentService:
         except Exception:
             pass
 
-        # B. 上传完成后自动分类，失败不影响上传结果
-        try:
-            from utils.classifier import classify_document
-            from utils.storage import save_classification_result
-            classification_result = classify_document(doc_info)
-            if classification_result:
-                result_data = classification_result.get("classification_result", {})
-                categories = result_data.get("categories", [])
-                actual_path = result_data.get("actual_path")
-                if categories:
-                    save_classification_result(document_id, categories[0])
-                    doc_info["classification_result"] = categories[0]
-                if actual_path:
-                    update_document_info(document_id, {"filepath": actual_path})
-                    doc_info["filepath"] = actual_path
-        except Exception:
-            pass  # 分类失败不报错，仅记录到日志
+        normalized_governance = self._apply_governance_defaults(
+            governance_metadata or {},
+            current_user=current_user,
+            use_owner_fallback=True,
+        )
+        update_document_info(
+            document_id,
+            {
+                key: normalized_governance.get(key)
+                for key in self.GOVERNANCE_FIELDS
+            },
+        )
+        doc_info.update(normalized_governance)
 
         self._trigger_block_reindex_best_effort(document_id, context="upload")
-        return self._hydrate_document(doc_info)
+        hydrated = self._hydrate_document(doc_info)
+        return self._apply_governance_defaults(hydrated, current_user=current_user)
 
-    def list_documents(self, page: int, page_size: int) -> Dict:
-        all_docs = get_all_documents()
-        total = len(all_docs)
+    def list_documents(self, page: int, page_size: int, current_user: Optional[Dict] = None) -> Dict:
+        all_docs = [self._apply_governance_defaults(item, current_user=current_user) for item in get_all_documents()]
+        visible_docs = all_docs
+        if current_user is not None:
+            visible_docs = [
+                item
+                for item in all_docs
+                if authorization_service.can_view_document(current_user, item)
+            ]
+        total = len(visible_docs)
         start = (page - 1) * page_size
         end = start + page_size
         return {
-            "items": [self._hydrate_document(item) for item in all_docs[start:end]],
+            "items": [
+                self._apply_governance_defaults(
+                    self._hydrate_document(item),
+                    current_user=current_user,
+                )
+                for item in visible_docs[start:end]
+            ],
             "total": total,
             "page": page,
             "page_size": page_size,
             "total_pages": (total + page_size - 1) // page_size if page_size else 0,
         }
 
-    def get_document(self, document_id: str) -> Dict:
+    def get_document(self, document_id: str, current_user: Optional[Dict] = None) -> Dict:
         doc_info = get_document_info(document_id)
         if not doc_info:
             raise AppServiceError(1001, f"文档ID: {document_id}")
-        return self._hydrate_document(doc_info)
+        normalized = self._apply_governance_defaults(doc_info, current_user=current_user)
+        self._ensure_view_permission(current_user, normalized)
+        hydrated = self._hydrate_document(normalized)
+        return self._apply_governance_defaults(hydrated, current_user=current_user)
 
-    def get_document_payload(self, document_id: str) -> Dict:
-        doc_info = self.get_document(document_id)
+    def get_document_payload(self, document_id: str, current_user: Optional[Dict] = None) -> Dict:
+        doc_info = self.get_document(document_id, current_user=current_user)
         content_record = get_document_content_record(document_id) or {}
         segments = list_document_segments(document_id)
         artifacts = list_document_artifacts(document_id)
@@ -166,8 +269,9 @@ class DocumentService:
         document_id: str,
         query: str = "",
         anchor_block_id: Optional[str] = None,
+        current_user: Optional[Dict] = None,
     ) -> Dict:
-        doc_info = self.get_document(document_id)
+        doc_info = self.get_document(document_id, current_user=current_user)
         content_record = get_document_content_record(document_id) or {}
         blocks = self._build_reader_blocks(document_id, content_record)
         keywords = self._extract_reader_terms(query)
@@ -228,6 +332,32 @@ class DocumentService:
             "best_anchor": resolved_anchor,
             "blocks": hydrated_blocks,
         }
+
+    def update_document_metadata(
+        self,
+        document_id: str,
+        updated_fields: Dict,
+        current_user: Optional[Dict] = None,
+    ) -> Dict:
+        existing = get_document_info(document_id)
+        if not existing:
+            raise AppServiceError(1001, f"文档ID: {document_id}")
+
+        normalized_existing = self._apply_governance_defaults(existing, current_user=current_user)
+        self._ensure_manage_permission(current_user, normalized_existing)
+
+        merged_source = {
+            **normalized_existing,
+            **(updated_fields or {}),
+        }
+        if "is_public_restricted" not in (updated_fields or {}):
+            merged_source.pop("is_public_restricted", None)
+        merged = self._apply_governance_defaults(merged_source, current_user=current_user)
+        self._ensure_target_manage_scope(current_user, normalized_existing, merged, updated_fields or {})
+        governance_patch = {field: merged.get(field) for field in self.GOVERNANCE_FIELDS}
+        if not update_document_info(document_id, governance_patch):
+            raise AppServiceError(1001, f"文档ID: {document_id}")
+        return self.get_document(document_id, current_user=current_user)
 
     def delete_document(self, document_id: str) -> Dict:
         doc_info = self.get_document(document_id)

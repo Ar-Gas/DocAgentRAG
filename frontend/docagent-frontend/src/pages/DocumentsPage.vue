@@ -2,8 +2,8 @@
   <section class="documents-page">
     <div class="page-header shell-panel">
       <div>
-        <h3>文档管理</h3>
-        <p>上传文档后自动分类入库。支持 PDF / Word / Excel / PPT / 邮件 / TXT / 图片。</p>
+        <h3>文档台账</h3>
+        <p>仅展示当前账号可见的治理台账，按公共文档、部门文档与业务分类追踪文档状态。</p>
       </div>
       <div class="doc-stats">
         <article>
@@ -11,18 +11,15 @@
           <strong>{{ documentList.length }}</strong>
         </article>
         <article>
-          <span>已分类</span>
-          <strong>{{ classifiedCount }}</strong>
+          <span>公共文档</span>
+          <strong>{{ publicCount }}</strong>
         </article>
         <article>
-          <span>未分类</span>
-          <strong>{{ documentList.length - classifiedCount }}</strong>
+          <span>部门文档</span>
+          <strong>{{ departmentCount }}</strong>
         </article>
       </div>
     </div>
-
-    <FileUpload @upload-success="loadDocuments" />
-
     <FileList
       :document-list="documentList"
       :loading="loading"
@@ -45,7 +42,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import FileList from '@/components/FileList.vue'
-import FileUpload from '@/components/FileUpload.vue'
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 import { api } from '@/api'
 
@@ -59,8 +55,12 @@ const openViewer = (doc) => {
   viewerVisible.value = true
 }
 
-const classifiedCount = computed(
-  () => documentList.value.filter(item => item.classification_result).length
+const publicCount = computed(() =>
+  documentList.value.filter((item) => item.visibility_scope === 'public').length,
+)
+
+const departmentCount = computed(() =>
+  documentList.value.filter((item) => item.visibility_scope !== 'public').length,
 )
 
 const loadDocuments = async () => {

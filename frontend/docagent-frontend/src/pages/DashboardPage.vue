@@ -1,131 +1,57 @@
 <template>
-  <section class="dashboard">
-    <!-- 顶部指标 -->
-    <div class="metrics-row">
-      <article class="metric-card shell-panel">
-        <div class="metric-icon metric-icon--blue">
-          <el-icon><Document /></el-icon>
-        </div>
-        <div>
-          <p class="metric-label">文档总数</p>
-          <strong class="metric-value">{{ totalDocuments }}</strong>
-        </div>
-      </article>
-      <article class="metric-card shell-panel">
-        <div class="metric-icon metric-icon--green">
-          <el-icon><Folder /></el-icon>
-        </div>
-        <div>
-          <p class="metric-label">已分类</p>
-          <strong class="metric-value">{{ classifiedCount }}</strong>
-        </div>
-      </article>
-      <article class="metric-card shell-panel">
-        <div class="metric-icon metric-icon--amber">
-          <el-icon><DataBoard /></el-icon>
-        </div>
-        <div>
-          <p class="metric-label">向量分片</p>
-          <strong class="metric-value">{{ stats.total_chunks || 0 }}</strong>
-        </div>
-      </article>
-      <article class="metric-card shell-panel">
-        <div class="metric-icon metric-icon--purple">
-          <el-icon><Grid /></el-icon>
-        </div>
-        <div>
-          <p class="metric-label">文件类型</p>
-          <strong class="metric-value">{{ Object.keys(stats.file_types || {}).length }}</strong>
-        </div>
-      </article>
-    </div>
+  <section class="directory-home page-stack">
+    <DirectorySearchBar
+      :query="query"
+      :loading="searchLoading || loading"
+      :disabled="interactionBusy"
+      @update:query="query = $event"
+      @search="runScopedSearch"
+      @reset="resetSearch"
+    />
 
-    <!-- 主内容 -->
-    <div class="main-grid">
-      <!-- 近期文档 -->
-      <section class="shell-panel">
-        <div class="section-head">
-          <h3 class="section-title">最近入库</h3>
-          <RouterLink to="/documents" class="link-more">查看全部 →</RouterLink>
-        </div>
-        <el-table :data="recentDocs.slice(0, 8)" :show-header="true">
-          <el-table-column prop="filename" label="文件名" min-width="220">
-            <template #default="{ row }">
-              <div class="file-cell clickable" @click="openViewer(row)">
-                <span class="file-type-dot" :class="`dot-${row.file_type?.replace('.','')}`"></span>
-                <span class="filename-text">{{ row.filename }}</span>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column prop="file_type" label="类型" width="80">
-            <template #default="{ row }">
-              <span class="badge badge-gray">{{ row.file_type }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="分类" width="150">
-            <template #default="{ row }">
-              <span v-if="row.classification_result" class="badge badge-blue">{{ row.classification_result }}</span>
-              <span v-else class="badge badge-amber">待分类</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="created_at_iso" label="上传时间" width="160">
-            <template #default="{ row }">
-              <span class="text-muted">{{ formatDate(row.created_at_iso) }}</span>
-            </template>
-          </el-table-column>
-        </el-table>
-      </section>
+    <section class="shell-panel scope-banner">
+      <div>
+        <p class="scope-label">当前目录</p>
+        <h3>{{ workspace?.current_scope?.title || '全局目录' }}</h3>
+      </div>
+      <p class="scope-path">
+        {{ breadcrumbText }}
+      </p>
+    </section>
 
-      <!-- 右侧 -->
-      <div class="side-col">
-        <!-- 文件类型分布 -->
-        <section class="shell-panel">
-          <div class="section-head">
-            <h3 class="section-title">文件类型分布</h3>
-          </div>
-          <div class="type-list">
-            <div v-for="(count, type) in stats.file_types || {}" :key="type" class="type-row">
-              <div class="type-info">
-                <span class="type-dot" :class="`dot-${type.replace('.','')}`"></span>
-                <span class="type-name">{{ type }}</span>
-              </div>
-              <div class="type-bar-wrap">
-                <div class="type-bar" :style="{width: barWidth(count) + '%'}"></div>
-              </div>
-              <span class="type-count">{{ count }}</span>
-            </div>
-          </div>
-        </section>
+    <div class="workspace-grid">
+      <DirectoryTreePanel
+        :nodes="workspace?.tree || []"
+        :active-scope-key="workspace?.current_scope?.scope_key || 'root'"
+        :disabled="interactionBusy"
+        @select-scope="loadWorkspace"
+      />
 
-        <!-- 快捷操作 -->
-        <section class="shell-panel quick-actions">
-          <div class="section-head">
-            <h3 class="section-title">快捷操作</h3>
-          </div>
-          <div class="action-list">
-            <RouterLink to="/documents" class="action-item">
-              <div class="action-icon action-icon--blue"><el-icon><Upload /></el-icon></div>
-              <div>
-                <p class="action-title">上传文档</p>
-                <p class="action-desc">支持 PDF / Word / Excel 等格式</p>
-              </div>
-            </RouterLink>
-            <RouterLink to="/search" class="action-item">
-              <div class="action-icon action-icon--green"><el-icon><Search /></el-icon></div>
-              <div>
-                <p class="action-title">智能检索</p>
-                <p class="action-desc">混合检索 + LLM 增强问答</p>
-              </div>
-            </RouterLink>
-          </div>
-        </section>
+      <div class="main-column">
+        <DirectoryContentPanel
+          :mode="contentMode"
+          :folders="workspace?.folders || []"
+          :documents="workspace?.documents || []"
+          :search-documents="searchDocuments"
+          :selected-document-id="selectedDocumentId"
+          :disabled="interactionBusy"
+          @open-folder="loadWorkspace"
+          @select-document="selectDocument"
+          @open-viewer="openViewer"
+        />
+
+        <DocumentReader
+          v-if="readerPayload || readerLoading"
+          :reader="readerPayload"
+          :loading="readerLoading"
+        />
       </div>
     </div>
 
     <DocumentViewerModal
       v-if="viewerDoc"
       v-model:visible="viewerVisible"
-      :document-id="viewerDoc.id || viewerDoc.document_id"
+      :document-id="viewerDoc.document_id || viewerDoc.id"
       :filename="viewerDoc.filename"
       :file-type="viewerDoc.file_type"
       :file-available="viewerDoc.file_available"
@@ -134,223 +60,336 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
-import { Document, Folder, DataBoard, Grid, Upload, Search } from '@element-plus/icons-vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+
+import DirectoryContentPanel from '@/components/DirectoryContentPanel.vue'
+import DirectorySearchBar from '@/components/DirectorySearchBar.vue'
+import DirectoryTreePanel from '@/components/DirectoryTreePanel.vue'
+import DocumentReader from '@/components/DocumentReader.vue'
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 import { api } from '@/api'
 
-const recentDocs = ref([])
-const stats = ref({})
+const emptyWorkspace = () => ({
+  current_scope: { scope_key: 'root', title: '全局目录' },
+  breadcrumbs: [{ label: '全局目录' }],
+  tree: [],
+  folders: [],
+  documents: [],
+  search_scope: {
+    visibility_scope: null,
+    department_id: null,
+    business_category_id: null,
+  },
+})
+
+const workspace = ref(emptyWorkspace())
+const query = ref('')
+const loading = ref(false)
+const searchLoading = ref(false)
+const searchDocuments = ref([])
+const selectedDocumentId = ref('')
+const readerPayload = ref(null)
+const readerLoading = ref(false)
 const viewerVisible = ref(false)
 const viewerDoc = ref(null)
+const searchMode = ref(false)
 
-const openViewer = (doc) => {
-  viewerDoc.value = doc
+const contentMode = computed(() => (searchMode.value ? 'search' : 'directory'))
+const breadcrumbText = computed(() => (workspace.value?.breadcrumbs || []).map((item) => item.label).join(' / '))
+const interactionBusy = computed(() => loading.value || searchLoading.value)
+
+let workspaceRequestId = 0
+let searchRequestId = 0
+let readerRequestId = 0
+let workspaceAbortController = null
+let searchAbortController = null
+let readerAbortController = null
+
+const beginWorkspaceRequest = () => {
+  workspaceRequestId += 1
+  return workspaceRequestId
+}
+
+const beginSearchRequest = () => {
+  searchRequestId += 1
+  return searchRequestId
+}
+
+const beginReaderRequest = () => {
+  readerRequestId += 1
+  return readerRequestId
+}
+
+const isActiveWorkspaceRequest = (requestId) => requestId === workspaceRequestId
+const isActiveSearchRequest = (requestId) => requestId === searchRequestId
+const isActiveReaderRequest = (requestId) => requestId === readerRequestId
+
+const isCanceledError = (error) =>
+  error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError'
+
+const cancelWorkspaceRequest = () => {
+  workspaceAbortController?.abort()
+  workspaceAbortController = null
+}
+
+const cancelSearchRequest = () => {
+  searchAbortController?.abort()
+  searchAbortController = null
+}
+
+const cancelReaderRequest = () => {
+  readerAbortController?.abort()
+  readerAbortController = null
+}
+
+const clearSelection = () => {
+  selectedDocumentId.value = ''
+  readerPayload.value = null
+}
+
+const loadWorkspace = async (params = {}) => {
+  const requestId = beginWorkspaceRequest()
+  cancelWorkspaceRequest()
+  cancelSearchRequest()
+  cancelReaderRequest()
+  beginSearchRequest()
+  beginReaderRequest()
+  const controller = new AbortController()
+  workspaceAbortController = controller
+  loading.value = true
+  searchLoading.value = false
+  readerLoading.value = false
+  try {
+    const response = await api.getDirectoryWorkspace(params, { signal: controller.signal })
+    if (!isActiveWorkspaceRequest(requestId)) {
+      return
+    }
+    workspace.value = response?.data || emptyWorkspace()
+    searchDocuments.value = []
+    searchMode.value = false
+    query.value = ''
+    clearSelection()
+  } catch (_error) {
+    if (!isActiveWorkspaceRequest(requestId)) {
+      return
+    }
+    if (isCanceledError(_error)) {
+      return
+    }
+    workspace.value = emptyWorkspace()
+    searchDocuments.value = []
+    searchMode.value = false
+    query.value = ''
+    clearSelection()
+  } finally {
+    if (isActiveWorkspaceRequest(requestId)) {
+      loading.value = false
+    }
+    if (workspaceAbortController === controller) {
+      workspaceAbortController = null
+    }
+  }
+}
+
+const runScopedSearch = async () => {
+  if (interactionBusy.value) {
+    return
+  }
+
+  const trimmedQuery = query.value.trim()
+  if (!trimmedQuery || !workspace.value?.search_scope) {
+    cancelSearchRequest()
+    cancelReaderRequest()
+    beginSearchRequest()
+    beginReaderRequest()
+    searchLoading.value = false
+    readerLoading.value = false
+    searchDocuments.value = []
+    searchMode.value = false
+    clearSelection()
+    return
+  }
+
+  const requestId = beginSearchRequest()
+  cancelSearchRequest()
+  cancelReaderRequest()
+  beginReaderRequest()
+  const controller = new AbortController()
+  searchAbortController = controller
+  searchLoading.value = true
+  readerLoading.value = false
+  try {
+    const response = await api.workspaceSearch({
+      query: trimmedQuery,
+      mode: 'hybrid',
+      limit: 20,
+      group_by_document: true,
+      ...workspace.value.search_scope,
+    }, { signal: controller.signal })
+    if (!isActiveSearchRequest(requestId)) {
+      return
+    }
+    searchDocuments.value = response?.data?.documents || []
+    searchMode.value = true
+    clearSelection()
+  } catch (_error) {
+    if (!isActiveSearchRequest(requestId)) {
+      return
+    }
+    if (isCanceledError(_error)) {
+      return
+    }
+    searchDocuments.value = []
+    searchMode.value = false
+    clearSelection()
+  } finally {
+    if (isActiveSearchRequest(requestId)) {
+      searchLoading.value = false
+    }
+    if (searchAbortController === controller) {
+      searchAbortController = null
+    }
+  }
+}
+
+const selectDocument = async (documentId, anchorBlockId = null) => {
+  if (interactionBusy.value) {
+    return
+  }
+
+  const normalizedDocumentId = String(documentId || '').trim()
+  if (!normalizedDocumentId) {
+    cancelReaderRequest()
+    beginReaderRequest()
+    readerLoading.value = false
+    clearSelection()
+    return
+  }
+
+  const requestId = beginReaderRequest()
+  cancelReaderRequest()
+  const controller = new AbortController()
+  readerAbortController = controller
+  selectedDocumentId.value = normalizedDocumentId
+  readerLoading.value = true
+  try {
+    const response = await api.getDocumentReader(
+      normalizedDocumentId,
+      query.value.trim(),
+      anchorBlockId,
+      { signal: controller.signal },
+    )
+    if (!isActiveReaderRequest(requestId)) {
+      return
+    }
+    readerPayload.value = response?.data || null
+  } catch (_error) {
+    if (!isActiveReaderRequest(requestId)) {
+      return
+    }
+    if (isCanceledError(_error)) {
+      return
+    }
+    readerPayload.value = null
+  } finally {
+    if (isActiveReaderRequest(requestId)) {
+      readerLoading.value = false
+    }
+    if (readerAbortController === controller) {
+      readerAbortController = null
+    }
+  }
+}
+
+const openViewer = (document) => {
+  viewerDoc.value = document
   viewerVisible.value = true
 }
 
-const totalDocuments = ref(0)
-const classifiedCount = computed(() => recentDocs.value.filter(d => d.classification_result).length)
+const resetSearch = async () => {
+  if (interactionBusy.value) {
+    return
+  }
 
-const maxCount = computed(() => Math.max(...Object.values(stats.value.file_types || {1:1}), 1))
-const barWidth = (count) => Math.round((count / maxCount.value) * 100)
-
-const formatDate = (iso) => {
-  if (!iso) return ''
-  return iso.replace('T', ' ').slice(0, 16)
+  cancelSearchRequest()
+  cancelReaderRequest()
+  beginSearchRequest()
+  beginReaderRequest()
+  searchLoading.value = false
+  readerLoading.value = false
+  searchDocuments.value = []
+  searchMode.value = false
+  query.value = ''
+  clearSelection()
+  await loadWorkspace(workspace.value?.search_scope || {})
 }
 
 onMounted(async () => {
-  const [docsRes, statsRes] = await Promise.all([api.getDocumentList(1, 20), api.getStats()])
-  recentDocs.value = docsRes.data?.items || []
-  totalDocuments.value = docsRes.data?.total || recentDocs.value.length
-  stats.value = statsRes.data || {}
+  await loadWorkspace({})
+})
+
+onBeforeUnmount(() => {
+  cancelWorkspaceRequest()
+  cancelSearchRequest()
+  cancelReaderRequest()
+  beginWorkspaceRequest()
+  beginSearchRequest()
+  beginReaderRequest()
 })
 </script>
 
 <style scoped lang="scss">
-.dashboard { display: flex; flex-direction: column; gap: 20px; }
-
-/* 指标行 */
-.metrics-row {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-}
-
-.metric-card {
+.page-stack {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.scope-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
   gap: 14px;
-  padding: 16px 18px;
+  flex-wrap: wrap;
+
+  h3 {
+    margin-top: 4px;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--ink-strong);
+  }
 }
 
-.metric-icon {
-  width: 40px; height: 40px;
-  border-radius: 10px;
-  display: grid; place-items: center;
-  font-size: 18px;
-  flex-shrink: 0;
-
-  &--blue   { background: var(--blue-50);  color: var(--blue-600); }
-  &--green  { background: var(--green-50); color: var(--green-600); }
-  &--amber  { background: var(--amber-50); color: var(--amber-600); }
-  &--purple { background: #F5F3FF;         color: #7C3AED; }
+.scope-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+  font-weight: 600;
 }
 
-.metric-label {
+.scope-path {
   font-size: 12px;
   color: var(--ink-muted);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
-.metric-value {
-  display: block;
-  font-size: 26px;
-  font-weight: 700;
-  color: var(--ink-strong);
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-  margin-top: 2px;
-}
-
-/* 主网格 */
-.main-grid {
+.workspace-grid {
   display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 20px;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
 }
 
-.section-head {
+.main-column {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
 }
 
-.section-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink-strong);
-}
-
-.link-more {
-  font-size: 12px;
-  color: var(--blue-600);
-  &:hover { text-decoration: underline; }
-}
-
-/* 表格单元 */
-.file-cell {
-  display: flex; align-items: center; gap: 8px;
-
-  &.clickable {
-    cursor: pointer;
-    .filename-text { color: var(--blue-600); }
-    &:hover .filename-text { text-decoration: underline; }
+@media (max-width: 1024px) {
+  .workspace-grid {
+    grid-template-columns: 1fr;
   }
-}
-
-.filename-text {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  max-width: 180px;
-  font-size: 13px;
-  color: var(--ink-strong);
-}
-
-.text-muted { color: var(--ink-muted); font-size: 12px; }
-
-/* 文件类型彩点 */
-.file-type-dot, .type-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-}
-
-.dot-pdf   { background: #EF4444; }
-.dot-docx, .dot-doc  { background: var(--blue-600); }
-.dot-xlsx, .dot-xls  { background: var(--green-600); }
-.dot-pptx, .dot-ppt  { background: #F97316; }
-.dot-txt   { background: #8B5CF6; }
-.dot-eml, .dot-msg   { background: var(--amber-600); }
-
-/* 侧栏 */
-.side-col { display: flex; flex-direction: column; gap: 14px; }
-
-/* 类型分布 */
-.type-list { display: flex; flex-direction: column; gap: 10px; }
-
-.type-row {
-  display: flex; align-items: center; gap: 8px;
-}
-
-.type-info {
-  display: flex; align-items: center; gap: 6px;
-  width: 60px; flex-shrink: 0;
-}
-
-.type-name { font-size: 12px; color: var(--ink-body); }
-
-.type-bar-wrap {
-  flex: 1;
-  height: 6px;
-  background: var(--bg-subtle);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.type-bar {
-  height: 100%;
-  background: var(--blue-600);
-  border-radius: 999px;
-  transition: width 0.4s ease;
-  min-width: 4px;
-}
-
-.type-count {
-  font-size: 12px;
-  color: var(--ink-muted);
-  width: 24px;
-  text-align: right;
-}
-
-/* 快捷操作 */
-.action-list { display: flex; flex-direction: column; gap: 10px; }
-
-.action-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  transition: border-color 0.15s, background 0.15s;
-  cursor: pointer;
-
-  &:hover {
-    border-color: var(--blue-600);
-    background: var(--blue-50);
-  }
-}
-
-.action-icon {
-  width: 36px; height: 36px;
-  border-radius: 8px;
-  display: grid; place-items: center;
-  font-size: 16px;
-  flex-shrink: 0;
-
-  &--blue  { background: var(--blue-50);  color: var(--blue-600); }
-  &--green { background: var(--green-50); color: var(--green-600); }
-}
-
-.action-title { font-size: 13px; font-weight: 600; color: var(--ink-strong); }
-.action-desc  { font-size: 12px; color: var(--ink-muted); margin-top: 2px; }
-
-@media (max-width: 1100px) {
-  .metrics-row { grid-template-columns: repeat(2, 1fr); }
-  .main-grid   { grid-template-columns: 1fr; }
 }
 </style>

@@ -2,8 +2,8 @@
   <section class="search-toolbar shell-panel">
     <div class="toolbar-head">
       <div class="toolbar-title-group">
-        <h3>智能检索</h3>
-        <p>输入问题或关键词，检索文档库并进入提取文本阅读区。</p>
+        <h3>具体检索</h3>
+        <p>围绕公共文档、部门文档和业务分类执行检索，结果仅返回当前权限范围内的治理文档。</p>
       </div>
 
       <div class="toolbar-metrics">
@@ -35,9 +35,8 @@
         @update:model-value="updateField('mode', $event)"
       >
         <el-option label="混合检索" value="hybrid" />
-        <el-option label="语义检索" value="vector" />
+        <el-option label="向量检索" value="vector" />
         <el-option label="关键词检索" value="keyword" />
-        <el-option label="智能检索" value="smart" />
       </el-select>
 
       <el-button type="primary" :loading="loading" @click="emit('search')">检索文档</el-button>
@@ -75,18 +74,48 @@
       </label>
 
       <label class="field-block">
+        <span>一级分类</span>
+        <el-select
+          :model-value="form.visibility_scope"
+          clearable
+          placeholder="全部可见文档"
+          @update:model-value="updateField('visibility_scope', $event || '')"
+        >
+          <el-option label="公共文档" value="public" />
+          <el-option label="部门文档" value="department" />
+        </el-select>
+      </label>
+
+      <label class="field-block">
+        <span>归属部门</span>
+        <el-select
+          :model-value="form.department_id"
+          clearable
+          placeholder="全部部门"
+          @update:model-value="updateField('department_id', $event || '')"
+        >
+          <el-option
+            v-for="department in departments"
+            :key="department.id"
+            :label="department.name"
+            :value="department.id"
+          />
+        </el-select>
+      </label>
+
+      <label class="field-block">
         <span>业务分类</span>
         <el-select
-          :model-value="form.classification"
+          :model-value="form.business_category_id"
           clearable
-          placeholder="全部分类"
-          @update:model-value="updateField('classification', $event)"
+          placeholder="全部业务分类"
+          @update:model-value="updateField('business_category_id', $event || '')"
         >
           <el-option
             v-for="category in categories"
-            :key="category"
-            :label="category"
-            :value="category"
+            :key="category.id"
+            :label="formatCategoryLabel(category)"
+            :value="category.id"
           />
         </el-select>
       </label>
@@ -105,40 +134,6 @@
       </label>
     </div>
 
-    <div class="tuning-row">
-      <label v-if="form.mode === 'hybrid'" class="slider-block">
-        <span>语义权重</span>
-        <el-slider
-          :model-value="Math.round((form.alpha || 0.5) * 100)"
-          @update:model-value="updateAlpha"
-        />
-      </label>
-
-      <label v-if="form.mode !== 'keyword'" class="switch-block">
-        <span>启用重排序</span>
-        <el-switch
-          :model-value="form.use_rerank"
-          @update:model-value="updateField('use_rerank', $event)"
-        />
-      </label>
-
-      <label v-if="form.mode === 'smart'" class="switch-block">
-        <span>查询扩展</span>
-        <el-switch
-          :model-value="form.use_query_expansion"
-          @update:model-value="updateField('use_query_expansion', $event)"
-        />
-      </label>
-
-      <label v-if="form.mode === 'smart'" class="switch-block">
-        <span>LLM 重排</span>
-        <el-switch
-          :model-value="form.use_llm_rerank"
-          @update:model-value="updateField('use_llm_rerank', $event)"
-        />
-      </label>
-    </div>
-
     <div class="action-row">
       <div class="mode-note">
         <strong>{{ modeTitle }}</strong>
@@ -146,11 +141,6 @@
       </div>
 
       <div class="action-group">
-        <el-button :disabled="!canSummarize" @click="emit('summarize')">
-          <el-icon><Document /></el-icon>LLM 总结
-        </el-button>
-        <el-button :disabled="!canGenerateReport" @click="emit('generate-report')">分类报告</el-button>
-        <el-button :loading="rebuildingTopics" @click="emit('rebuild-topics')">重建主题树</el-button>
         <el-button @click="emit('reset')">清空</el-button>
       </div>
     </div>
@@ -159,7 +149,6 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Document } from '@element-plus/icons-vue'
 
 const props = defineProps({
   modelValue: {
@@ -170,23 +159,15 @@ const props = defineProps({
     type: Object,
     default: () => ({})
   },
+  departments: {
+    type: Array,
+    default: () => []
+  },
   categories: {
     type: Array,
     default: () => []
   },
   loading: {
-    type: Boolean,
-    default: false
-  },
-  canSummarize: {
-    type: Boolean,
-    default: false
-  },
-  canGenerateReport: {
-    type: Boolean,
-    default: false
-  },
-  rebuildingTopics: {
     type: Boolean,
     default: false
   }
@@ -195,10 +176,7 @@ const props = defineProps({
 const emit = defineEmits([
   'update:modelValue',
   'search',
-  'reset',
-  'summarize',
-  'generate-report',
-  'rebuild-topics'
+  'reset'
 ])
 
 const form = computed(() => props.modelValue || {})
@@ -209,19 +187,15 @@ const modeMeta = computed(() => {
   const dictionary = {
     hybrid: {
       title: '混合检索',
-      description: '向量召回和关键词召回一起工作，适合办公资料的日常查找。'
+      description: '向量召回与关键词召回并行，适合跨部门治理资料的日常检索。'
     },
     vector: {
-      title: '语义检索',
-      description: '更适合问句和概念性检索，优先理解语义接近的文档。'
+      title: '向量检索',
+      description: '优先匹配内容接近的资料，适合制度问答和背景检索。'
     },
     keyword: {
       title: '关键词检索',
-      description: '更适合项目代号、文件名、术语和精确短语。'
-    },
-    smart: {
-      title: '智能检索',
-      description: '在混合检索基础上叠加查询扩展与 LLM 重排，质量更高但耗时更长。'
+      description: '适合项目代号、文件名、条款术语和精确短语检索。'
     }
   }
   return dictionary[currentMode] || dictionary.hybrid
@@ -230,15 +204,16 @@ const modeMeta = computed(() => {
 const modeTitle = computed(() => modeMeta.value.title)
 const modeDescription = computed(() => modeMeta.value.description)
 
+const formatCategoryLabel = (category) => {
+  const scopeLabel = category?.scope_type === 'department' ? '部门' : '公共'
+  return `${category?.name || category?.id || '未命名分类'} · ${scopeLabel}`
+}
+
 const updateField = (field, value) => {
   emit('update:modelValue', {
     ...form.value,
     [field]: value
   })
-}
-
-const updateAlpha = (value) => {
-  updateField('alpha', value / 100)
 }
 </script>
 
@@ -322,13 +297,11 @@ const updateAlpha = (value) => {
 
 .filter-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
-.field-block,
-.switch-block,
-.slider-block {
+.field-block {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -338,21 +311,6 @@ const updateAlpha = (value) => {
     font-weight: 500;
     color: var(--ink-muted);
   }
-}
-
-.tuning-row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.switch-block,
-.slider-block {
-  min-width: 160px;
-  padding: 10px 14px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--bg-subtle);
 }
 
 .action-row {
