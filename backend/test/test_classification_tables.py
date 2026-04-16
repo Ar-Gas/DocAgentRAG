@@ -97,37 +97,31 @@ def test_generate_classification_table_api_returns_service_payload(monkeypatch):
     mock_generate.assert_called_once_with("预算", [{"document_id": "doc-1"}], persist=True)
 
 
-def test_classify_updates_filepath_when_document_is_moved(monkeypatch):
+def test_classify_returns_topic_tree_assignment_payload(monkeypatch):
     monkeypatch.setattr(
         classification_service_module,
         "get_document_info",
         lambda document_id: {
             "id": document_id,
             "filename": "guide.pdf",
-            "filepath": "/old/path/guide.pdf",
         },
     )
 
-    monkeypatch.setattr(
-        classification_service_module,
-        "classify_document",
-        lambda doc_info: {
-            "classification_result": {
-                "categories": ["学术论文-教育"],
-                "confidence": 0.88,
-                "actual_path": "/new/path/guide.pdf",
-                "suggested_folders": ["学术论文-教育/guide.pdf"],
+    service = ClassificationService()
+    service.topic_tree_service = Mock(
+        classify_document=Mock(
+            return_value={
+                "document_id": "doc-1",
+                "topic_id": "topic-1-1",
+                "topic_label": "年度审计",
+                "topic_path": ["财务治理", "年度审计"],
+                "confidence": 1.0,
             }
-        },
+        )
     )
 
-    save_mock = Mock()
-    update_mock = Mock()
-    monkeypatch.setattr(classification_service_module, "save_classification_result", save_mock)
-    monkeypatch.setattr(classification_service_module, "update_document_info", update_mock)
+    result = service.classify("doc-1")
 
-    result = ClassificationService().classify("doc-1")
-
-    assert result["categories"] == ["学术论文-教育"]
-    save_mock.assert_called_once_with("doc-1", "学术论文-教育")
-    update_mock.assert_called_once_with("doc-1", {"filepath": "/new/path/guide.pdf"})
+    assert result["categories"] == ["财务治理", "年度审计"]
+    assert result["topic_id"] == "topic-1-1"
+    assert result["topic_label"] == "年度审计"

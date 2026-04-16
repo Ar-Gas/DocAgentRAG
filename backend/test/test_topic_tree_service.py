@@ -128,6 +128,7 @@ def _patch_common_dependencies(monkeypatch, cached=None):
     monkeypatch.setattr(topic_tree_service_module, "get_all_documents", _sample_documents)
     monkeypatch.setattr(topic_tree_service_module, "get_document_content_record", _content_record)
     monkeypatch.setattr(topic_tree_service_module, "list_document_segments", _segments)
+    monkeypatch.setattr(topic_tree_service_module, "update_document_info", lambda document_id, updated_info: True)
     monkeypatch.setattr(topic_tree_service_module, "get_metadata_store", lambda data_dir=None: store)
     monkeypatch.setattr(topic_tree_service_module, "TopicClustering", FakeTopicClustering, raising=False)
     monkeypatch.setattr(topic_tree_service_module, "TopicLabeler", FakeTopicLabeler, raising=False)
@@ -179,23 +180,46 @@ def test_get_topic_tree_ignores_legacy_cached_payload_and_rebuilds(monkeypatch):
     assert tree["topics"][0]["label"] == "财务治理"
 
 
-def test_build_document_vectors_uses_summary_embedding_when_chunk_vectors_are_missing(monkeypatch):
+def test_build_document_vectors_use_block_payload_before_summary_fallback(monkeypatch):
     from app.services.topic_clustering import TopicClustering
     import app.services.topic_clustering as topic_clustering_module
 
     monkeypatch.setattr(
         topic_clustering_module,
         "list_document_chunk_embeddings",
-        lambda document_id: (
-            [{"embedding": [3.0, 0.0], "metadata": {"chunk_index": 0}, "content": "年度审计计划"}]
-            if document_id == "doc-1"
-            else []
+        lambda document_id: (_ for _ in ()).throw(AssertionError("legacy chunk embeddings should not be used")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_clustering_module,
+        "get_document_artifact",
+        lambda document_id, artifact_type="reader_blocks": (
+            {
+                "payload": {
+                    "blocks": [
+                        {
+                            "block_id": "doc-1:block-v1:0",
+                            "block_index": 0,
+                            "text": "年度审计计划与范围",
+                        }
+                    ]
+                }
+            }
+            if document_id == "doc-1" and artifact_type == "reader_blocks"
+            else None
         ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_clustering_module,
+        "list_document_segments",
+        lambda document_id: [],
+        raising=False,
     )
     monkeypatch.setattr(
         topic_clustering_module,
         "embed_text",
-        lambda text: [0.0, 2.0] if "供应商比价" in text else None,
+        lambda text: [3.0, 0.0] if "年度审计" in text else ([0.0, 2.0] if "供应商比价" in text else None),
     )
 
     clustering = TopicClustering()

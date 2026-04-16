@@ -1,9 +1,12 @@
 import os
 import sys
+from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import app.services.classification_service as classification_service_module  # noqa: E402
 import app.services.document_service as document_service_module  # noqa: E402
 import app.services.indexing_service as indexing_service_module  # noqa: E402
 from app.services.document_service import DocumentService  # noqa: E402
@@ -305,17 +308,113 @@ def test_index_document_restores_old_entries_when_add_fails_after_delete(monkeyp
 
 
 def test_rechunk_triggers_block_reindex_without_breaking_chunk_response(monkeypatch):
-    expected_chunk_status = {"exists": True, "document_id": "doc-1", "chunk_count": 3}
+    expected_block_status = {
+        "exists": True,
+        "document_id": "doc-1",
+        "block_index_status": "ready",
+        "block_count": 3,
+        "has_blocks": True,
+        "chunk_count": 3,
+        "has_chunks": True,
+    }
     mock_indexing_service = Mock()
 
-    monkeypatch.setattr(document_service_module, "re_chunk_document", lambda document_id, use_refiner: True)
-    monkeypatch.setattr(document_service_module, "check_document_chunks", lambda document_id: expected_chunk_status)
+    monkeypatch.setattr(
+        document_service_module,
+        "re_chunk_document",
+        lambda document_id, use_refiner: (_ for _ in ()).throw(AssertionError("legacy rechunk helper should not run")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        document_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "block_index_status": "ready",
+            "block_count": 3,
+            "index_version": "block-v1",
+            "last_indexed_at": "2026-04-16T12:00:00",
+            "block_index_error": None,
+        },
+    )
+    fake_collection = Mock()
+    fake_collection.get.return_value = {"ids": ["doc-1:block-v1:0", "doc-1:block-v1:1", "doc-1:block-v1:2"]}
+    monkeypatch.setattr(document_service_module, "get_block_collection", lambda: fake_collection)
 
     service = DocumentService()
     service.get_document = Mock(return_value={"id": "doc-1"})
     service.indexing_service = mock_indexing_service
+    mock_indexing_service.index_document.return_value = {"document_id": "doc-1", "block_index_status": "ready"}
 
     result = service.rechunk("doc-1", use_refiner=True)
 
     mock_indexing_service.index_document.assert_called_once_with("doc-1", force=True)
-    assert result == expected_chunk_status
+    assert result["document_id"] == expected_block_status["document_id"]
+    assert result["block_index_status"] == expected_block_status["block_index_status"]
+    assert result["block_count"] == expected_block_status["block_count"]
+    assert result["has_blocks"] is True
+    assert result["chunk_count"] == expected_block_status["chunk_count"]
+    assert result["has_chunks"] is True
+
+
+def test_upload_indexes_blocks_directly_without_legacy_chunk_write(monkeypatch, tmp_path):
+    target_doc_dir = tmp_path / "doc"
+    target_doc_dir.mkdir(parents=True)
+    monkeypatch.setattr(document_service_module, "DOC_DIR", target_doc_dir)
+
+    extracted = SimpleNamespace(success=True, content="第一段\n第二段", parser_name="text", error=None)
+    service = DocumentService()
+    service.extraction_service = Mock(extract=Mock(return_value=extracted))
+    service.indexing_service = Mock(index_document=Mock(return_value={"document_id": "doc-1", "block_index_status": "ready"}))
+
+    captured = {}
+
+    def fake_save_summary(filepath, full_content=None, parser_name=None, display_filename=None):
+        captured["filepath"] = filepath
+        captured["full_content"] = full_content
+        captured["parser_name"] = parser_name
+        captured["display_filename"] = display_filename
+        return (
+            "doc-1",
+            {
+                "id": "doc-1",
+                "filename": display_filename,
+                "filepath": filepath,
+                "file_type": ".txt",
+                "created_at_iso": "2026-04-16T12:00:00",
+            },
+        )
+
+    monkeypatch.setattr(document_service_module, "save_document_summary_for_classification", fake_save_summary)
+    monkeypatch.setattr(
+        document_service_module,
+        "save_document_to_chroma",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy chunk write should not run")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        document_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "notes.txt",
+            "filepath": captured.get("filepath", ""),
+            "file_type": ".txt",
+            "created_at_iso": "2026-04-16T12:00:00",
+            "block_index_status": "ready",
+            "block_count": 2,
+            "classification_result": "年度审计",
+        },
+    )
+    cache = Mock()
+    monkeypatch.setattr(document_service_module, "get_search_cache", lambda: cache)
+    monkeypatch.setattr(classification_service_module, "ClassificationService", lambda: Mock(classify=Mock(return_value={})))
+
+    result = service.upload("notes.txt", BytesIO("第一段\n第二段".encode("utf-8")))
+
+    service.indexing_service.index_document.assert_called_once_with("doc-1", force=True)
+    cache.invalidate_all.assert_called_once_with()
+    assert captured["display_filename"] == "notes.txt"
+    assert captured["full_content"] == "第一段\n第二段"
+    assert result["id"] == "doc-1"
+    assert result["block_index_status"] == "ready"

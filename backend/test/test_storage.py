@@ -14,8 +14,7 @@ from app.infra import vector_store as vector_store_module  # noqa: E402
 from app.infra.repositories.document_content_repository import DocumentContentRepository  # noqa: E402
 from app.infra.repositories.document_repository import DocumentRepository  # noqa: E402
 from app.infra.repositories.document_segment_repository import DocumentSegmentRepository  # noqa: E402
-from app.services import document_vector_index_service as document_vector_index_service_module  # noqa: E402
-from app.services.document_vector_index_service import DocumentVectorIndexService, split_text_into_chunks  # noqa: E402
+from app.services.document_vector_index_service import DocumentVectorIndexService  # noqa: E402
 
 
 @pytest.fixture()
@@ -90,10 +89,11 @@ def test_document_repository_list_all_and_list_by_classification(isolated_compon
     assert {item["id"] for item in finance_docs} == {"doc-1", "doc-3"}
 
 
-def test_init_chroma_client_returns_client_and_collection(monkeypatch, isolated_components):
+def test_init_chroma_client_returns_client_and_block_collection(monkeypatch, isolated_components):
     client = Mock()
-    collection = Mock()
-    client.get_or_create_collection.return_value = collection
+    block_collection = Mock()
+    client.get_collection.side_effect = RuntimeError("missing")
+    client.get_or_create_collection.return_value = block_collection
 
     vector_store_module.reset_clients()
     monkeypatch.setattr(vector_store_module, "doubao_multimodal_embed", lambda text: None)
@@ -109,93 +109,22 @@ def test_init_chroma_client_returns_client_and_collection(monkeypatch, isolated_
     )
 
     assert initialized_client is client
-    assert initialized_collection is collection
+    assert initialized_collection is block_collection
 
 
 def test_save_document_summary_for_classification_persists_content(isolated_components, tmp_path: Path):
     source = tmp_path / "notes.txt"
     source.write_text("项目会议纪要", encoding="utf-8")
-    bridge_calls = []
 
     document_id, doc_info = isolated_components.vector_index_service.save_document_summary_for_classification(
         str(source),
         full_content="项目会议纪要",
         parser_name="text",
-        classification_bridge_add=lambda payload: bridge_calls.append(payload),
     )
 
     assert document_id
     assert doc_info["filename"] == "notes.txt"
-    assert bridge_calls and bridge_calls[0]["id"] == document_id
     assert isolated_components.content_repository.get(document_id)["full_content"] == "项目会议纪要"
-
-
-def test_save_document_to_chroma_persists_segments(monkeypatch, isolated_components, tmp_path: Path):
-    source = tmp_path / "notes.txt"
-    source.write_text("第一句。第二句。第三句。", encoding="utf-8")
-    isolated_components.document_repository.upsert(
-        {
-            "id": "doc-1",
-            "filename": "notes.txt",
-            "filepath": str(source),
-            "file_type": ".txt",
-            "created_at_iso": "2024-03-09T00:00:00",
-        }
-    )
-
-    collection = Mock()
-    monkeypatch.setattr(
-        document_vector_index_service_module,
-        "split_text_into_chunks",
-        lambda text, max_length=0, min_length=0: ["第一句。", "第二句。", "第三句。"],
-    )
-
-    assert (
-        isolated_components.vector_index_service.save_document_to_chroma(
-            str(source),
-            document_id="doc-1",
-            use_refiner=False,
-            collection=collection,
-            update_document_info=isolated_components.document_repository.update,
-        )
-        is True
-    )
-    assert collection.add.called is True
-    segments = isolated_components.segment_repository.list("doc-1")
-    assert len(segments) == 3
-
-
-def test_retrieve_from_chroma_and_delete_document(isolated_components):
-    isolated_components.document_repository.upsert({"id": "doc-1", "filename": "notes.txt", "filepath": "/tmp/notes.txt"})
-    isolated_components.content_repository.save("doc-1", full_content="全文", preview_content="摘要")
-
-    collection = Mock()
-    collection.query.return_value = {"documents": [["Result 1"]]}
-    collection.get.return_value = {"ids": ["doc-1_chunk_0"]}
-
-    assert isolated_components.vector_index_service.retrieve_from_chroma("query", collection=collection) == {
-        "documents": [["Result 1"]]
-    }
-    assert (
-        isolated_components.vector_index_service.delete_document(
-            "doc-1",
-            collection=collection,
-            delete_document_record=isolated_components.document_repository.delete,
-            classification_bridge_delete=lambda document_id: None,
-        )
-        is True
-    )
-    collection.delete.assert_called_once_with(ids=["doc-1_chunk_0"])
-    assert isolated_components.document_repository.get("doc-1") is None
-
-
-def test_split_text_into_chunks():
-    chunks = split_text_into_chunks("这是第一句。这是第二句！这是第三句？", max_length=6, min_length=2)
-    assert len(chunks) == 3
-    assert chunks[0].endswith("。")
-
-    english_chunks = split_text_into_chunks("This is one. This is two! This is three?", max_length=18, min_length=5)
-    assert len(english_chunks) >= 2
 
 
 def test_resolve_document_filepath_repairs_metadata_when_file_has_been_moved(isolated_components, tmp_path: Path):

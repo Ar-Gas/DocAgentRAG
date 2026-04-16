@@ -1,8 +1,15 @@
 from fastapi import APIRouter
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
 import logging
 
+from app.schemas.classification import (
+    ClassificationRequest,
+    ClassificationResponse,
+    CategoryListResponse,
+    MultiLevelClassificationRequest,
+    TopicTreeBuildRequest,
+    ClassificationTableGenerateRequest,
+    ClassificationTableListRequest,
+)
 from app.services.classification_service import ClassificationService
 from app.services.errors import AppServiceError
 from api import success, BusinessException
@@ -11,37 +18,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 classification_service = ClassificationService()
-
-class ClassificationRequest(BaseModel):
-    document_id: str
-
-class ClassificationResponse(BaseModel):
-    document_id: str
-    filename: str
-    categories: List[str]
-    confidence: float
-    suggested_folders: List[str]
-
-class CategoryListResponse(BaseModel):
-    categories: List[str]
-    document_count: Dict[str, int]
-
-class MultiLevelClassificationRequest(BaseModel):
-    force_rebuild: bool = False
-
-
-class TopicTreeBuildRequest(BaseModel):
-    force_rebuild: bool = False
-
-
-class ClassificationTableGenerateRequest(BaseModel):
-    query: str
-    results: List[Dict[str, Any]]
-    persist: bool = True
-
-
-class ClassificationTableListRequest(BaseModel):
-    limit: int = 50
 
 @router.post("/classify", summary="对单个文档进行智能分类")
 async def classify_single_document(request: ClassificationRequest):
@@ -77,6 +53,23 @@ async def get_all_categories():
 @router.get("/documents/{category}", summary="获取指定分类下的文档")
 async def get_documents_by_category(category: str):
     return success(data=classification_service.get_documents_by_category(category))
+
+@router.get("/tree", summary="获取当前分类树")
+async def get_classification_tree():
+    try:
+        return success(data=classification_service.get_topic_tree(), message="获取主题树成功")
+    except Exception as e:
+        logger.error(f"获取主题树失败: {str(e)}")
+        raise BusinessException(code=1005, detail=f"获取主题树失败: {str(e)}")
+
+@router.post("/tree/build", summary="重建当前分类树")
+async def build_classification_tree(request: TopicTreeBuildRequest):
+    try:
+        tree = classification_service.build_topic_tree(request.force_rebuild)
+        return success(data=tree, message="主题树构建成功")
+    except Exception as e:
+        logger.error(f"重建主题树失败: {str(e)}")
+        raise BusinessException(code=1005, detail=f"重建主题树失败: {str(e)}")
 
 @router.post("/multi-level/build", summary="构建多级分类树")
 async def build_multi_level_classification(request: MultiLevelClassificationRequest):

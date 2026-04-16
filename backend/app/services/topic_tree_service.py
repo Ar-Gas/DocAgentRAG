@@ -39,6 +39,10 @@ def list_document_segments(document_id: str):
     return _segment_repository().list(document_id)
 
 
+def update_document_info(document_id: str, updated_info: Dict[str, Any]) -> bool:
+    return _document_repository().update(document_id, updated_info)
+
+
 class TopicTreeService:
     artifact_name = "topic_tree"
     schema_version = 2
@@ -52,6 +56,7 @@ class TopicTreeService:
     def get_topic_tree(self) -> Dict[str, Any]:
         cached = self._load_valid_cached_artifact()
         if cached:
+            self._sync_document_topic_assignments(cached)
             return cached
         return self.build_topic_tree(force_rebuild=True)
 
@@ -85,7 +90,98 @@ class TopicTreeService:
             excluded_documents=len(excluded_documents),
         )
         self._store().save_artifact(self.artifact_name, payload)
+        self._sync_document_topic_assignments(payload)
         return payload
+
+    def classify_document(self, document_id: str, force_rebuild: bool = False) -> Dict[str, Any]:
+        tree = self.build_topic_tree(force_rebuild=True) if force_rebuild else self.get_topic_tree()
+        assignment = self._find_document_assignment(tree, document_id)
+        if assignment:
+            return assignment
+        raise RuntimeError(f"document {document_id} is not assigned to any topic node")
+
+    def get_category_overview(self) -> Dict[str, Any]:
+        tree = self.get_topic_tree()
+        categories: List[str] = []
+        document_count: Dict[str, int] = {}
+
+        for node, path in self._iter_leaf_topics(tree.get("topics") or []):
+            label = node.get("label", "")
+            if not label:
+                continue
+            categories.append(label)
+            document_count[label] = int(node.get("document_count") or len(node.get("documents") or []))
+
+        return {
+            "categories": sorted(categories),
+            "document_count": document_count,
+        }
+
+    def get_documents_by_topic(self, topic_key: str) -> Dict[str, Any]:
+        normalized_key = (topic_key or "").strip()
+        if not normalized_key:
+            return {
+                "category": "",
+                "topic_id": None,
+                "topic_path": [],
+                "total": 0,
+                "documents": [],
+            }
+
+        tree = self.get_topic_tree()
+        for node, path in self._iter_topic_nodes(tree.get("topics") or []):
+            if normalized_key not in {node.get("label"), node.get("topic_id")}:
+                continue
+            documents = [
+                self._serialize_topic_document(doc, path)
+                for doc in self._collect_documents(node)
+            ]
+            documents.sort(key=lambda item: (item.get("classification_result") or "", item.get("filename") or ""))
+            return {
+                "category": node.get("label", normalized_key),
+                "topic_id": node.get("topic_id"),
+                "topic_path": path,
+                "total": len(documents),
+                "documents": documents,
+            }
+
+        return {
+            "category": normalized_key,
+            "topic_id": None,
+            "topic_path": [],
+            "total": 0,
+            "documents": [],
+        }
+
+    def get_legacy_tree_payload(self) -> Dict[str, Any]:
+        tree = self.get_topic_tree()
+        legacy_tree: Dict[str, Dict[str, List[str]]] = {}
+        for topic in tree.get("topics") or []:
+            parent_label = topic.get("label", "")
+            children = topic.get("children") or []
+            legacy_tree[parent_label] = {
+                child.get("label", ""): [
+                    item.get("document_id")
+                    for item in child.get("documents") or []
+                    if item.get("document_id")
+                ]
+                for child in children
+                if child.get("label")
+            }
+            if not children and topic.get("documents"):
+                legacy_tree[parent_label] = {
+                    parent_label: [
+                        item.get("document_id")
+                        for item in topic.get("documents") or []
+                        if item.get("document_id")
+                    ]
+                }
+        return {
+            "generated_at": tree.get("generated_at", ""),
+            "total_documents": tree.get("total_documents", 0),
+            "topic_count": tree.get("topic_count", 0),
+            "tree": legacy_tree,
+        }
 
     def _store(self):
         return get_metadata_store(data_dir=DATA_DIR)
@@ -230,6 +326,110 @@ class TopicTreeService:
             "topic_count": len(topics),
             "generation_method": self.generation_method,
             "topics": topics,
+        }
+
+    def _sync_document_topic_assignments(self, payload: Dict[str, Any]) -> None:
+        documents = [
+            doc
+            for doc in get_all_documents()
+            if doc.get("id")
+        ]
+        document_lookup = {
+            doc.get("id"): doc
+            for doc in documents
+            if doc.get("id")
+        }
+        assignments = self._build_assignment_lookup(payload)
+
+        generated_at = payload.get("generated_at")
+        for document_id, doc_info in document_lookup.items():
+            assignment = assignments.get(document_id)
+            if assignment:
+                topic_path = list(assignment.get("topic_path") or [])
+                update_payload = {
+                    "classification_result": assignment.get("topic_label"),
+                    "topic_node_id": assignment.get("topic_id"),
+                    "topic_label": assignment.get("topic_label"),
+                    "topic_path": topic_path,
+                    "topic_parent_label": topic_path[-2] if len(topic_path) > 1 else None,
+                    "topic_tree_generated_at": generated_at,
+                }
+            else:
+                update_payload = {
+                    "classification_result": None,
+                    "topic_node_id": None,
+                    "topic_label": None,
+                    "topic_path": [],
+                    "topic_parent_label": None,
+                    "topic_tree_generated_at": generated_at,
+                }
+
+            if all(doc_info.get(key) == value for key, value in update_payload.items()):
+                continue
+            update_document_info(document_id, update_payload)
+
+    def _build_assignment_lookup(self, payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        lookup: Dict[str, Dict[str, Any]] = {}
+        for node, path in self._iter_leaf_topics(payload.get("topics") or []):
+            for doc in node.get("documents") or []:
+                document_id = doc.get("document_id")
+                if not document_id:
+                    continue
+                lookup[document_id] = {
+                    "document_id": document_id,
+                    "topic_id": node.get("topic_id"),
+                    "topic_label": node.get("label", ""),
+                    "topic_path": path,
+                    "confidence": 1.0,
+                }
+        return lookup
+
+    def _find_document_assignment(self, payload: Dict[str, Any], document_id: str) -> Dict[str, Any] | None:
+        return self._build_assignment_lookup(payload).get(document_id)
+
+    def _iter_topic_nodes(
+        self,
+        topics: List[Dict[str, Any]],
+        parent_path: List[str] | None = None,
+    ) -> List[tuple[Dict[str, Any], List[str]]]:
+        parent_path = list(parent_path or [])
+        rows: List[tuple[Dict[str, Any], List[str]]] = []
+        for topic in topics:
+            current_path = [*parent_path, topic.get("label", "")]
+            rows.append((topic, current_path))
+            rows.extend(self._iter_topic_nodes(topic.get("children") or [], current_path))
+        return rows
+
+    def _iter_leaf_topics(
+        self,
+        topics: List[Dict[str, Any]],
+        parent_path: List[str] | None = None,
+    ) -> List[tuple[Dict[str, Any], List[str]]]:
+        leaves: List[tuple[Dict[str, Any], List[str]]] = []
+        for topic, path in self._iter_topic_nodes(topics, parent_path):
+            if not topic.get("children"):
+                leaves.append((topic, path))
+        return leaves
+
+    def _collect_documents(self, node: Dict[str, Any]) -> List[Dict[str, Any]]:
+        documents = list(node.get("documents") or [])
+        for child in node.get("children") or []:
+            documents.extend(self._collect_documents(child))
+        return documents
+
+    @staticmethod
+    def _serialize_topic_document(doc: Dict[str, Any], topic_path: List[str]) -> Dict[str, Any]:
+        label = topic_path[-1] if topic_path else None
+        return {
+            "id": doc.get("document_id"),
+            "document_id": doc.get("document_id"),
+            "filename": doc.get("filename", ""),
+            "file_type": doc.get("file_type", ""),
+            "classification_result": label,
+            "topic_path": topic_path,
+            "created_at_iso": doc.get("created_at_iso"),
+            "excerpt": doc.get("excerpt", ""),
+            "keywords": doc.get("keywords", []),
         }
 
     @staticmethod

@@ -72,9 +72,8 @@ def _load_main_module(fake_indexing_service_cls):
 
     vector_store_module = types.ModuleType("app.infra.vector_store")
     vector_store_module.init_chroma_client = lambda: (object(), object())
-    vector_store_module.get_chroma_collection = lambda: None
     vector_store_module._chroma_client = object()
-    vector_store_module._chroma_collection = object()
+    vector_store_module._chroma_block_collection = object()
 
     indexing_service_module = types.ModuleType("app.services.indexing_service")
     indexing_service_module.IndexingService = fake_indexing_service_cls
@@ -184,4 +183,3 @@ def test_startup_block_check_can_auto_rebuild_candidates(monkeypatch):
 
     assert payload["rebuild_candidates"] == ["doc-1", "doc-2"]
     assert calls == [("doc-1", True), ("doc-2", True)]
-

@@ -6,19 +6,59 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 
 from app.infra.embedding_provider import embed_text
-from app.infra.vector_store import get_chroma_collection
-from app.services.document_vector_index_service import DocumentVectorIndexService
+from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
+from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
+from app.infra.vector_store import get_block_collection
+from config import DATA_DIR
 
 
-def _vector_index_service() -> DocumentVectorIndexService:
-    return DocumentVectorIndexService()
+def _artifact_repository() -> DocumentArtifactRepository:
+    return DocumentArtifactRepository(data_dir=DATA_DIR)
 
 
-def list_document_chunk_embeddings(document_id: str) -> List[Dict[str, Any]]:
-    return _vector_index_service().list_document_chunk_embeddings(
-        document_id,
-        collection=get_chroma_collection(),
-    )
+def _segment_repository() -> DocumentSegmentRepository:
+    return DocumentSegmentRepository(data_dir=DATA_DIR)
+
+
+def get_document_artifact(document_id: str, artifact_type: str = "reader_blocks") -> Dict[str, Any] | None:
+    return _artifact_repository().get(document_id, artifact_type)
+
+
+def list_document_segments(document_id: str) -> List[Dict[str, Any]]:
+    return _segment_repository().list(document_id)
+
+
+def list_document_block_embeddings(document_id: str) -> List[Dict[str, Any]]:
+    collection = get_block_collection()
+    if not document_id or collection is None:
+        return []
+
+    try:
+        payload = collection.get(
+            where={"document_id": document_id},
+            include=["embeddings", "metadatas", "documents"],
+        )
+    except Exception:
+        return []
+
+    embeddings = payload.get("embeddings") or []
+    metadatas = payload.get("metadatas") or []
+    documents = payload.get("documents") or []
+    row_count = max(len(embeddings), len(metadatas), len(documents))
+
+    results: List[Dict[str, Any]] = []
+    for index in range(row_count):
+        embedding = embeddings[index] if index < len(embeddings) else None
+        if embedding is None:
+            continue
+        results.append(
+            {
+                "embedding": list(embedding),
+                "metadata": metadatas[index] if index < len(metadatas) else {},
+                "content": documents[index] if index < len(documents) else "",
+            }
+        )
+    return results
 
 
 class TopicClustering:
@@ -108,18 +148,25 @@ class TopicClustering:
         return ranked[:actual_limit]
 
     def _derive_document_vector(self, document: Dict[str, Any]) -> List[float] | None:
-        chunk_vectors = []
-        for item in list_document_chunk_embeddings(document.get("document_id", "")):
+        block_vectors = []
+        for item in list_document_block_embeddings(document.get("document_id", "")):
             embedding = item.get("embedding")
             normalized = self._normalize_vector(embedding)
             if normalized is not None:
-                chunk_vectors.append(normalized)
+                block_vectors.append(normalized)
 
-        if chunk_vectors:
-            averaged = np.mean(np.asarray(chunk_vectors, dtype=float), axis=0)
+        if block_vectors:
+            averaged = np.mean(np.asarray(block_vectors, dtype=float), axis=0)
             normalized_average = self._normalize_vector(averaged.tolist())
             if normalized_average is not None:
                 return normalized_average
+
+        block_text_source = self._build_block_text_source(document.get("document_id", ""))
+        if block_text_source:
+            embedded_block_text = embed_text(block_text_source)
+            normalized_block_text = self._normalize_vector(embedded_block_text)
+            if normalized_block_text is not None:
+                return normalized_block_text
 
         summary_source = (
             document.get("summary_source")
@@ -132,6 +179,27 @@ class TopicClustering:
 
         embedded = embed_text(summary_source)
         return self._normalize_vector(embedded)
+
+    def _build_block_text_source(self, document_id: str) -> str:
+        if not document_id:
+            return ""
+
+        artifact = get_document_artifact(document_id, "reader_blocks") or {}
+        blocks = (artifact.get("payload") or {}).get("blocks") or []
+        artifact_text = "\n".join(
+            block.get("text", "").strip()
+            for block in sorted(blocks, key=lambda item: item.get("block_index", 0))
+            if block.get("text")
+        )
+        if artifact_text.strip():
+            return artifact_text[:2500]
+
+        segment_text = "\n".join(
+            segment.get("content", "").strip()
+            for segment in sorted(list_document_segments(document_id), key=lambda item: item.get("segment_index", 0))
+            if segment.get("content")
+        )
+        return segment_text[:2500]
 
     def _run_kmeans(self, vectors: np.ndarray, level: int) -> Tuple[np.ndarray, np.ndarray]:
         sample_count = len(vectors)

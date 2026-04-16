@@ -55,11 +55,17 @@ export const api = {
   },
 
   // 文档分类
+  classifyDocument: (documentId) => {
+    return request.post('/classification/classify', { document_id: documentId })
+  },
   reclassifyDocument: (documentId) => {
     return request.post(`/classification/reclassify/${documentId}`)
   },
   getCategories: () => {
     return request.get('/classification/categories')
+  },
+  getDocumentsByCategory: (category) => {
+    return request.get(`/classification/documents/${category}`)
   },
 
   // 语义主题树

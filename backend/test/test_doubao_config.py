@@ -291,9 +291,8 @@ class DoubaoConfigTests(unittest.TestCase):
 
         vector_store_module = types.ModuleType("app.infra.vector_store")
         vector_store_module.init_chroma_client = lambda: (None, None)
-        vector_store_module.get_chroma_collection = lambda: None
         vector_store_module._chroma_client = None
-        vector_store_module._chroma_collection = None
+        vector_store_module._chroma_block_collection = None
 
         class _FakeIndexingService:
             def audit_block_index(self):
@@ -308,9 +307,6 @@ class DoubaoConfigTests(unittest.TestCase):
         class _FakeDocumentVectorIndexService:
             def __init__(self, document_repository=None):
                 self.document_repository = document_repository
-
-            def save_document_to_chroma(self, *args, **kwargs):
-                return True
 
         document_vector_index_service_module = types.ModuleType("app.services.document_vector_index_service")
         document_vector_index_service_module.DocumentVectorIndexService = _FakeDocumentVectorIndexService

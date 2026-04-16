@@ -1,20 +1,12 @@
 from typing import Dict, List
 
+from app.infra.file_utils import create_classification_directory
 from app.infra.repositories.classification_table_repository import ClassificationTableRepository
 from app.infra.repositories.document_repository import DocumentRepository
-from app.infra.vector_store import get_chroma_collection
-from app.services.document_vector_index_service import DocumentVectorIndexService
 from app.services.errors import AppServiceError
-from app.services.legacy_classification_tree_bridge import update_classification_tree_after_reclassify as _bridge_reclassify
 from app.services.topic_tree_service import TopicTreeService
-from config import BASE_DIR, DATA_DIR
-from utils.classifier import classify_document, create_classification_directory
+from config import DATA_DIR
 from utils.smart_retrieval import generate_classification_table
-from utils.multi_level_classifier import (
-    build_and_save_classification_tree,
-    get_classification_tree,
-    get_multi_level_classifier,
-)
 
 
 def _document_repository() -> DocumentRepository:
@@ -25,58 +17,12 @@ def _classification_table_repository() -> ClassificationTableRepository:
     return ClassificationTableRepository(data_dir=DATA_DIR)
 
 
-def _vector_index_service() -> DocumentVectorIndexService:
-    return DocumentVectorIndexService(document_repository=_document_repository())
-
-
 def get_document_info(document_id: str):
     return _document_repository().get(document_id)
 
 
-def get_all_documents():
-    return _document_repository().list_all()
-
-
-def get_documents_by_classification(classification: str):
-    return _document_repository().list_by_classification(classification)
-
-
-def save_classification_result(document_id: str, classification_result: str) -> bool:
-    return _document_repository().save_classification_result(document_id, classification_result)
-
-
 def update_document_info(document_id: str, updated_info: Dict) -> bool:
     return _document_repository().update(document_id, updated_info)
-
-
-def save_document_to_chroma(
-    filepath,
-    document_id=None,
-    use_refiner=True,
-    save_chunk_info=True,
-    full_content=None,
-):
-    return _vector_index_service().save_document_to_chroma(
-        filepath,
-        document_id=document_id,
-        use_refiner=use_refiner,
-        save_chunk_info=save_chunk_info,
-        full_content=full_content,
-        collection=get_chroma_collection(),
-        update_document_info=update_document_info,
-    )
-
-
-def re_chunk_document(document_id: str, use_refiner: bool = True) -> bool:
-    return _vector_index_service().re_chunk_document(
-        document_id,
-        use_refiner=use_refiner,
-        get_document_info=get_document_info,
-        get_chroma_collection=get_chroma_collection,
-        save_document_to_chroma=save_document_to_chroma,
-        update_document_info=update_document_info,
-        fallback_roots=[BASE_DIR / "classified_docs", BASE_DIR / "doc"],
-    )
 
 
 def save_classification_table_record(table_payload: Dict, table_id: str | None = None):
@@ -91,15 +37,6 @@ def list_classification_table_records(limit: int = 50):
     return _classification_table_repository().list(limit)
 
 
-def update_classification_tree_after_reclassify(document_id, old_classification, new_classification):
-    return _bridge_reclassify(
-        document_id,
-        old_classification,
-        new_classification,
-        get_document_info=get_document_info,
-    )
-
-
 class ClassificationService:
     def __init__(self):
         self.topic_tree_service = TopicTreeService()
@@ -109,25 +46,12 @@ class ClassificationService:
         if not doc_info:
             raise AppServiceError(1001, f"文档ID: {document_id}")
 
-        classification_result = classify_document(doc_info)
-        if not classification_result:
-            raise AppServiceError(1005, "文档分类处理失败")
+        try:
+            assignment = self.topic_tree_service.classify_document(document_id, force_rebuild=True)
+        except Exception as exc:
+            raise AppServiceError(1005, f"文档主题归类失败: {exc}")
 
-        result_data = classification_result.get("classification_result", {})
-        categories = result_data.get("categories", [])
-        actual_path = result_data.get("actual_path")
-        if categories:
-            save_classification_result(document_id, categories[0])
-        if actual_path:
-            update_document_info(document_id, {"filepath": actual_path})
-
-        return {
-            "document_id": document_id,
-            "filename": doc_info.get("filename", ""),
-            "categories": categories,
-            "confidence": result_data.get("confidence", 0.0),
-            "suggested_folders": result_data.get("suggested_folders", []),
-        }
+        return self._serialize_assignment(doc_info, assignment)
 
     def reclassify(self, document_id: str) -> Dict:
         doc_info = get_document_info(document_id)
@@ -135,30 +59,15 @@ class ClassificationService:
             raise AppServiceError(1001, f"文档ID: {document_id}")
 
         old_classification = doc_info.get("classification_result")
-        classification_result = classify_document(doc_info)
-        if not classification_result:
-            raise AppServiceError(1005, "文档分类处理失败")
+        try:
+            assignment = self.topic_tree_service.classify_document(document_id, force_rebuild=True)
+        except Exception as exc:
+            raise AppServiceError(1005, f"文档主题归类失败: {exc}")
 
-        result_data = classification_result.get("classification_result", {})
-        categories = result_data.get("categories", [])
-        new_classification = categories[0] if categories else None
-        actual_path = result_data.get("actual_path")
-
-        if new_classification:
-            save_classification_result(document_id, new_classification)
-            if actual_path:
-                update_document_info(document_id, {"filepath": actual_path})
-            multi_level_info = get_multi_level_classifier().classify_document(get_document_info(document_id))
-            update_classification_tree_after_reclassify(document_id, old_classification, multi_level_info)
-
-        return {
-            "document_id": document_id,
-            "filename": doc_info.get("filename", ""),
-            "old_classification": old_classification,
-            "new_classification": new_classification,
-            "categories": categories,
-            "confidence": result_data.get("confidence", 0.0),
-        }
+        payload = self._serialize_assignment(doc_info, assignment)
+        payload["old_classification"] = old_classification
+        payload["new_classification"] = assignment.get("topic_label")
+        return payload
 
     def clear(self, document_id: str) -> Dict:
         doc_info = get_document_info(document_id)
@@ -173,40 +82,31 @@ class ClassificationService:
             document_id,
             {
                 "classification_result": None,
-                "classification_time": None,
+                "topic_node_id": None,
+                "topic_label": None,
+                "topic_path": [],
+                "topic_parent_label": None,
+                "topic_tree_generated_at": None,
             },
         )
-        update_classification_tree_after_reclassify(document_id, old_classification, None)
         return {"document_id": document_id, "old_classification": old_classification}
 
     def get_categories(self) -> Dict:
-        category_count: Dict[str, int] = {}
-        for doc in get_all_documents():
-            category = doc.get("classification_result", "未分类")
-            category_count[category] = category_count.get(category, 0) + 1
-        return {"categories": list(category_count.keys()), "document_count": category_count}
+        return self.topic_tree_service.get_category_overview()
 
     def get_documents_by_category(self, category: str) -> Dict:
-        docs = get_documents_by_classification(category)
-        items = [
-            {
-                "id": doc.get("id"),
-                "filename": doc.get("filename"),
-                "file_type": doc.get("file_type"),
-                "classification_result": doc.get("classification_result"),
-            }
-            for doc in docs
-        ]
-        return {"category": category, "total": len(items), "documents": items}
+        return self.topic_tree_service.get_documents_by_topic(category)
 
     def create_folder(self, document_id: str) -> Dict:
         doc_info = get_document_info(document_id)
         if not doc_info:
             raise AppServiceError(1001, f"文档ID: {document_id}")
-        if not doc_info.get("classification_result"):
-            raise AppServiceError(1006, "文档尚未分类，请先执行分类")
+        try:
+            assignment = self.topic_tree_service.classify_document(document_id, force_rebuild=False)
+        except Exception as exc:
+            raise AppServiceError(1006, f"文档尚未完成主题归类: {exc}")
 
-        success, target_path = create_classification_directory(doc_info, [doc_info["classification_result"]])
+        success, target_path = create_classification_directory(doc_info, assignment.get("topic_path") or [assignment.get("topic_label")])
         if not success:
             raise AppServiceError(1005, "分类目录创建失败")
 
@@ -215,12 +115,11 @@ class ClassificationService:
         return {"document_id": document_id, "target_path": target_path}
 
     def build_multi_level_tree(self, force_rebuild: bool) -> Dict:
-        if force_rebuild:
-            return build_and_save_classification_tree()
-        return get_classification_tree() or build_and_save_classification_tree()
+        tree = self.topic_tree_service.build_topic_tree(force_rebuild=force_rebuild)
+        return self.topic_tree_service.get_legacy_tree_payload() if tree else {"generated_at": "", "total_documents": 0, "tree": {}}
 
     def get_multi_level_tree(self) -> Dict:
-        return get_classification_tree() or {"generated_at": "", "total_documents": 0, "tree": {}}
+        return self.topic_tree_service.get_legacy_tree_payload()
 
     def build_topic_tree(self, force_rebuild: bool = False) -> Dict:
         return self.topic_tree_service.build_topic_tree(force_rebuild=force_rebuild)
@@ -232,44 +131,11 @@ class ClassificationService:
         doc_info = get_document_info(document_id)
         if not doc_info:
             raise AppServiceError(1001, f"文档ID: {document_id}")
-        result = get_multi_level_classifier().classify_document(doc_info)
-        if not result:
-            raise AppServiceError(1005, "文档分类失败")
-        return result
-
-    def category_batch_rechunk(self, category: str, use_refiner: bool) -> Dict:
-        docs = get_documents_by_classification(category)
-        results = []
-        for doc in docs:
-            try:
-                success = re_chunk_document(doc["id"], use_refiner=use_refiner)
-                results.append({"document_id": doc["id"], "filename": doc.get("filename", ""), "success": success})
-            except Exception as exc:
-                results.append({"document_id": doc["id"], "filename": doc.get("filename", ""), "success": False, "error": str(exc)})
-
-        success_count = sum(1 for item in results if item["success"])
-        return {"category": category, "total": len(results), "success_count": success_count, "results": results}
-
-    def category_batch_reclassify(self, category: str) -> Dict:
-        docs = get_documents_by_classification(category)
-        results = []
-        for doc in docs:
-            try:
-                result = self.reclassify(doc["id"])
-                results.append(
-                    {
-                        "document_id": doc["id"],
-                        "filename": doc.get("filename", ""),
-                        "success": True,
-                        "old_classification": result.get("old_classification"),
-                        "new_classification": result.get("new_classification"),
-                    }
-                )
-            except Exception as exc:
-                results.append({"document_id": doc["id"], "filename": doc.get("filename", ""), "success": False, "error": str(exc)})
-
-        success_count = sum(1 for item in results if item["success"])
-        return {"category": category, "total": len(results), "success_count": success_count, "results": results}
+        try:
+            assignment = self.topic_tree_service.classify_document(document_id, force_rebuild=False)
+        except Exception as exc:
+            raise AppServiceError(1005, f"文档主题归类失败: {exc}")
+        return self._serialize_assignment(doc_info, assignment)
 
     def generate_classification_table(self, query: str, results: List[Dict], persist: bool = True) -> Dict:
         if not query or not query.strip():
@@ -311,3 +177,19 @@ class ClassificationService:
         if not table:
             raise AppServiceError(1001, f"分类表ID: {table_id}")
         return table
+
+    @staticmethod
+    def _serialize_assignment(doc_info: Dict, assignment: Dict) -> Dict:
+        topic_path = list(assignment.get("topic_path") or [])
+        topic_label = assignment.get("topic_label") or (topic_path[-1] if topic_path else None)
+        return {
+            "document_id": doc_info.get("id"),
+            "filename": doc_info.get("filename", ""),
+            "categories": topic_path or ([topic_label] if topic_label else []),
+            "confidence": float(assignment.get("confidence", 1.0) or 1.0),
+            "suggested_folders": ["/".join(topic_path)] if topic_path else [],
+            "topic_id": assignment.get("topic_id"),
+            "topic_label": topic_label,
+            "topic_path": topic_path,
+            "classification_source": "topic_tree",
+        }

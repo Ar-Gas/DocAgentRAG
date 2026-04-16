@@ -10,15 +10,11 @@ from app.infra.repositories.document_artifact_repository import DocumentArtifact
 from app.infra.repositories.document_content_repository import DocumentContentRepository
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
-from app.infra.vector_store import get_chroma_collection
+from app.infra.vector_store import get_block_collection
 from app.services.document_vector_index_service import DocumentVectorIndexService
 from app.services.errors import AppServiceError
 from app.services.extraction_service import ExtractionService
 from app.services.indexing_service import IndexingService
-from app.services.legacy_classification_tree_bridge import (
-    update_classification_tree_after_add as _bridge_add,
-    update_classification_tree_after_delete as _bridge_delete,
-)
 from config import ALLOWED_EXTENSIONS, BASE_DIR, DATA_DIR, DOC_DIR, EXTENSION_TO_DIR, MAX_FILE_SIZE
 from utils.retriever import get_query_parser
 from utils.search_cache import get_search_cache
@@ -104,55 +100,77 @@ def save_document_summary_for_classification(
         full_content=full_content,
         parser_name=parser_name,
         display_filename=display_filename,
-        classification_bridge_add=_bridge_add,
-    )
-
-
-def save_document_to_chroma(
-    filepath,
-    document_id=None,
-    use_refiner=True,
-    save_chunk_info=True,
-    full_content: Optional[str] = None,
-):
-    return _vector_index_service().save_document_to_chroma(
-        filepath,
-        document_id=document_id,
-        use_refiner=use_refiner,
-        save_chunk_info=save_chunk_info,
-        full_content=full_content,
-        collection=get_chroma_collection(),
-        update_document_info=update_document_info,
-    )
-
-
-def re_chunk_document(document_id: str, use_refiner: bool = True) -> bool:
-    return _vector_index_service().re_chunk_document(
-        document_id,
-        use_refiner=use_refiner,
-        get_document_info=get_document_info,
-        get_chroma_collection=get_chroma_collection,
-        save_document_to_chroma=save_document_to_chroma,
-        update_document_info=update_document_info,
-        fallback_roots=[BASE_DIR / "classified_docs", BASE_DIR / "doc"],
-    )
-
-
-def check_document_chunks(document_id: str) -> Dict:
-    return _vector_index_service().check_document_chunks(
-        document_id,
-        get_document_info=get_document_info,
-        get_chroma_collection=get_chroma_collection,
     )
 
 
 def delete_document(document_id: str) -> bool:
-    return _vector_index_service().delete_document(
-        document_id,
-        collection=get_chroma_collection(),
-        delete_document_record=_document_repository().delete,
-        classification_bridge_delete=_bridge_delete,
-    )
+    _delete_document_blocks(document_id)
+    return _document_repository().delete(document_id)
+
+
+def _delete_document_blocks(document_id: str) -> None:
+    collection = get_block_collection()
+    if collection is None or not document_id:
+        return
+
+    try:
+        results = collection.get(where={"document_id": document_id})
+        ids = list((results or {}).get("ids") or [])
+        if ids:
+            collection.delete(ids=ids)
+    except Exception as exc:
+        logger.warning("删除文档 block 失败: %s", exc)
+
+
+def _count_blocks(document_id: str) -> int:
+    collection = get_block_collection()
+    if collection is not None:
+        try:
+            results = collection.get(where={"document_id": document_id})
+            return len((results or {}).get("ids") or [])
+        except Exception as exc:
+            logger.warning("统计 block 数量失败: %s", exc)
+
+    artifact = get_document_artifact(document_id, "reader_blocks") or {}
+    return len(((artifact.get("payload") or {}).get("blocks")) or [])
+
+
+def get_block_status(document_id: str) -> Dict:
+    doc_info = get_document_info(document_id)
+    if not doc_info:
+        return {
+            "document_id": document_id,
+            "exists": False,
+            "has_blocks": False,
+            "block_count": 0,
+            "block_index_status": None,
+            "chunk_count": 0,
+            "has_chunks": False,
+            "chunk_info": None,
+            "in_sync": False,
+        }
+
+    block_count = _count_blocks(document_id)
+    expected_block_count = doc_info.get("block_count")
+    in_sync = expected_block_count is None or expected_block_count == block_count
+    status = doc_info.get("block_index_status")
+
+    return {
+        "document_id": document_id,
+        "exists": True,
+        "has_blocks": block_count > 0,
+        "block_count": block_count,
+        "expected_block_count": expected_block_count,
+        "block_index_status": status,
+        "index_version": doc_info.get("index_version"),
+        "indexed_content_hash": doc_info.get("indexed_content_hash"),
+        "last_indexed_at": doc_info.get("last_indexed_at"),
+        "block_index_error": doc_info.get("block_index_error"),
+        "chunk_count": block_count,
+        "has_chunks": block_count > 0,
+        "chunk_info": None,
+        "in_sync": in_sync,
+    }
 
 
 class DocumentService:
@@ -215,16 +233,13 @@ class DocumentService:
                 os.remove(file_path)
             raise AppServiceError(1002, "文档解析失败，请检查文件是否损坏或格式是否正确")
 
-        save_success = save_document_to_chroma(
-            str(file_path),
-            document_id=document_id,
-            full_content=extraction.content,
-        )
-        if not save_success:
+        indexing_result = self.indexing_service.index_document(document_id, force=True)
+        if (indexing_result or {}).get("block_index_status") != "ready":
             delete_document(document_id)
             if file_path.exists():
                 os.remove(file_path)
-            raise AppServiceError(1003, "文档存入向量库失败，请检查后端日志了解详细原因")
+            detail = (indexing_result or {}).get("error") or "block 索引构建失败"
+            raise AppServiceError(1003, f"文档索引失败: {detail}")
 
         # 3.1/3.2 新文档入库后使搜索缓存失效
         try:
@@ -232,24 +247,15 @@ class DocumentService:
         except Exception:
             pass
 
-        # B. 上传完成后自动分类，失败不影响上传结果
         try:
-            from utils.classifier import classify_document
-            classification_result = classify_document(doc_info)
-            if classification_result:
-                result_data = classification_result.get("classification_result", {})
-                categories = result_data.get("categories", [])
-                actual_path = result_data.get("actual_path")
-                if categories:
-                    save_classification_result(document_id, categories[0])
-                    doc_info["classification_result"] = categories[0]
-                if actual_path:
-                    update_document_info(document_id, {"filepath": actual_path})
-                    doc_info["filepath"] = actual_path
-        except Exception:
-            pass  # 分类失败不报错，仅记录到日志
+            from app.services.classification_service import ClassificationService
 
-        self._trigger_block_reindex_best_effort(document_id, context="upload")
+            ClassificationService().classify(document_id)
+            refreshed = get_document_info(document_id) or doc_info
+            doc_info = {**doc_info, **refreshed}
+        except Exception:
+            pass  # 主题归类失败不影响上传主流程
+
         return self._hydrate_document(doc_info)
 
     def list_documents(self, page: int, page_size: int) -> Dict:
@@ -376,24 +382,30 @@ class DocumentService:
 
     def rechunk(self, document_id: str, use_refiner: bool) -> Dict:
         self.get_document(document_id)
-        success = re_chunk_document(document_id, use_refiner=use_refiner)
-        if not success:
-            raise AppServiceError(1003, "重新分片失败")
-        self._trigger_block_reindex_best_effort(document_id, context="rechunk")
-        return check_document_chunks(document_id)
+        _ = use_refiner
+        result = self.indexing_service.index_document(document_id, force=True)
+        if (result or {}).get("block_index_status") != "ready":
+            raise AppServiceError(1003, (result or {}).get("error", "重新构建 block 索引失败"))
+        return get_block_status(document_id)
 
     def get_chunk_status(self, document_id: str) -> Dict:
-        chunk_status = check_document_chunks(document_id)
+        chunk_status = get_block_status(document_id)
         if not chunk_status.get("exists"):
             raise AppServiceError(1001, f"文档ID: {document_id}")
         return chunk_status
 
     def batch_rechunk(self, document_ids: List[str], use_refiner: bool) -> Dict:
         results = []
+        _ = use_refiner
         for document_id in document_ids:
             try:
-                success = re_chunk_document(document_id, use_refiner=use_refiner)
-                results.append({"document_id": document_id, "success": success})
+                self.get_document(document_id)
+                result = self.indexing_service.index_document(document_id, force=True)
+                success = (result or {}).get("block_index_status") == "ready"
+                payload = {"document_id": document_id, "success": success}
+                if not success and (result or {}).get("error"):
+                    payload["error"] = result["error"]
+                results.append(payload)
             except Exception as exc:
                 results.append({"document_id": document_id, "success": False, "error": str(exc)})
 
@@ -465,12 +477,6 @@ class DocumentService:
         if normalized_query and normalized_query not in ordered_terms:
             ordered_terms.append(normalized_query)
         return sorted(ordered_terms, key=len, reverse=True)
-
-    def _trigger_block_reindex_best_effort(self, document_id: str, context: str) -> None:
-        try:
-            self.indexing_service.index_document(document_id, force=True)
-        except Exception as exc:
-            logger.warning("block reindex best-effort failed during %s for %s: %s", context, document_id, exc)
 
     @staticmethod
     def _find_text_matches(text: str, terms: List[str]) -> List[Dict]:

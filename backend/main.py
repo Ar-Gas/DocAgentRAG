@@ -151,12 +151,12 @@ async def lifespan(app: FastAPI):
         logger_instance=logger,
     )
 
-    logger.info("正在初始化 Chroma 客户端和加载模型...")
-    chroma_client, chroma_collection = init_chroma_client()
-    if chroma_client and chroma_collection:
-        logger.info("Chroma 客户端初始化成功")
+    logger.info("正在初始化 block 向量库客户端和加载模型...")
+    chroma_client, block_collection = init_chroma_client()
+    if chroma_client and block_collection:
+        logger.info("block 向量库客户端初始化成功")
     else:
-        logger.error("Chroma 客户端初始化失败，请检查模型路径")
+        logger.error("block 向量库客户端初始化失败，请检查模型路径")
     
     # 检查并重建缺失的 block 索引
     check_and_rebuild_block_indexes()
@@ -223,7 +223,7 @@ async def root():
 async def health_check():
     chroma_ok = (
         vector_store_module._chroma_client is not None
-        and vector_store_module._chroma_collection is not None
+        and vector_store_module._chroma_block_collection is not None
     )
     
     status = "healthy" if chroma_ok else "unhealthy"

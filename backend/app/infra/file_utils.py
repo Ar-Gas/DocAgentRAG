@@ -1,5 +1,10 @@
+import logging
+import shutil
 from pathlib import Path
 from typing import Callable, List, Optional, Union
+
+
+logger = logging.getLogger(__name__)
 
 
 def ordered_document_search_roots(base_dir: Path, doc_dir: Path, original_path: str) -> List[Path]:
@@ -105,3 +110,37 @@ def enrich_document_file_state(
     enriched["filepath"] = resolved_path or enriched.get("filepath", "")
     enriched["file_available"] = bool(resolved_path)
     return enriched
+
+
+def create_classification_directory(
+    doc_info: dict,
+    categories: List[str],
+    base_dir: Optional[Path] = None,
+) -> tuple[bool, str]:
+    try:
+        if not categories or not doc_info.get("filepath"):
+            return False, ""
+
+        target_root = Path(base_dir) if base_dir else Path(__file__).resolve().parents[2] / "classified_docs"
+        target_root.mkdir(parents=True, exist_ok=True)
+
+        category_dir = target_root / categories[0]
+        category_dir.mkdir(parents=True, exist_ok=True)
+
+        original_path = Path(doc_info["filepath"])
+        if not original_path.exists():
+            logger.warning("原文件不存在，跳过移动：%s", original_path)
+            return False, ""
+
+        target_path = category_dir / original_path.name
+        counter = 1
+        while target_path.exists():
+            target_path = category_dir / f"{original_path.stem}_{counter}{original_path.suffix}"
+            counter += 1
+
+        shutil.move(str(original_path), str(target_path))
+        logger.info("文件已移动到分类目录：%s -> %s", original_path.name, target_path)
+        return True, str(target_path)
+    except Exception as exc:
+        logger.error("创建分类目录/移动文件失败: %s", exc)
+        return False, ""

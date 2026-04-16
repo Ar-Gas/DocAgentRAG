@@ -22,6 +22,7 @@ vi.mock('element-plus', () => ({
 
 describe('api topic tree helpers', () => {
   beforeEach(() => {
+    requestMock.get.mockClear()
     requestMock.post.mockClear()
   })
 
@@ -43,5 +44,23 @@ describe('api topic tree helpers', () => {
 
     expect(requestMock.post).toHaveBeenCalledWith('/retrieval/workspace-search', payload)
     expect(requestMock.post.mock.calls[0][1]).not.toHaveProperty('retrieval_version')
+  })
+
+  it('gets topic tree backed categories from the classification endpoint', async () => {
+    vi.resetModules()
+    const { api } = await import('@/api')
+
+    api.getCategories()
+
+    expect(requestMock.get).toHaveBeenCalledWith('/classification/categories')
+  })
+
+  it('posts single-document classification requests to the classification endpoint', async () => {
+    vi.resetModules()
+    const { api } = await import('@/api')
+
+    api.classifyDocument('doc-1')
+
+    expect(requestMock.post).toHaveBeenCalledWith('/classification/classify', { document_id: 'doc-1' })
   })
 })
