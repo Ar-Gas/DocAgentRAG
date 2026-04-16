@@ -21,7 +21,7 @@ def test_document_content_segments_and_classification_tables_roundtrip(tmp_path:
         "created_at": 1710000000.0,
         "created_at_iso": "2024-03-09T00:00:00",
     }
-    assert store.upsert_document(doc_info, mirror=False) is True
+    assert store.upsert_document(doc_info) is True
 
     assert store.save_document_content(
         "doc-1",
@@ -83,6 +83,51 @@ def test_document_content_segments_and_classification_tables_roundtrip(tmp_path:
     assert [item["id"] for item in listed] == [table_id]
 
 
+def test_store_does_not_sync_documents_from_json_files_on_init(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "doc-legacy.json").write_text(
+        """
+        {
+          "id": "doc-legacy",
+          "filename": "legacy.pdf",
+          "filepath": "/tmp/legacy.pdf",
+          "file_type": ".pdf"
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=data_dir,
+    )
+
+    assert store.get_document("doc-legacy") is None
+
+
+def test_load_artifact_does_not_fallback_to_json_file(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "topic_tree.json").write_text(
+        """
+        {
+          "schema_version": 2,
+          "generated_at": "2026-04-16T00:00:00",
+          "topics": []
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    store = DocumentMetadataStore(
+        db_path=tmp_path / "docagent.db",
+        data_dir=data_dir,
+    )
+
+    assert store.load_artifact("topic_tree") is None
+
+
 def test_delete_document_removes_related_content_and_segments(tmp_path: Path):
     store = DocumentMetadataStore(
         db_path=tmp_path / "docagent.db",
@@ -95,7 +140,6 @@ def test_delete_document_removes_related_content_and_segments(tmp_path: Path):
             "filepath": "/tmp/draft.txt",
             "file_type": ".txt",
         },
-        mirror=False,
     )
     assert store.save_document_content(
         "doc-2",
@@ -109,7 +153,7 @@ def test_delete_document_removes_related_content_and_segments(tmp_path: Path):
         [{"segment_id": "doc-2#0", "segment_index": 0, "content": "draft"}],
     )
 
-    assert store.delete_document("doc-2", mirror=False) is True
+    assert store.delete_document("doc-2") is True
     assert store.get_document("doc-2") is None
     assert store.get_document_content("doc-2") is None
     assert store.list_document_segments("doc-2") == []
@@ -127,7 +171,6 @@ def test_block_artifact_helpers_upsert_single_reader_payload(tmp_path: Path):
             "filepath": "/tmp/spec.docx",
             "file_type": ".docx",
         },
-        mirror=False,
     )
 
     artifact_id = store.upsert_document_artifact(
@@ -168,7 +211,6 @@ def test_get_document_artifact_prefers_deterministic_artifact_id(tmp_path: Path)
             "filepath": "/tmp/spec.docx",
             "file_type": ".docx",
         },
-        mirror=False,
     )
 
     assert (
@@ -213,7 +255,6 @@ def test_get_document_artifact_returns_none_without_deterministic_row(tmp_path: 
             "filepath": "/tmp/spec.docx",
             "file_type": ".docx",
         },
-        mirror=False,
     )
     assert (
         store.save_document_artifact(

@@ -68,7 +68,7 @@ class FakeStore:
         self.cached = cached
         self.saved = {}
 
-    def save_artifact(self, name, payload, mirror=True):
+    def save_artifact(self, name, payload):
         self.saved[name] = payload
         return True
 

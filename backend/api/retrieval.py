@@ -594,7 +594,7 @@ async def smart_multimodal_search_api(
 async def workspace_search_stream(req: WorkspaceSearchRequest):
     """
     两阶段流式响应：
-    - event: results  → 立即返回 hybrid 检索结果
+    - event: results  → 立即返回 block 工作台检索结果（hybrid 排序模式）
     - event: reranked → LLM rerank 完成后推送（仅 smart 模式且 LLM 可用时）
     - event: done     → 流结束
 
@@ -610,6 +610,7 @@ async def workspace_search_stream(req: WorkspaceSearchRequest):
                 lambda: retrieval_service.workspace_search(
                     query=req.query,
                     mode="hybrid",
+                    retrieval_version=req.retrieval_version,
                     limit=req.limit,
                     alpha=req.alpha,
                     use_rerank=req.use_rerank,
@@ -638,6 +639,12 @@ async def workspace_search_stream(req: WorkspaceSearchRequest):
                         lambda: llm_rerank(req.query, raw_results, req.limit),
                     )
                     reranked_payload = {**hybrid_result, "results": reranked_results, "mode": "smart"}
+                    regroup = getattr(retrieval_service, "regroup_workspace_payload", None)
+                    if callable(regroup):
+                        try:
+                            reranked_payload = regroup(reranked_payload, reranked_results, req.query)
+                        except Exception as regroup_exc:
+                            logger.warning(f"SSE reranked regroup 失败，保留原 rerank results: {regroup_exc}")
                     yield f"event: reranked\ndata: {json.dumps(reranked_payload, ensure_ascii=False)}\n\n"
             except Exception as exc:
                 logger.warning(f"SSE LLM rerank 失败（降级保留 hybrid 结果）: {exc}")

@@ -17,8 +17,21 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
+from app.infra.repositories.document_repository import DocumentRepository
 from app.services.indexing_service import IndexingService
-from utils.storage import get_all_documents, get_document_info
+from config import DATA_DIR
+
+
+def _document_repository() -> DocumentRepository:
+    return DocumentRepository(data_dir=DATA_DIR)
+
+
+def get_all_documents():
+    return _document_repository().list_all()
+
+
+def get_document_info(document_id: str):
+    return _document_repository().get(document_id)
 
 SUPPORTED_BLOCK_FILE_TYPES = {".pdf", ".docx", ".doc"}
 

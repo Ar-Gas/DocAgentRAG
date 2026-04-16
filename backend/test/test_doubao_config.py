@@ -25,6 +25,8 @@ def _load_module_from_path(module_name: str, module_path: Path):
 def _make_fake_retrieval_dependencies(llm_available: bool):
     app_module = types.ModuleType("app")
     app_services_module = types.ModuleType("app.services")
+    app_infra_module = types.ModuleType("app.infra")
+    app_infra_repositories_module = types.ModuleType("app.infra.repositories")
     app_errors_module = types.ModuleType("app.services.errors")
     app_errors_module.AppServiceError = type("AppServiceError", (Exception,), {})
 
@@ -55,22 +57,59 @@ def _make_fake_retrieval_dependencies(llm_available: bool):
     smart_module.smart_retrieval = lambda **kwargs: ([], {"expanded_queries": [], "expansion_method": None, "rerank_method": None, "total_candidates": 0})
     smart_module.summarize_retrieval_results = lambda *args, **kwargs: {}
 
-    storage_module = types.ModuleType("utils.storage")
-    storage_module.enrich_document_file_state = lambda doc: doc
-    storage_module.get_all_documents = lambda: []
-    storage_module.get_document_content_record = lambda document_id: {}
-    storage_module.get_document_info = lambda document_id: {"id": document_id}
-    storage_module.list_document_segments = lambda document_id: []
+    file_utils_module = types.ModuleType("app.infra.file_utils")
+    file_utils_module.enrich_document_file_state = lambda doc_info, **kwargs: doc_info or {}
+
+    class _FakeDocumentRepository:
+        def __init__(self, data_dir=None):
+            self.data_dir = data_dir
+
+        def list_all(self):
+            return []
+
+        def get(self, document_id):
+            return {"id": document_id}
+
+        def update(self, document_id, updated_info):
+            return True
+
+    class _FakeDocumentContentRepository:
+        def __init__(self, data_dir=None):
+            self.data_dir = data_dir
+
+        def get(self, document_id):
+            return {}
+
+    class _FakeDocumentSegmentRepository:
+        def __init__(self, data_dir=None):
+            self.data_dir = data_dir
+
+        def list(self, document_id):
+            return []
+
+    document_repository_module = types.ModuleType("app.infra.repositories.document_repository")
+    document_repository_module.DocumentRepository = _FakeDocumentRepository
+
+    content_repository_module = types.ModuleType("app.infra.repositories.document_content_repository")
+    content_repository_module.DocumentContentRepository = _FakeDocumentContentRepository
+
+    segment_repository_module = types.ModuleType("app.infra.repositories.document_segment_repository")
+    segment_repository_module.DocumentSegmentRepository = _FakeDocumentSegmentRepository
 
     return {
         "app": app_module,
         "app.services": app_services_module,
+        "app.infra": app_infra_module,
+        "app.infra.repositories": app_infra_repositories_module,
         "app.services.errors": app_errors_module,
+        "app.infra.file_utils": file_utils_module,
+        "app.infra.repositories.document_repository": document_repository_module,
+        "app.infra.repositories.document_content_repository": content_repository_module,
+        "app.infra.repositories.document_segment_repository": segment_repository_module,
         "utils.logger": logger_module,
         "utils.search_cache": cache_module,
         "utils.retriever": retriever_module,
         "utils.smart_retrieval": smart_module,
-        "utils.storage": storage_module,
     }
 
 
@@ -120,11 +159,15 @@ class DoubaoConfigTests(unittest.TestCase):
         sys.modules.pop(module_name, None)
         if fake_secrets_module is None:
             sys.modules.pop("secrets_api", None)
-        else:
-            sys.modules["secrets_api"] = fake_secrets_module
+            with mock.patch.dict(sys.modules, {"secrets_api": None}, clear=False):
+                return _load_module_from_path(module_name, CONFIG_PATH)
+        sys.modules["secrets_api"] = fake_secrets_module
         return _load_module_from_path(module_name, CONFIG_PATH)
 
     def _load_retrieval_service(self, suffix: str, config_module, llm_available: bool, smart_module_override=None):
+        config_module.BASE_DIR = getattr(config_module, "BASE_DIR", Path("/tmp/docagent-backend"))
+        config_module.DATA_DIR = getattr(config_module, "DATA_DIR", config_module.BASE_DIR / "data")
+        config_module.DOC_DIR = getattr(config_module, "DOC_DIR", config_module.BASE_DIR / "doc")
         fake_modules = _make_fake_retrieval_dependencies(llm_available=llm_available)
         if smart_module_override is not None:
             fake_modules["utils.smart_retrieval"] = smart_module_override
@@ -225,11 +268,42 @@ class DoubaoConfigTests(unittest.TestCase):
         api_module.validation_exception_handler = lambda *args, **kwargs: None
         api_module.generic_exception_handler = lambda *args, **kwargs: None
 
-        storage_module = types.ModuleType("utils.storage")
-        storage_module.init_chroma_client = lambda: (None, None)
-        storage_module.get_chroma_collection = lambda: None
-        storage_module.get_all_documents = lambda: []
-        storage_module.detect_and_lock_embedding_dim = lambda: None
+        app_module = types.ModuleType("app")
+        app_infra_module = types.ModuleType("app.infra")
+        app_infra_repositories_module = types.ModuleType("app.infra.repositories")
+        app_services_module = types.ModuleType("app.services")
+
+        embedding_provider_module = types.ModuleType("app.infra.embedding_provider")
+        embedding_provider_module.detect_and_lock_embedding_dim = lambda: None
+
+        class _FakeDocumentRepository:
+            def __init__(self, data_dir=None):
+                self.data_dir = data_dir
+
+            def list_all(self):
+                return []
+
+            def update(self, document_id, updated_info):
+                return True
+
+        document_repository_module = types.ModuleType("app.infra.repositories.document_repository")
+        document_repository_module.DocumentRepository = _FakeDocumentRepository
+
+        vector_store_module = types.ModuleType("app.infra.vector_store")
+        vector_store_module.init_chroma_client = lambda: (None, None)
+        vector_store_module.get_chroma_collection = lambda: None
+        vector_store_module._chroma_client = None
+        vector_store_module._chroma_collection = None
+
+        class _FakeDocumentVectorIndexService:
+            def __init__(self, document_repository=None):
+                self.document_repository = document_repository
+
+            def save_document_to_chroma(self, *args, **kwargs):
+                return True
+
+        document_vector_index_service_module = types.ModuleType("app.services.document_vector_index_service")
+        document_vector_index_service_module.DocumentVectorIndexService = _FakeDocumentVectorIndexService
 
         logger_module = types.ModuleType("utils.logger")
         logger_module.setup_logging = lambda: None
@@ -243,7 +317,14 @@ class DoubaoConfigTests(unittest.TestCase):
                 "fastapi.exceptions": exceptions_module,
                 "fastapi.responses": responses_module,
                 "api": api_module,
-                "utils.storage": storage_module,
+                "app": app_module,
+                "app.infra": app_infra_module,
+                "app.infra.repositories": app_infra_repositories_module,
+                "app.services": app_services_module,
+                "app.infra.embedding_provider": embedding_provider_module,
+                "app.infra.repositories.document_repository": document_repository_module,
+                "app.infra.vector_store": vector_store_module,
+                "app.services.document_vector_index_service": document_vector_index_service_module,
                 "utils.logger": logger_module,
             },
             clear=False,

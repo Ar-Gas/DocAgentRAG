@@ -7,10 +7,36 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from app.infra.metadata_store import get_metadata_store
+from app.infra.repositories.document_content_repository import DocumentContentRepository
+from app.infra.repositories.document_repository import DocumentRepository
+from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
 from app.services.topic_clustering import TopicClustering
 from app.services.topic_labeler import TopicLabeler
 from config import DATA_DIR
-from utils.storage import get_all_documents, get_document_content_record, list_document_segments
+
+
+def _document_repository() -> DocumentRepository:
+    return DocumentRepository(data_dir=DATA_DIR)
+
+
+def _content_repository() -> DocumentContentRepository:
+    return DocumentContentRepository(data_dir=DATA_DIR)
+
+
+def _segment_repository() -> DocumentSegmentRepository:
+    return DocumentSegmentRepository(data_dir=DATA_DIR)
+
+
+def get_all_documents():
+    return _document_repository().list_all()
+
+
+def get_document_content_record(document_id: str):
+    return _content_repository().get(document_id)
+
+
+def list_document_segments(document_id: str):
+    return _segment_repository().list(document_id)
 
 
 class TopicTreeService:

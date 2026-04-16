@@ -107,8 +107,6 @@ import SummaryDrawer from '@/components/SummaryDrawer.vue'
 import TopicTreePanel from '@/components/TopicTreePanel.vue'
 import { api, workspaceSearchStream } from '@/api'
 
-const WORKSPACE_RETRIEVAL_VERSION = import.meta.env.VITE_WORKSPACE_RETRIEVAL_VERSION || 'legacy'
-
 const createDefaultFilters = () => ({
   query: '',
   mode: 'hybrid',
@@ -163,7 +161,6 @@ const openViewer = (document) => {
 const buildSearchRequest = () => ({
   query: filters.value.query?.trim() || '',
   mode: filters.value.mode,
-  retrieval_version: WORKSPACE_RETRIEVAL_VERSION,
   limit: filters.value.limit,
   alpha: filters.value.alpha,
   use_rerank: filters.value.use_rerank,
@@ -247,7 +244,7 @@ const executeSearch = async () => {
 
   const req = buildSearchRequest()
 
-  if (req.mode === 'smart' && req.retrieval_version === 'legacy') {
+  if (req.mode === 'smart') {
     _cancelStream = workspaceSearchStream(req, {
       async onResults(data) {
         searchLoading.value = false

@@ -5,7 +5,20 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 
-from utils.storage import embed_text, list_document_chunk_embeddings
+from app.infra.embedding_provider import embed_text
+from app.infra.vector_store import get_chroma_collection
+from app.services.document_vector_index_service import DocumentVectorIndexService
+
+
+def _vector_index_service() -> DocumentVectorIndexService:
+    return DocumentVectorIndexService()
+
+
+def list_document_chunk_embeddings(document_id: str) -> List[Dict[str, Any]]:
+    return _vector_index_service().list_document_chunk_embeddings(
+        document_id,
+        collection=get_chroma_collection(),
+    )
 
 
 class TopicClustering:

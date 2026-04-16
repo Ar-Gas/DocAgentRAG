@@ -1,6 +1,10 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from app.infra.file_utils import enrich_document_file_state as _enrich_document_file_state
+from app.infra.repositories.document_content_repository import DocumentContentRepository
+from app.infra.repositories.document_repository import DocumentRepository
+from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
 from config import DOUBAO_API_KEY, DOUBAO_DEFAULT_LLM_MODEL
 from app.services.errors import AppServiceError
 from utils.logger import get_logger, log_retrieval
@@ -25,13 +29,50 @@ from utils.smart_retrieval import (
     smart_retrieval,
     summarize_retrieval_results,
 )
-from utils.storage import (
-    enrich_document_file_state,
-    get_all_documents,
-    get_document_content_record,
-    get_document_info,
-    list_document_segments,
-)
+from config import BASE_DIR, DATA_DIR, DOC_DIR
+
+
+def _document_repository() -> DocumentRepository:
+    return DocumentRepository(data_dir=DATA_DIR)
+
+
+def _content_repository() -> DocumentContentRepository:
+    return DocumentContentRepository(data_dir=DATA_DIR)
+
+
+def _segment_repository() -> DocumentSegmentRepository:
+    return DocumentSegmentRepository(data_dir=DATA_DIR)
+
+
+def get_all_documents():
+    return _document_repository().list_all()
+
+
+def get_document_info(document_id: str):
+    return _document_repository().get(document_id)
+
+
+def get_document_content_record(document_id: str):
+    return _content_repository().get(document_id)
+
+
+def list_document_segments(document_id: str):
+    return _segment_repository().list(document_id)
+
+
+def update_document_info(document_id: str, updated_info: Dict) -> bool:
+    return _document_repository().update(document_id, updated_info)
+
+
+def enrich_document_file_state(doc_info: Optional[Dict], persist: bool = True) -> Dict:
+    return _enrich_document_file_state(
+        doc_info,
+        base_dir=BASE_DIR,
+        doc_dir=DOC_DIR,
+        get_document_info=get_document_info,
+        update_document_info=update_document_info,
+        persist=persist,
+    )
 
 
 class RetrievalService:
@@ -254,122 +295,47 @@ class RetrievalService:
         if cached is not None:
             return cached
 
-        if requested_retrieval_version == "block":
-            ready_document_ids = get_ready_block_document_ids(
-                file_types=normalized_file_types,
-                filename=filename,
-                classification=classification,
-                date_from=date_from,
-                date_to=date_to,
-            )
-            if ready_document_ids:
-                block_payload = search_block_documents(
-                    query=normalized_query,
-                    mode=normalized_mode,
-                    limit=normalized_limit,
-                    alpha=alpha,
-                    use_rerank=use_rerank,
-                    use_llm_rerank=use_llm_rerank,
-                    file_types=normalized_file_types,
-                    classification=classification,
-                    date_from=date_from,
-                    date_to=date_to,
-                    ready_document_ids=ready_document_ids,
-                    group_by_document=group_by_document,
-                    use_query_expansion=use_query_expansion,
-                    expansion_method=expansion_method,
-                )
-                documents = list(block_payload.get("documents") or [])
-                results = list(block_payload.get("results") or [])
-                if group_by_document:
-                    documents = documents[:normalized_limit]
-                    results = self._flatten_surfaced_block_results(documents)
-                else:
-                    results = results[:normalized_limit]
-                result = {
-                    "query": normalized_query,
-                    "mode": normalized_mode,
-                    "retrieval_version_requested": requested_retrieval_version,
-                    "retrieval_version_used": "block",
-                    "total_results": len(results),
-                    "total_documents": len(documents),
-                    "results": results,
-                    "documents": documents,
-                    "meta": block_payload.get("meta") or {"fallback_used": False},
-                    "applied_filters": applied_filters,
-                }
-                _cache.set(normalized_query, normalized_mode, _filter_key, result)
-                return result
-            block_meta: Dict[str, Any] = {
-                "fallback_used": True,
-                "fallback_reason": "no_ready_block_documents",
-                "fallback_documents": [],
-            }
-        else:
-            block_meta = {}
-
-        raw_results: List[Dict[str, Any]] = []
-        meta: Dict[str, Any] = {}
-        if normalized_query:
-            raw_results, meta = self._run_workspace_query_search(
-                query=normalized_query,
-                mode=normalized_mode,
-                limit=normalized_limit * 3,
-                alpha=alpha,
-                use_rerank=use_rerank,
-                use_query_expansion=use_query_expansion,
-                use_llm_rerank=use_llm_rerank,
-                expansion_method=expansion_method,
-                file_types=normalized_file_types,
-            )
-            fallback_results = self._search_workspace_metadata(
-                query=normalized_query,
-                file_types=normalized_file_types,
-                limit=normalized_limit * 2,
-            )
-            raw_results = self._merge_workspace_results(raw_results, fallback_results)
-            if fallback_results:
-                meta = {
-                    **meta,
-                    "metadata_fallback_used": True,
-                    "metadata_fallback_count": len(fallback_results),
-                }
-        else:
-            raw_results = self._build_metadata_only_results()
-
-        filtered_results: List[Dict[str, Any]] = []
-        for result in raw_results:
-            hydrated = self._hydrate_workspace_result(result)
-            if hydrated and self._matches_workspace_filters(
-                hydrated,
-                file_types=normalized_file_types,
-                filename=filename,
-                classification=classification,
-                date_from=date_from,
-                date_to=date_to,
-            ):
-                filtered_results.append(hydrated)
-
-        filtered_results.sort(
-            key=lambda item: (
-                item.get("similarity", 0),
-                item.get("created_at_iso") or "",
-            ),
-            reverse=True,
+        ready_document_ids = get_ready_block_document_ids(
+            file_types=normalized_file_types,
+            filename=filename,
+            classification=classification,
+            date_from=date_from,
+            date_to=date_to,
         )
-        filtered_results = filtered_results[:normalized_limit]
-
-        documents = self._group_workspace_results(filtered_results, normalized_query)
+        block_payload = search_block_documents(
+            query=normalized_query,
+            mode=normalized_mode,
+            limit=normalized_limit,
+            alpha=alpha,
+            use_rerank=use_rerank,
+            use_llm_rerank=use_llm_rerank,
+            file_types=normalized_file_types,
+            classification=classification,
+            date_from=date_from,
+            date_to=date_to,
+            ready_document_ids=ready_document_ids,
+            group_by_document=group_by_document,
+            use_query_expansion=use_query_expansion,
+            expansion_method=expansion_method,
+        )
+        documents = list(block_payload.get("documents") or [])[:normalized_limit]
+        if group_by_document:
+            results = self._flatten_surfaced_block_results(documents)
+        else:
+            results = self._normalize_block_results(
+                list(block_payload.get("results") or [])[:normalized_limit],
+                documents,
+            )
         result = {
             "query": normalized_query,
             "mode": normalized_mode,
             "retrieval_version_requested": requested_retrieval_version,
-            "retrieval_version_used": "legacy",
-            "total_results": len(filtered_results),
+            "retrieval_version_used": "block",
+            "total_results": len(results),
             "total_documents": len(documents),
-            "results": filtered_results,
+            "results": results,
             "documents": documents,
-            "meta": {**meta, **block_meta},
+            "meta": block_payload.get("meta") or {"fallback_used": False},
             "applied_filters": applied_filters,
         }
         # 3.2 写入缓存（smart 模式 LLM rerank 结果也缓存）
@@ -408,25 +374,42 @@ class RetrievalService:
 
     @staticmethod
     def _resolve_requested_retrieval_version(retrieval_version: Optional[str]) -> str:
-        normalized = (retrieval_version or "").strip().lower()
-        return "block" if normalized == "block" else "legacy"
+        _ = retrieval_version
+        return "block"
 
     @staticmethod
     def _flatten_surfaced_block_results(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         flattened: List[Dict[str, Any]] = []
         for document in documents:
             document_id = document.get("document_id")
+            document_base = {
+                "document_id": document_id,
+                "filename": document.get("filename", ""),
+                "file_type": document.get("file_type", ""),
+                "path": document.get("path", ""),
+                "classification_result": document.get("classification_result"),
+                "created_at_iso": document.get("created_at_iso"),
+                "parser_name": document.get("parser_name"),
+                "extraction_status": document.get("extraction_status"),
+                "preview_content": document.get("preview_content", ""),
+                "file_available": document.get("file_available", False),
+            }
             for evidence in document.get("evidence_blocks") or []:
+                snippet = evidence.get("snippet", "")
+                score = evidence.get("score", 0.0)
                 flattened.append(
                     {
-                        "document_id": document_id,
+                        **document_base,
                         "block_id": evidence.get("block_id"),
                         "block_index": evidence.get("block_index", 0),
+                        "chunk_index": evidence.get("block_index", 0),
                         "block_type": evidence.get("block_type", "paragraph"),
-                        "snippet": evidence.get("snippet", ""),
+                        "snippet": snippet,
+                        "content_snippet": snippet,
                         "heading_path": evidence.get("heading_path", []),
                         "page_number": evidence.get("page_number"),
-                        "score": evidence.get("score", 0.0),
+                        "score": score,
+                        "similarity": score,
                         "match_reason": evidence.get("match_reason", ""),
                     }
                 )
@@ -438,6 +421,55 @@ class RetrievalService:
             reverse=True,
         )
         return flattened
+
+    @staticmethod
+    def _normalize_block_results(
+        results: List[Dict[str, Any]],
+        documents: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        document_lookup = {
+            document.get("document_id"): document
+            for document in documents
+            if document.get("document_id")
+        }
+        normalized_results: List[Dict[str, Any]] = []
+        for result in results:
+            document = document_lookup.get(result.get("document_id"), {})
+            snippet = result.get("content_snippet") or result.get("snippet", "")
+            score = result.get("similarity", result.get("score", 0.0))
+            normalized_results.append(
+                {
+                    "document_id": result.get("document_id"),
+                    "filename": result.get("filename") or document.get("filename", ""),
+                    "file_type": result.get("file_type") or document.get("file_type", ""),
+                    "path": result.get("path") or document.get("path", ""),
+                    "classification_result": result.get("classification_result", document.get("classification_result")),
+                    "created_at_iso": result.get("created_at_iso", document.get("created_at_iso")),
+                    "parser_name": result.get("parser_name", document.get("parser_name")),
+                    "extraction_status": result.get("extraction_status", document.get("extraction_status")),
+                    "preview_content": result.get("preview_content", document.get("preview_content", "")),
+                    "file_available": result.get("file_available", document.get("file_available", False)),
+                    "block_id": result.get("block_id"),
+                    "block_index": result.get("block_index", 0),
+                    "chunk_index": result.get("block_index", 0),
+                    "block_type": result.get("block_type", "paragraph"),
+                    "snippet": result.get("snippet", snippet),
+                    "content_snippet": snippet,
+                    "heading_path": result.get("heading_path", []),
+                    "page_number": result.get("page_number"),
+                    "score": score,
+                    "similarity": score,
+                    "match_reason": result.get("match_reason", ""),
+                }
+            )
+        normalized_results.sort(
+            key=lambda item: (
+                item.get("score", 0.0),
+                -item.get("block_index", 0),
+            ),
+            reverse=True,
+        )
+        return normalized_results
 
     def _run_workspace_query_search(
         self,
@@ -782,12 +814,12 @@ class RetrievalService:
             block_index = (
                 (current_segment or {}).get("segment_index")
                 if current_segment
-                else result.get("chunk_index", 0)
+                else result.get("block_index", result.get("chunk_index", 0))
             )
             block_id = (
                 (current_segment or {}).get("segment_id")
                 if current_segment
-                else f"{document_id}#{block_index}"
+                else result.get("block_id") or f"{document_id}#{block_index}"
             )
             snippet = (
                 result.get("content_snippet")
@@ -797,9 +829,12 @@ class RetrievalService:
             evidence = {
                 "block_id": block_id,
                 "block_index": block_index or 0,
+                "block_type": result.get("block_type", "paragraph"),
                 "snippet": snippet or "",
+                "heading_path": result.get("heading_path", []),
                 "score": result.get("similarity", 0),
                 "page_number": (current_segment or {}).get("page_number"),
+                "match_reason": result.get("match_reason", ""),
             }
             existing_snippets = {
                 (item.get("snippet") or "")[:80]

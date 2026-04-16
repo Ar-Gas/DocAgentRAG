@@ -33,8 +33,7 @@ const STUBS = {
   DocumentViewerModal: { template: '<div class="viewer-modal-stub" />' },
 }
 
-async function mountSearchPage(version = 'block') {
-  vi.stubEnv('VITE_WORKSPACE_RETRIEVAL_VERSION', version)
+async function mountSearchPage() {
   vi.resetModules()
   const SearchPage = (await import('@/pages/SearchPage.vue')).default
 
@@ -71,25 +70,10 @@ describe('SearchPage', () => {
 
   afterEach(() => {
     vi.clearAllMocks()
-    vi.unstubAllEnvs()
   })
 
-  it('uses sync workspace search for block smart requests', async () => {
-    const wrapper = await mountSearchPage('block')
-
-    wrapper.vm.filters.mode = 'smart'
-    await wrapper.find('.go').trigger('click')
-    await flushPromises()
-
-    expect(apiMocks.workspaceSearch).toHaveBeenCalledWith(expect.objectContaining({
-      mode: 'smart',
-      retrieval_version: 'block',
-    }))
-    expect(workspaceSearchStream).not.toHaveBeenCalled()
-  })
-
-  it('keeps legacy smart requests on the SSE path during rollout', async () => {
-    const wrapper = await mountSearchPage('legacy')
+  it('uses streaming workspace search for smart requests without retrieval_version', async () => {
+    const wrapper = await mountSearchPage()
 
     wrapper.vm.filters.mode = 'smart'
     await wrapper.find('.go').trigger('click')
@@ -97,8 +81,22 @@ describe('SearchPage', () => {
 
     expect(workspaceSearchStream).toHaveBeenCalledWith(expect.objectContaining({
       mode: 'smart',
-      retrieval_version: 'legacy',
     }), expect.any(Object))
+    expect(workspaceSearchStream.mock.calls[0][0]).not.toHaveProperty('retrieval_version')
     expect(apiMocks.workspaceSearch).not.toHaveBeenCalled()
+  })
+
+  it('uses sync workspace search for non-smart requests without retrieval_version', async () => {
+    const wrapper = await mountSearchPage()
+
+    wrapper.vm.filters.mode = 'hybrid'
+    await wrapper.find('.go').trigger('click')
+    await flushPromises()
+
+    expect(apiMocks.workspaceSearch).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'hybrid',
+    }))
+    expect(apiMocks.workspaceSearch.mock.calls[0][0]).not.toHaveProperty('retrieval_version')
+    expect(workspaceSearchStream).not.toHaveBeenCalled()
   })
 })

@@ -9,15 +9,17 @@ from collections import Counter
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
-from .storage import (
-    DOUBAO_EMBEDDING_MODEL,
-    doubao_multimodal_embed,
-    get_all_documents,
-    get_block_collection,
-    init_chroma_client,
-)
+
+from app.infra.embedding_provider import doubao_multimodal_embed
+from app.infra.repositories.document_repository import DocumentRepository
+from app.infra.vector_store import get_block_collection, init_chroma_client
+from config import DATA_DIR, DOUBAO_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
+
+
+def get_all_documents():
+    return DocumentRepository(data_dir=DATA_DIR).list_all()
 
 
 # ===================== BM25 索引缓存 =====================
@@ -317,6 +319,139 @@ def search_with_highlight(
     return results, meta_info
 
 
+def _normalize_file_type_filters(file_types: Optional[List[str]]) -> List[str]:
+    normalized: List[str] = []
+    for item in file_types or []:
+        value = (item or "").strip().lower().lstrip(".")
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _merge_file_type_filters(
+    file_types: Optional[List[str]],
+    query_file_types: Optional[List[str]],
+) -> List[str]:
+    merged: List[str] = []
+    for item in [*(file_types or []), *(query_file_types or [])]:
+        value = (item or "").strip().lower().lstrip(".")
+        if value and value not in merged:
+            merged.append(value)
+    return merged
+
+
+def _normalize_block_payload_results(
+    block_payload: Dict[str, Any],
+    parsed_query: Optional[ParsedQuery] = None,
+) -> List[Dict[str, Any]]:
+    document_lookup = {
+        document.get("document_id"): document
+        for document in block_payload.get("documents") or []
+        if document.get("document_id")
+    }
+    normalized_results: List[Dict[str, Any]] = []
+
+    for item in block_payload.get("results") or []:
+        document = document_lookup.get(item.get("document_id"), {})
+        snippet = item.get("content_snippet") or item.get("snippet") or document.get("best_excerpt") or document.get("preview_content", "")
+        result = {
+            "document_id": item.get("document_id"),
+            "filename": item.get("filename") or document.get("filename", ""),
+            "path": item.get("path") or document.get("path", ""),
+            "file_type": item.get("file_type") or document.get("file_type", ""),
+            "similarity": round(float(item.get("similarity", item.get("score", 0.0)) or 0.0), 4),
+            "content_snippet": snippet,
+            "chunk_index": item.get("chunk_index", item.get("block_index", 0)),
+            "block_id": item.get("block_id"),
+            "block_index": item.get("block_index", item.get("chunk_index", 0)),
+            "block_type": item.get("block_type", "paragraph"),
+            "heading_path": item.get("heading_path", []),
+            "page_number": item.get("page_number"),
+            "classification_result": item.get("classification_result", document.get("classification_result")),
+            "created_at_iso": item.get("created_at_iso", document.get("created_at_iso")),
+            "parser_name": item.get("parser_name", document.get("parser_name")),
+            "extraction_status": item.get("extraction_status", document.get("extraction_status")),
+            "preview_content": item.get("preview_content", document.get("preview_content", "")),
+            "file_available": item.get("file_available", document.get("file_available", False)),
+            "match_reason": item.get("match_reason", ""),
+        }
+        if parsed_query is not None:
+            result["has_exact_match"] = _query_parser.has_exact_match(snippet, parsed_query)
+        normalized_results.append(result)
+
+    return normalized_results
+
+
+def _filter_advanced_query_results(
+    results: List[Dict[str, Any]],
+    parsed_query: Optional[ParsedQuery],
+) -> List[Dict[str, Any]]:
+    if parsed_query is None:
+        return results
+
+    filtered: List[Dict[str, Any]] = []
+    for result in results:
+        snippet = result.get("content_snippet", "")
+        if _query_parser.should_exclude(snippet, parsed_query):
+            continue
+        result["has_exact_match"] = _query_parser.has_exact_match(snippet, parsed_query)
+        filtered.append(result)
+    return filtered
+
+
+def _sort_legacy_results(
+    results: List[Dict[str, Any]],
+    *,
+    prefer_exact_match: bool = False,
+) -> List[Dict[str, Any]]:
+    if prefer_exact_match:
+        results.sort(
+            key=lambda item: (item.get("has_exact_match", False), item.get("similarity", 0.0)),
+            reverse=True,
+        )
+    else:
+        results.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
+    return results
+
+
+def _search_via_block_payload(
+    query: str,
+    *,
+    mode: str,
+    limit: int,
+    alpha: float,
+    file_types: Optional[List[str]],
+    parsed_query: Optional[ParsedQuery] = None,
+) -> List[Dict[str, Any]]:
+    normalized_file_types = _normalize_file_type_filters(file_types)
+    ready_document_ids = get_ready_block_document_ids(
+        file_types=normalized_file_types,
+        filename=None,
+        classification=None,
+        date_from=None,
+        date_to=None,
+    )
+    if not ready_document_ids:
+        return []
+
+    block_payload = search_block_documents(
+        query=query,
+        mode=mode,
+        limit=limit,
+        alpha=alpha,
+        use_rerank=False,
+        use_llm_rerank=False,
+        file_types=normalized_file_types,
+        classification=None,
+        date_from=None,
+        date_to=None,
+        ready_document_ids=ready_document_ids,
+        group_by_document=False,
+    )
+    results = _normalize_block_payload_results(block_payload, parsed_query=parsed_query)
+    return _filter_advanced_query_results(results, parsed_query)
+
+
 def keyword_search(query: str, limit: int = 10, file_types: Optional[List[str]] = None) -> List[Dict]:
     """
     精确关键词检索：仅使用 BM25 算法进行关键词匹配
@@ -330,87 +465,25 @@ def keyword_search(query: str, limit: int = 10, file_types: Optional[List[str]] 
     if not query or not isinstance(query, str) or limit <= 0:
         logger.error("关键词检索失败：查询为空或参数非法")
         return []
-    
-    # 使用查询解析器解析查询
-    parser = get_query_parser()
-    parsed = parser.parse(query)
-    search_str = parser.get_search_string(parsed)
-    
-    # 合并文件类型过滤
-    final_file_types = file_types or []
-    if parsed.file_types:
-        final_file_types.extend(parsed.file_types)
-        final_file_types = list(set(final_file_types))
-    
+
+    parsed = _query_parser.parse(query)
+    final_file_types = _merge_file_type_filters(file_types, parsed.file_types)
+    search_query = _query_parser.get_search_string(parsed).strip() or parsed.original_query
+
     try:
-        client, collection = init_chroma_client()
-        if not client or not collection:
-            logger.error("初始化Chroma客户端失败")
-            return []
-        
-        # 获取所有文档
-        all_docs = collection.get(include=["documents", "metadatas"])
-        
-        if not all_docs or not all_docs.get('documents'):
-            logger.warning("向量库中没有文档")
-            return []
-        
-        # 使用缓存的 BM25 进行关键词检索
-        bm25 = get_cached_bm25_index(all_docs['documents'], BM25)
-        bm25_scores = bm25.search(search_str, all_docs['documents'], top_k=limit * 3)
-        
-        if not bm25_scores:
-            logger.info("关键词检索无结果")
-            return []
-        
-        max_bm25 = max([s for _, s in bm25_scores]) if bm25_scores else 1
-        
-        search_results = []
-        for idx, score in bm25_scores:
-            if idx >= len(all_docs['documents']):
-                continue
-            
-            metadata = all_docs['metadatas'][idx] if all_docs.get('metadatas') and idx < len(all_docs['metadatas']) else {}
-            
-            if metadata is None:
-                continue
-            
-            snippet = all_docs['documents'][idx]
-            
-            # 应用排除词过滤
-            if parser.should_exclude(snippet, parsed):
-                continue
-            
-            # 文件类型过滤
-            file_type = metadata.get('file_type', '').lstrip('.')
-            if final_file_types and file_type not in final_file_types:
-                continue
-            
-            normalized_score = score / max_bm25 if max_bm25 > 0 else 0
-            
-            search_results.append({
-                "document_id": metadata.get('document_id', ''),
-                "filename": metadata.get('filename', ''),
-                "path": metadata.get('filepath', ''),
-                "file_type": metadata.get('file_type', ''),
-                "similarity": normalized_score,
-                "content_snippet": snippet[:200] + "..." if len(snippet) > 200 else snippet,
-                "chunk_index": metadata.get('chunk_index', 0),
-                "has_exact_match": parser.has_exact_match(snippet, parsed)
-            })
-        
-        # 按分数排序（精确匹配优先）
-        search_results.sort(
-            key=lambda x: (x.get('has_exact_match', False), x['similarity']),
-            reverse=True
+        search_results = _search_via_block_payload(
+            search_query,
+            mode="keyword",
+            limit=limit,
+            alpha=0.0,
+            file_types=final_file_types,
+            parsed_query=parsed,
         )
-        search_results = search_results[:limit]
-        
+        search_results = _sort_legacy_results(search_results, prefer_exact_match=True)[:limit]
         logger.info(f"关键词检索完成: query='{query[:50]}...', results={len(search_results)}")
         return search_results
-        
-    except Exception as e:
-        logger.error(f"关键词检索失败: {str(e)}")
+    except Exception as exc:
+        logger.error(f"关键词检索失败: {str(exc)}")
         return []
 
 # ===================== BM25 关键词检索 =====================
@@ -771,153 +844,29 @@ def hybrid_search(query, limit=10, alpha=0.5, use_rerank=True, file_types=None):
     if not query or not isinstance(query, str) or limit <= 0:
         logger.error("混合检索失败：查询为空或参数非法")
         return []
-    
-    # 使用查询解析器解析查询
-    parser = get_query_parser()
-    parsed = parser.parse(query)
-    search_str = parser.get_search_string(parsed)
-    
-    # 合并文件类型过滤
-    final_file_types = file_types or []
-    if parsed.file_types:
-        final_file_types.extend(parsed.file_types)
-        final_file_types = list(set(final_file_types))
-    
+
+    parsed = _query_parser.parse(query)
+    final_file_types = _merge_file_type_filters(file_types, parsed.file_types)
+    search_query = _query_parser.get_search_string(parsed).strip() or parsed.original_query
+
     try:
-        client, collection = init_chroma_client()
-        if not client or not collection:
-            logger.error("初始化Chroma客户端失败")
-            return []
-        
-        search_limit = limit * 3
-        
-        # 1. 向量检索
-        vector_results = collection.query(
-            query_texts=[search_str],
-            n_results=search_limit,
-            include=["documents", "metadatas", "distances"]
+        results = _search_via_block_payload(
+            search_query,
+            mode="hybrid",
+            limit=limit,
+            alpha=alpha,
+            file_types=final_file_types,
+            parsed_query=parsed,
         )
-        
-        # 2. 获取所有文档用于 BM25
-        all_docs = collection.get(include=["documents", "metadatas"])
-        
-        if not all_docs or not all_docs.get('documents'):
-            logger.warning("向量库中没有文档")
-            return []
-        
-        # 3. BM25 关键词检索（使用缓存）
-        bm25 = get_cached_bm25_index(all_docs['documents'], BM25)
-        bm25_scores = bm25.search(search_str, all_docs['documents'], top_k=search_limit)
-        
-        # 构建 BM25 分数字典
-        bm25_score_dict = {}
-        max_bm25 = max([s for _, s in bm25_scores]) if bm25_scores else 1
-        for idx, score in bm25_scores:
-            bm25_score_dict[idx] = score / max_bm25 if max_bm25 > 0 else 0
-        
-        # 4. 合并结果
-        combined_results = {}
-        
-        # 处理向量检索结果
-        if vector_results and vector_results.get('metadatas') and vector_results['metadatas'][0]:
-            for i in range(len(vector_results['metadatas'][0])):
-                metadata = vector_results['metadatas'][0][i]
-                distance = vector_results['distances'][0][i]
-                snippet = vector_results['documents'][0][i]
-                
-                if metadata is None:
-                    continue
-                
-                # 应用排除词过滤
-                if parser.should_exclude(snippet, parsed):
-                    continue
-                
-                # 文件类型过滤
-                file_type = metadata.get('file_type', '').lstrip('.')
-                if final_file_types and file_type not in final_file_types:
-                    continue
-                
-                doc_id = metadata.get('document_id', '') + '_' + str(metadata.get('chunk_index', 0))
-                vector_score = max(0.0, min(1.0, 1 - distance))
-                
-                combined_results[doc_id] = {
-                    "document_id": metadata.get('document_id', ''),
-                    "filename": metadata.get('filename', ''),
-                    "path": metadata.get('filepath', ''),
-                    "file_type": metadata.get('file_type', ''),
-                    "vector_score": vector_score,
-                    "bm25_score": 0.0,
-                    "content_snippet": snippet[:200] + "..." if len(snippet) > 200 else snippet,
-                    "chunk_index": metadata.get('chunk_index', 0),
-                    "full_content": snippet,
-                    "has_exact_match": parser.has_exact_match(snippet, parsed)
-                }
-        
-        # 处理 BM25 结果
-        for idx, score in bm25_scores:
-            if idx >= len(all_docs['documents']):
-                continue
-            metadata = all_docs['metadatas'][idx] if all_docs.get('metadatas') and idx < len(all_docs['metadatas']) else {}
-            if not metadata:
-                continue
-            
-            snippet = all_docs['documents'][idx]
-            
-            # 应用排除词过滤
-            if parser.should_exclude(snippet, parsed):
-                continue
-            
-            # 文件类型过滤
-            file_type = metadata.get('file_type', '').lstrip('.')
-            if final_file_types and file_type not in final_file_types:
-                continue
-            
-            doc_id = metadata.get('document_id', '') + '_' + str(metadata.get('chunk_index', 0))
-            normalized_score = score / max_bm25 if max_bm25 > 0 else 0
-            
-            if doc_id in combined_results:
-                combined_results[doc_id]['bm25_score'] = normalized_score
-            else:
-                combined_results[doc_id] = {
-                    "document_id": metadata.get('document_id', ''),
-                    "filename": metadata.get('filename', ''),
-                    "path": metadata.get('filepath', ''),
-                    "file_type": metadata.get('file_type', ''),
-                    "vector_score": 0.0,
-                    "bm25_score": normalized_score,
-                    "content_snippet": snippet[:200] + "..." if len(snippet) > 200 else snippet,
-                    "chunk_index": metadata.get('chunk_index', 0),
-                    "full_content": snippet,
-                    "has_exact_match": parser.has_exact_match(snippet, parsed)
-                }
-        
-        # 5. 计算混合分数
-        for doc_id, result in combined_results.items():
-            result['similarity'] = alpha * result['vector_score'] + (1 - alpha) * result['bm25_score']
-        
-        # 6. 排序并限制数量（精确匹配优先）
-        results = list(combined_results.values())
-        results.sort(
-            key=lambda x: (x.get('has_exact_match', False), x['similarity']),
-            reverse=True
-        )
-        results = results[:limit]
-        
-        # 7. 重排序
+        results = _sort_legacy_results(results, prefer_exact_match=True)
         if use_rerank and results:
             results = rerank_documents(query, results, top_k=limit)
-        
-        # 清理内部字段
-        for result in results:
-            result.pop('full_content', None)
-            result.pop('vector_score', None)
-            result.pop('bm25_score', None)
-        
+        else:
+            results = results[:limit]
         logger.info(f"混合检索完成: 向量权重={alpha}, 返回{len(results)}条结果")
         return results
-        
-    except Exception as e:
-        logger.error(f"混合检索失败: {str(e)}")
+    except Exception as exc:
+        logger.error(f"混合检索失败: {str(exc)}")
         return []
 
 # 检索结果重排序
@@ -975,84 +924,26 @@ def search_documents(query, limit=10, use_rerank=False, file_types=None):
     :param file_types: 文件类型过滤列表，如 ['pdf', 'docx']
     :return: 按相似度排序的搜索结果列表
     """
-    # 参数校验
     if not query or not isinstance(query, str) or limit <= 0:
         logger.error("搜索失败：查询为空或结果数非法")
         return []
 
-    # 扩大检索范围，以便过滤后仍有足够结果
-    search_limit = limit * 3 if file_types else limit
-
     try:
-        client, collection = init_chroma_client()
-        if not client or not collection:
-            logger.error("初始化Chroma客户端失败")
-            return []
-
-        # 执行向量搜索
-        results = collection.query(
-            query_texts=[query],
-            n_results=search_limit,
-            include=["documents", "metadatas", "distances"]
+        search_results = _search_via_block_payload(
+            query,
+            mode="vector",
+            limit=limit,
+            alpha=1.0,
+            file_types=file_types,
         )
-
-        # 处理搜索结果
-        search_results = []
-        # 校验结果完整性
-        if (results and
-            results.get('metadatas') and
-            results['metadatas'][0] and
-            results.get('documents') and
-            results['documents'][0] and
-            results.get('distances') and
-            results['distances'][0]):
-
-            # 确保三个列表长度一致
-            min_len = min(len(results['metadatas'][0]), len(results['distances'][0]), len(results['documents'][0]))
-            for i in range(min_len):
-                metadata = results['metadatas'][0][i]
-                distance = results['distances'][0][i]
-                snippet = results['documents'][0][i]
-
-                # 元数据空值处理
-                if metadata is None:
-                    continue
-
-                # 文件类型过滤
-                if file_types:
-                    file_type = metadata.get('file_type', '').lstrip('.')
-                    if file_type not in file_types:
-                        continue
-
-                # 截取内容片段
-                content_snippet = snippet[:200] + "..." if len(snippet) > 200 else snippet
-                # 相似度边界限制
-                similarity = max(0.0, min(1.0, 1 - distance))
-
-                search_results.append({
-                    "document_id": metadata.get('document_id', metadata.get('id', '')),
-                    "filename": metadata.get('filename', ''),
-                    "path": metadata.get('filepath', metadata.get('path', '')),
-                    "file_type": metadata.get('file_type', ''),
-                    "similarity": similarity,
-                    "content_snippet": content_snippet,
-                    "chunk_index": metadata.get('chunk_index', 0)
-                })
-
-        # 按相似度排序
-        search_results.sort(key=lambda x: x['similarity'], reverse=True)
-
-        # 限制返回数量
-        search_results = search_results[:limit]
-
-        # 使用重排序模型优化结果顺序
+        search_results = _sort_legacy_results(search_results)[:limit]
         if use_rerank and search_results:
             search_results = rerank_documents(query, search_results, top_k=limit)
 
         logger.info(f"搜索完成，返回 {len(search_results)} 条结果")
         return search_results
-    except Exception as e:
-        logger.error(f"搜索文档失败: {str(e)}")
+    except Exception as exc:
+        logger.error(f"搜索文档失败: {str(exc)}")
         return []
 
 # 批量搜索文档（支持多查询）
@@ -1063,75 +954,20 @@ def batch_search_documents(queries, limit=5):
     :param limit: 每个查询返回结果数量限制
     :return: 每个查询的搜索结果列表
     """
-    # ===================== 优化1：参数校验 =====================
     if not isinstance(queries, list) or len(queries) == 0 or limit <= 0:
         logger.error("批量搜索失败：查询列表为空或结果数非法")
         return []
 
-    try:
-        client, collection = init_chroma_client()
-        if not client or not collection:
-            logger.error("初始化Chroma客户端失败")
-            return [[] for _ in queries]
-
-        # 执行批量搜索
-        results = collection.query(
-            query_texts=queries,
-            n_results=limit,
-            include=["documents", "metadatas", "distances"]
-        )
-
-        # 处理搜索结果
-        batch_results = []
-        # ===================== 修复2：校验结果完整性 =====================
-        metadatas_list = results.get('metadatas', [])
-        distances_list = results.get('distances', [])
-        documents_list = results.get('documents', [])
-
-        # 确保三个列表长度一致
-        min_query_len = min(len(metadatas_list), len(distances_list), len(documents_list))
-        for i in range(min_query_len):
-            metadatas = metadatas_list[i] or []
-            distances = distances_list[i] or []
-            documents = documents_list[i] or []
-            query_results = []
-
-            # 确保单条查询的三个列表长度一致
-            min_chunk_len = min(len(metadatas), len(distances), len(documents))
-            for j in range(min_chunk_len):
-                metadata = metadatas[j]
-                distance = distances[j]
-                snippet = documents[j]
-
-                if metadata is None:
-                    continue
-
-                content_snippet = snippet[:200] + "..." if len(snippet) > 200 else snippet
-                similarity = max(0.0, min(1.0, 1 - distance))
-
-                query_results.append({
-                    "document_id": metadata.get('document_id', metadata.get('id', '')),
-                    "filename": metadata.get('filename', ''),
-                    "path": metadata.get('filepath', metadata.get('path', '')),
-                    "file_type": metadata.get('file_type', ''),
-                    "similarity": similarity,
-                    "content_snippet": content_snippet,
-                    "chunk_index": metadata.get('chunk_index', 0)
-                })
-
-            # 按相似度排序
-            query_results.sort(key=lambda x: x['similarity'], reverse=True)
-            batch_results.append(query_results)
-
-        # 补全剩余查询的空结果
-        while len(batch_results) < len(queries):
+    batch_results = []
+    for query in queries:
+        try:
+            batch_results.append(search_documents(query, limit=limit, use_rerank=False, file_types=None))
+        except Exception as exc:
+            logger.error(f"批量搜索文档失败: {str(exc)}")
             batch_results.append([])
 
-        logger.info(f"批量搜索完成，处理 {len(batch_results)} 条查询")
-        return batch_results
-    except Exception as e:
-        logger.error(f"批量搜索文档失败: {str(e)}")
-        return [[] for _ in queries]
+    logger.info(f"批量搜索完成，处理 {len(batch_results)} 条查询")
+    return batch_results
 
 # 根据文档ID获取文档信息
 def get_document_by_id(document_id):
@@ -1140,33 +976,44 @@ def get_document_by_id(document_id):
     :param document_id: 文档ID
     :return: 文档信息
     """
-    # ===================== 优化1：参数校验 =====================
     if not document_id or not isinstance(document_id, str):
         logger.error("根据ID获取文档失败：文档ID为空或非法")
         return None
 
     try:
-        client, collection = init_chroma_client()
-        if not client or not collection:
-            logger.error("初始化Chroma客户端失败")
+        collection = get_block_collection()
+        if collection is None:
+            logger.error("document_blocks collection 不可用")
             return None
 
-        # 查询文档
-        results = collection.get(
-            where={"document_id": document_id},
-            include=["documents", "metadatas"]
-        )
+        results = collection.get(where={"document_id": document_id}, include=["documents", "metadatas"])
+        ids = list(results.get("ids") or [])
+        documents = list(results.get("documents") or [])
+        metadatas = list(results.get("metadatas") or [])
+        if not ids:
+            return None
 
-        if results and results.get('metadatas') and len(results['metadatas']) > 0:
-            logger.info(f"根据ID获取文档成功：{document_id}，共 {len(results['ids'])} 个分片")
-            return {
-                "chunks": results.get('documents', []),
-                "metadatas": results.get('metadatas', []),
-                "ids": results.get('ids', [])
-            }
-        return None
-    except Exception as e:
-        logger.error(f"根据ID获取文档失败: {str(e)}")
+        if len(documents) < len(ids):
+            documents.extend([""] * (len(ids) - len(documents)))
+        if len(metadatas) < len(ids):
+            metadatas.extend([{}] * (len(ids) - len(metadatas)))
+
+        rows = []
+        for index, row_id in enumerate(ids):
+            metadata = dict(metadatas[index] or {})
+            block_index = int(metadata.get("block_index", metadata.get("chunk_index", 0)) or 0)
+            metadata.setdefault("chunk_index", block_index)
+            rows.append((block_index, row_id, documents[index] or "", metadata))
+
+        rows.sort(key=lambda item: item[0])
+        logger.info(f"根据ID获取文档成功：{document_id}，共 {len(rows)} 个分块")
+        return {
+            "chunks": [item[2] for item in rows],
+            "metadatas": [item[3] for item in rows],
+            "ids": [item[1] for item in rows],
+        }
+    except Exception as exc:
+        logger.error(f"根据ID获取文档失败: {str(exc)}")
         return None
 
 
@@ -1776,45 +1623,38 @@ def get_document_stats():
     :return: 统计信息
     """
     try:
-        client, collection = init_chroma_client()
-        if not client or not collection:
-            logger.error("初始化Chroma客户端失败")
+        collection = get_block_collection()
+        if collection is None:
+            logger.error("document_blocks collection 不可用")
             return {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}}
 
-        # ===================== 修复2：用 count() 替代 get()，避免内存溢出 =====================
         total_chunks = collection.count()
+        file_types: Dict[str, int] = {}
+        document_ids: set[str] = set()
 
-        # 统计不同文件类型的文档数量（仅获取元数据，不获取文档内容）
-        file_types = {}
-        document_ids = set()
         if total_chunks > 0:
-            # 分批获取元数据，避免一次性加载过多
             batch_size = 1000
             for offset in range(0, total_chunks, batch_size):
-                results = collection.get(
-                    limit=batch_size,
-                    offset=offset,
-                    include=["metadatas"]  # 仅获取元数据，不获取文档内容
-                )
-                if results and results.get('metadatas'):
-                    for metadata in results['metadatas']:
-                        if metadata is None:
-                            continue
-                        document_id = metadata.get('document_id')
-                        if document_id:
-                            document_ids.add(document_id)
-                        file_type = metadata.get('file_type', 'unknown')
+                results = collection.get(limit=batch_size, offset=offset, include=["metadatas"])
+                for metadata in results.get("metadatas") or []:
+                    if metadata is None:
+                        continue
+                    document_id = metadata.get("document_id")
+                    if document_id:
+                        document_ids.add(document_id)
+                    file_type = metadata.get("file_type")
+                    if file_type:
                         file_types[file_type] = file_types.get(file_type, 0) + 1
 
         stats = {
             "total_chunks": total_chunks,
             "vector_indexed_documents": len(document_ids),
-            "file_types": file_types
+            "file_types": file_types,
         }
         logger.info(f"获取统计信息成功：{stats}")
         return stats
-    except Exception as e:
-        logger.error(f"获取文档统计信息失败: {str(e)}")
+    except Exception as exc:
+        logger.error(f"获取文档统计信息失败: {str(exc)}")
         return {"total_chunks": 0, "vector_indexed_documents": 0, "file_types": {}}
 
 
@@ -1948,9 +1788,9 @@ class BM25IndexService:
     def _rebuild_from_chroma(self) -> None:
         """从 ChromaDB 拉全量数据重建索引"""
         try:
-            client, collection = init_chroma_client()
-            if not client or not collection:
-                logger.warning("BM25IndexService: ChromaDB 不可用，跳过索引构建")
+            collection = get_block_collection()
+            if collection is None:
+                logger.warning("BM25IndexService: document_blocks 不可用，跳过索引构建")
                 return
             raw = collection.get(include=["documents", "metadatas"])
             ids = raw.get("ids") or []

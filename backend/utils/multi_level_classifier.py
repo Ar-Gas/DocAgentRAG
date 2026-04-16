@@ -11,15 +11,26 @@ import jieba
 import jieba.analyse
 
 from app.infra.metadata_store import get_metadata_store
-from .storage import get_all_documents, get_document_info
+from app.infra.repositories.document_repository import DocumentRepository
 from .classifier import CATEGORY_KEYWORDS, EXTENSION_CATEGORY
-from config import EXTENSION_TO_DIR
+from config import DATA_DIR, EXTENSION_TO_DIR
 
 logger = logging.getLogger(__name__)
 
 
+def _document_repository() -> DocumentRepository:
+    return DocumentRepository(data_dir=DATA_DIR)
+
+
+def get_all_documents():
+    return _document_repository().list_all()
+
+
+def get_document_info(document_id: str):
+    return _document_repository().get(document_id)
+
+
 def _metadata_store():
-    from config import DATA_DIR
     return get_metadata_store(data_dir=DATA_DIR)
 
 MEANINGLESS_PATTERNS = [

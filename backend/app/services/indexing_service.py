@@ -2,13 +2,31 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
+from app.infra.repositories.document_repository import DocumentRepository
+from app.infra.vector_store import get_block_collection
+from config import DATA_DIR
 from utils.block_extractor import extract_structured_blocks
-from utils.storage import (
-    get_block_collection,
-    get_document_info,
-    update_document_info,
-    upsert_document_artifact,
-)
+
+
+def _document_repository() -> DocumentRepository:
+    return DocumentRepository(data_dir=DATA_DIR)
+
+
+def _artifact_repository() -> DocumentArtifactRepository:
+    return DocumentArtifactRepository(data_dir=DATA_DIR)
+
+
+def get_document_info(document_id: str):
+    return _document_repository().get(document_id)
+
+
+def update_document_info(document_id: str, updated_info: Dict[str, Any]) -> bool:
+    return _document_repository().update(document_id, updated_info)
+
+
+def upsert_document_artifact(document_id: str, artifact_type: str, payload: Dict[str, Any]):
+    return _artifact_repository().upsert(document_id, artifact_type, payload)
 
 
 class IndexingService:

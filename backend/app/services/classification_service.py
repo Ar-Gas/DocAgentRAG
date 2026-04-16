@@ -1,7 +1,13 @@
 from typing import Dict, List
 
+from app.infra.repositories.classification_table_repository import ClassificationTableRepository
+from app.infra.repositories.document_repository import DocumentRepository
+from app.infra.vector_store import get_chroma_collection
+from app.services.document_vector_index_service import DocumentVectorIndexService
 from app.services.errors import AppServiceError
+from app.services.legacy_classification_tree_bridge import update_classification_tree_after_reclassify as _bridge_reclassify
 from app.services.topic_tree_service import TopicTreeService
+from config import BASE_DIR, DATA_DIR
 from utils.classifier import classify_document, create_classification_directory
 from utils.smart_retrieval import generate_classification_table
 from utils.multi_level_classifier import (
@@ -9,18 +15,89 @@ from utils.multi_level_classifier import (
     get_classification_tree,
     get_multi_level_classifier,
 )
-from utils.storage import (
-    get_classification_table_record,
-    get_all_documents,
-    get_document_info,
-    get_documents_by_classification,
-    list_classification_table_records,
-    re_chunk_document,
-    save_classification_result,
-    save_classification_table_record,
-    update_classification_tree_after_reclassify,
-    update_document_info,
-)
+
+
+def _document_repository() -> DocumentRepository:
+    return DocumentRepository(data_dir=DATA_DIR)
+
+
+def _classification_table_repository() -> ClassificationTableRepository:
+    return ClassificationTableRepository(data_dir=DATA_DIR)
+
+
+def _vector_index_service() -> DocumentVectorIndexService:
+    return DocumentVectorIndexService(document_repository=_document_repository())
+
+
+def get_document_info(document_id: str):
+    return _document_repository().get(document_id)
+
+
+def get_all_documents():
+    return _document_repository().list_all()
+
+
+def get_documents_by_classification(classification: str):
+    return _document_repository().list_by_classification(classification)
+
+
+def save_classification_result(document_id: str, classification_result: str) -> bool:
+    return _document_repository().save_classification_result(document_id, classification_result)
+
+
+def update_document_info(document_id: str, updated_info: Dict) -> bool:
+    return _document_repository().update(document_id, updated_info)
+
+
+def save_document_to_chroma(
+    filepath,
+    document_id=None,
+    use_refiner=True,
+    save_chunk_info=True,
+    full_content=None,
+):
+    return _vector_index_service().save_document_to_chroma(
+        filepath,
+        document_id=document_id,
+        use_refiner=use_refiner,
+        save_chunk_info=save_chunk_info,
+        full_content=full_content,
+        collection=get_chroma_collection(),
+        update_document_info=update_document_info,
+    )
+
+
+def re_chunk_document(document_id: str, use_refiner: bool = True) -> bool:
+    return _vector_index_service().re_chunk_document(
+        document_id,
+        use_refiner=use_refiner,
+        get_document_info=get_document_info,
+        get_chroma_collection=get_chroma_collection,
+        save_document_to_chroma=save_document_to_chroma,
+        update_document_info=update_document_info,
+        fallback_roots=[BASE_DIR / "classified_docs", BASE_DIR / "doc"],
+    )
+
+
+def save_classification_table_record(table_payload: Dict, table_id: str | None = None):
+    return _classification_table_repository().save(table_payload, table_id)
+
+
+def get_classification_table_record(table_id: str):
+    return _classification_table_repository().get(table_id)
+
+
+def list_classification_table_records(limit: int = 50):
+    return _classification_table_repository().list(limit)
+
+
+def update_classification_tree_after_reclassify(document_id, old_classification, new_classification):
+    return _bridge_reclassify(
+        document_id,
+        old_classification,
+        new_classification,
+        get_document_info=get_document_info,
+    )
 
 
 class ClassificationService:

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentMetadataStore:
-    """SQLite-backed metadata store with JSON mirroring for backward compatibility."""
+    """SQLite-backed metadata store."""
 
     def __init__(self, db_path: Optional[Path] = None, data_dir: Optional[Path] = None):
         self.data_dir = Path(data_dir or DATA_DIR)
@@ -134,28 +134,7 @@ class DocumentMetadataStore:
                         pass  # 列已存在时忽略
                 connection.commit()
 
-            self._sync_from_json_files()
             self._initialized = True
-
-    def _sync_from_json_files(self) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        for json_path in sorted(self.data_dir.glob("*.json")):
-            if json_path.name == "classification_tree.json":
-                try:
-                    with open(json_path, "r", encoding="utf-8") as handle:
-                        payload = json.load(handle)
-                    self.save_artifact("classification_tree", payload, mirror=False)
-                except Exception as exc:
-                    logger.warning("同步分类树 JSON 失败: %s", exc)
-                continue
-
-            try:
-                with open(json_path, "r", encoding="utf-8") as handle:
-                    doc_info = json.load(handle)
-                if doc_info.get("id") and doc_info.get("filename"):
-                    self.upsert_document(doc_info, mirror=False)
-            except Exception as exc:
-                logger.warning("同步元数据 JSON 失败 %s: %s", json_path.name, exc)
 
     def _serialize_doc(self, doc_info: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(doc_info)
@@ -171,23 +150,7 @@ class DocumentMetadataStore:
             "payload": json.dumps(payload, ensure_ascii=False),
         }
 
-    def _write_document_json(self, doc_info: Dict[str, Any]) -> None:
-        output_path = self.data_dir / f"{doc_info['id']}.json"
-        with open(output_path, "w", encoding="utf-8") as handle:
-            json.dump(doc_info, handle, ensure_ascii=False, indent=2)
-
-    def _delete_document_json(self, document_id: str) -> None:
-        output_path = self.data_dir / f"{document_id}.json"
-        if output_path.exists():
-            output_path.unlink()
-
-    def _write_artifact_json(self, name: str, payload: Dict[str, Any]) -> None:
-        output_name = "classification_tree.json" if name == "classification_tree" else f"{name}.json"
-        output_path = self.data_dir / output_name
-        with open(output_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-
-    def upsert_document(self, doc_info: Dict[str, Any], mirror: bool = False) -> bool:
+    def upsert_document(self, doc_info: Dict[str, Any]) -> bool:
         if not isinstance(doc_info, dict) or not doc_info.get("id"):
             return False
 
@@ -222,9 +185,6 @@ class DocumentMetadataStore:
                 ),
             )
             connection.commit()
-
-        if mirror:
-            self._write_document_json(doc_info)
         return True
 
     def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
@@ -251,15 +211,13 @@ class DocumentMetadataStore:
             ).fetchall()
         return [json.loads(row["payload"]) for row in rows]
 
-    def delete_document(self, document_id: str, mirror: bool = True) -> bool:
+    def delete_document(self, document_id: str) -> bool:
         with self._connect() as connection:
             connection.execute("DELETE FROM document_contents WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM document_segments WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM document_artifacts WHERE document_id = ?", (document_id,))
             connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
             connection.commit()
-        if mirror:
-            self._delete_document_json(document_id)
         return True
 
     def update_document(self, document_id: str, updated_fields: Dict[str, Any]) -> bool:
@@ -325,7 +283,7 @@ class DocumentMetadataStore:
             logger.error(f"update_document_status 失败: {exc}")
             return False
 
-    def save_artifact(self, name: str, payload: Dict[str, Any], mirror: bool = False) -> bool:
+    def save_artifact(self, name: str, payload: Dict[str, Any]) -> bool:
         now = datetime.now().isoformat()
         with self._connect() as connection:
             connection.execute(
@@ -339,9 +297,6 @@ class DocumentMetadataStore:
                 (name, json.dumps(payload, ensure_ascii=False), now),
             )
             connection.commit()
-
-        if mirror:
-            self._write_artifact_json(name, payload)
         return True
 
     def load_artifact(self, name: str) -> Optional[Dict[str, Any]]:
@@ -352,17 +307,6 @@ class DocumentMetadataStore:
             ).fetchone()
         if row:
             return json.loads(row["payload"])
-
-        json_name = "classification_tree.json" if name == "classification_tree" else f"{name}.json"
-        json_path = self.data_dir / json_name
-        if json_path.exists():
-            try:
-                with open(json_path, "r", encoding="utf-8") as handle:
-                    payload = json.load(handle)
-                self.save_artifact(name, payload, mirror=False)
-                return payload
-            except Exception as exc:
-                logger.warning("加载 JSON artifact 失败 %s: %s", name, exc)
         return None
 
     def save_document_content(

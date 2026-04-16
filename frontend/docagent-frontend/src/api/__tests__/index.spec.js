@@ -33,4 +33,15 @@ describe('api topic tree helpers', () => {
 
     expect(requestMock.post).toHaveBeenCalledWith('/classification/topic-tree/build', { force_rebuild: true })
   })
+
+  it('posts workspace search payload without injecting retrieval_version', async () => {
+    vi.resetModules()
+    const { api } = await import('@/api')
+    const payload = { query: '预算', mode: 'hybrid', limit: 10 }
+
+    api.workspaceSearch(payload)
+
+    expect(requestMock.post).toHaveBeenCalledWith('/retrieval/workspace-search', payload)
+    expect(requestMock.post.mock.calls[0][1]).not.toHaveProperty('retrieval_version')
+  })
 })

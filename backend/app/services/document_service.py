@@ -5,30 +5,154 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.infra.file_utils import enrich_document_file_state as _enrich_document_file_state
+from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
+from app.infra.repositories.document_content_repository import DocumentContentRepository
+from app.infra.repositories.document_repository import DocumentRepository
+from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
+from app.infra.vector_store import get_chroma_collection
+from app.services.document_vector_index_service import DocumentVectorIndexService
 from app.services.errors import AppServiceError
 from app.services.extraction_service import ExtractionService
 from app.services.indexing_service import IndexingService
-from config import ALLOWED_EXTENSIONS, EXTENSION_TO_DIR, MAX_FILE_SIZE
+from app.services.legacy_classification_tree_bridge import (
+    update_classification_tree_after_add as _bridge_add,
+    update_classification_tree_after_delete as _bridge_delete,
+)
+from config import ALLOWED_EXTENSIONS, BASE_DIR, DATA_DIR, DOC_DIR, EXTENSION_TO_DIR, MAX_FILE_SIZE
 from utils.retriever import get_query_parser, get_bm25_service
 from utils.search_cache import get_search_cache
-from utils.storage import (
-    DOC_DIR,
-    check_document_chunks,
-    delete_document,
-    enrich_document_file_state,
-    get_document_artifact,
-    get_document_content_record,
-    get_all_documents,
-    get_document_info,
-    list_document_artifacts,
-    list_document_segments,
-    re_chunk_document,
-    save_document_summary_for_classification,
-    save_document_to_chroma,
-    update_document_info,
-)
 
 logger = logging.getLogger(__name__)
+
+
+def _document_repository() -> DocumentRepository:
+    return DocumentRepository(data_dir=DATA_DIR)
+
+
+def _content_repository() -> DocumentContentRepository:
+    return DocumentContentRepository(data_dir=DATA_DIR)
+
+
+def _segment_repository() -> DocumentSegmentRepository:
+    return DocumentSegmentRepository(data_dir=DATA_DIR)
+
+
+def _artifact_repository() -> DocumentArtifactRepository:
+    return DocumentArtifactRepository(data_dir=DATA_DIR)
+
+
+def _vector_index_service() -> DocumentVectorIndexService:
+    return DocumentVectorIndexService(
+        document_repository=_document_repository(),
+        content_repository=_content_repository(),
+        segment_repository=_segment_repository(),
+    )
+
+
+def get_document_info(document_id: str):
+    return _document_repository().get(document_id)
+
+
+def get_all_documents():
+    return _document_repository().list_all()
+
+
+def update_document_info(document_id: str, updated_info: Dict) -> bool:
+    return _document_repository().update(document_id, updated_info)
+
+
+def save_classification_result(document_id: str, classification_result: str) -> bool:
+    return _document_repository().save_classification_result(document_id, classification_result)
+
+
+def get_document_content_record(document_id: str):
+    return _content_repository().get(document_id)
+
+
+def list_document_segments(document_id: str):
+    return _segment_repository().list(document_id)
+
+
+def list_document_artifacts(document_id: str, artifact_type: Optional[str] = None):
+    return _artifact_repository().list(document_id, artifact_type)
+
+
+def get_document_artifact(document_id: str, artifact_type: str):
+    return _artifact_repository().get(document_id, artifact_type)
+
+
+def enrich_document_file_state(doc_info: Optional[Dict], persist: bool = True) -> Dict:
+    return _enrich_document_file_state(
+        doc_info,
+        base_dir=BASE_DIR,
+        doc_dir=DOC_DIR,
+        get_document_info=get_document_info,
+        update_document_info=update_document_info,
+        persist=persist,
+    )
+
+
+def save_document_summary_for_classification(
+    filepath,
+    full_content: Optional[str] = None,
+    parser_name: Optional[str] = None,
+    display_filename: Optional[str] = None,
+):
+    return _vector_index_service().save_document_summary_for_classification(
+        filepath,
+        full_content=full_content,
+        parser_name=parser_name,
+        display_filename=display_filename,
+        classification_bridge_add=_bridge_add,
+    )
+
+
+def save_document_to_chroma(
+    filepath,
+    document_id=None,
+    use_refiner=True,
+    save_chunk_info=True,
+    full_content: Optional[str] = None,
+):
+    return _vector_index_service().save_document_to_chroma(
+        filepath,
+        document_id=document_id,
+        use_refiner=use_refiner,
+        save_chunk_info=save_chunk_info,
+        full_content=full_content,
+        collection=get_chroma_collection(),
+        update_document_info=update_document_info,
+    )
+
+
+def re_chunk_document(document_id: str, use_refiner: bool = True) -> bool:
+    return _vector_index_service().re_chunk_document(
+        document_id,
+        use_refiner=use_refiner,
+        get_document_info=get_document_info,
+        get_chroma_collection=get_chroma_collection,
+        save_document_to_chroma=save_document_to_chroma,
+        update_document_info=update_document_info,
+        fallback_roots=[BASE_DIR / "classified_docs", BASE_DIR / "doc"],
+    )
+
+
+def check_document_chunks(document_id: str) -> Dict:
+    return _vector_index_service().check_document_chunks(
+        document_id,
+        get_document_info=get_document_info,
+        get_chroma_collection=get_chroma_collection,
+    )
+
+
+def delete_document(document_id: str) -> bool:
+    return _vector_index_service().delete_document(
+        document_id,
+        collection=get_chroma_collection(),
+        delete_document_record=_document_repository().delete,
+        classification_bridge_delete=_bridge_delete,
+    )
 
 
 class DocumentService:
@@ -112,7 +236,6 @@ class DocumentService:
         # B. 上传完成后自动分类，失败不影响上传结果
         try:
             from utils.classifier import classify_document
-            from utils.storage import save_classification_result
             classification_result = classify_document(doc_info)
             if classification_result:
                 result_data = classification_result.get("classification_result", {})

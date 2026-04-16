@@ -24,7 +24,11 @@ from api import (
     validation_exception_handler,
     generic_exception_handler
 )
-from utils.storage import init_chroma_client, get_chroma_collection, get_all_documents, detect_and_lock_embedding_dim
+from app.infra.embedding_provider import detect_and_lock_embedding_dim
+from app.infra.repositories.document_repository import DocumentRepository
+from app.infra import vector_store as vector_store_module
+from app.infra.vector_store import get_chroma_collection, init_chroma_client
+from app.services.document_vector_index_service import DocumentVectorIndexService
 from utils.logger import setup_logging
 
 logging.basicConfig(
@@ -34,6 +38,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 # 7.1 初始化统一日志
 setup_logging()
+
+
+def _document_repository() -> DocumentRepository:
+    return DocumentRepository(data_dir=DATA_DIR)
+
+
+def _vector_index_service() -> DocumentVectorIndexService:
+    return DocumentVectorIndexService(document_repository=_document_repository())
+
+
+def get_all_documents():
+    return _document_repository().list_all()
+
+
+def update_document_info(document_id: str, updated_info: dict) -> bool:
+    return _document_repository().update(document_id, updated_info)
+
+
+def save_document_to_chroma(filepath, document_id=None, use_refiner=True, save_chunk_info=True, full_content=None):
+    return _vector_index_service().save_document_to_chroma(
+        filepath,
+        document_id=document_id,
+        use_refiner=use_refiner,
+        save_chunk_info=save_chunk_info,
+        full_content=full_content,
+        collection=get_chroma_collection(),
+        update_document_info=update_document_info,
+    )
 
 
 def sync_doubao_llm_availability(
@@ -121,7 +153,6 @@ def check_and_rebuild_chunks():
                 if filepath and Path(filepath).exists():
                     logger.info(f"准备重新处理文档: {filename}")
                     try:
-                        from utils.storage import save_document_to_chroma
                         success = save_document_to_chroma(filepath, doc_id)
                         if success:
                             logger.info(f"文档重新处理成功: {filename}")
@@ -230,8 +261,10 @@ async def root():
 
 @app.get("/health", summary="健康检查")
 async def health_check():
-    from utils.storage import _chroma_client, _chroma_collection
-    chroma_ok = _chroma_client is not None and _chroma_collection is not None
+    chroma_ok = (
+        vector_store_module._chroma_client is not None
+        and vector_store_module._chroma_collection is not None
+    )
     
     status = "healthy" if chroma_ok else "unhealthy"
     
