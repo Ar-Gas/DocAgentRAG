@@ -120,16 +120,9 @@ class DoubaoConfigTests(unittest.TestCase):
         sys.modules.pop(module_name, None)
         if fake_secrets_module is None:
             sys.modules.pop("secrets_api", None)
-            filtered_sys_path = [
-                path
-                for path in sys.path
-                if Path(path or ".").resolve() != BACKEND_DIR.resolve()
-            ]
-            with mock.patch.object(sys, "path", filtered_sys_path):
-                return _load_module_from_path(module_name, CONFIG_PATH)
         else:
             sys.modules["secrets_api"] = fake_secrets_module
-            return _load_module_from_path(module_name, CONFIG_PATH)
+        return _load_module_from_path(module_name, CONFIG_PATH)
 
     def _load_retrieval_service(self, suffix: str, config_module, llm_available: bool, smart_module_override=None):
         fake_modules = _make_fake_retrieval_dependencies(llm_available=llm_available)
