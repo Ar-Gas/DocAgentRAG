@@ -40,3 +40,4 @@ backend/doc/
 backend/chromadb/
 backend/models/
 homework/
+.worktrees/
