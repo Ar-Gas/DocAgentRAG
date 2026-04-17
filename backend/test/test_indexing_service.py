@@ -93,18 +93,24 @@ def test_audit_block_index_detects_missing_rows_and_count_mismatch(monkeypatch):
             {
                 "id": "doc-1",
                 "filename": "budget.pdf",
+                "filepath": "/docs/budget.pdf",
+                "file_type": ".pdf",
                 "block_index_status": "ready",
                 "block_count": 1,
             },
             {
                 "id": "doc-2",
                 "filename": "contract.docx",
+                "filepath": "/docs/contract.docx",
+                "file_type": ".docx",
                 "block_index_status": "ready",
                 "block_count": 3,
             },
             {
                 "id": "doc-3",
                 "filename": "notes.pdf",
+                "filepath": "/docs/notes.pdf",
+                "file_type": ".pdf",
                 "block_index_status": "failed",
                 "block_count": 0,
             },
@@ -122,6 +128,50 @@ def test_audit_block_index_detects_missing_rows_and_count_mismatch(monkeypatch):
     assert documents["doc-2"]["actual_block_count"] == 2
     assert documents["doc-3"]["rebuild_reasons"] == ["status_failed", "missing_blocks"]
     assert payload["orphan_block_ids"] == ["ghost:block-v1:0"]
+
+
+def test_audit_block_index_skips_unsupported_types_and_ready_zero_block_documents(monkeypatch):
+    fake_collection = FakeCollection()
+
+    monkeypatch.setattr(
+        indexing_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-scan",
+                "filename": "scan.pdf",
+                "filepath": "/docs/scan.pdf",
+                "file_type": ".pdf",
+                "block_index_status": "ready",
+                "block_count": 0,
+            },
+            {
+                "id": "doc-image",
+                "filename": "diagram.webp",
+                "filepath": "/docs/diagram.webp",
+                "file_type": ".webp",
+                "block_index_status": "failed",
+            },
+            {
+                "id": "doc-docx",
+                "filename": "offer.docx",
+                "filepath": "/docs/offer.docx",
+                "file_type": ".docx",
+                "block_index_status": "",
+            },
+        ],
+    )
+    monkeypatch.setattr(indexing_service_module, "get_block_collection", lambda: fake_collection)
+
+    payload = IndexingService().audit_block_index()
+
+    documents = {item["document_id"]: item for item in payload["documents"]}
+    assert documents["doc-scan"]["needs_rebuild"] is False
+    assert documents["doc-scan"]["rebuild_reasons"] == []
+    assert documents["doc-image"]["needs_rebuild"] is False
+    assert documents["doc-image"]["rebuild_reasons"] == []
+    assert documents["doc-docx"]["rebuild_reasons"] == ["missing_blocks"]
+    assert payload["rebuild_candidates"] == ["doc-docx"]
 
 
 def test_cleanup_orphan_block_rows_deletes_only_unknown_documents(monkeypatch):

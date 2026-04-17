@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
@@ -76,7 +76,30 @@ describe('DocumentViewerModal', () => {
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
   })
 
-  it('shows a friendly empty state when the original file is unavailable', () => {
+  it('falls back to extracted text preview when the original file is unavailable', async () => {
+    apiMocks.getDocumentReader.mockResolvedValue({
+      data: {
+        document_id: 'doc-2',
+        filename: 'missing.pdf',
+        total_matches: 1,
+        best_anchor: {
+          block_id: 'doc-2#0',
+          match_index: 0,
+        },
+        blocks: [
+          {
+            block_id: 'doc-2#0',
+            block_index: 0,
+            block_type: 'paragraph',
+            heading_path: ['第一章'],
+            page_number: 1,
+            text: '这是已提取文本',
+            matches: [{ start: 2, end: 4, term: '提取' }],
+          },
+        ],
+      },
+    })
+
     const wrapper = mount(DocumentViewerModal, {
       props: {
         visible: true,
@@ -90,8 +113,12 @@ describe('DocumentViewerModal', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('原文件不存在')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已切换到提取文本预览')
+    expect(wrapper.text()).toContain('这是已提取文本')
     expect(wrapper.find('.pdf-renderer-stub').exists()).toBe(false)
+    expect(apiMocks.getDocumentReader).toHaveBeenCalledWith('doc-2', '', null)
     expect(wrapper.find('button').attributes('disabled')).toBeDefined()
   })
 
@@ -163,7 +190,30 @@ describe('DocumentViewerModal', () => {
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
   })
 
-  it('shows the missing-file state even for docx files', () => {
+  it('loads extracted text preview for missing docx files too', async () => {
+    apiMocks.getDocumentReader.mockResolvedValue({
+      data: {
+        document_id: 'doc-7',
+        filename: 'missing.docx',
+        total_matches: 0,
+        best_anchor: {
+          block_id: 'doc-7#0',
+          match_index: 0,
+        },
+        blocks: [
+          {
+            block_id: 'doc-7#0',
+            block_index: 0,
+            block_type: 'paragraph',
+            heading_path: [],
+            page_number: null,
+            text: 'docx 已提取文本',
+            matches: [],
+          },
+        ],
+      },
+    })
+
     const wrapper = mount(DocumentViewerModal, {
       props: {
         visible: true,
@@ -177,9 +227,12 @@ describe('DocumentViewerModal', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('原文件不存在')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已切换到提取文本预览')
+    expect(wrapper.text()).toContain('docx 已提取文本')
     expect(wrapper.find('.docx-renderer-stub').exists()).toBe(false)
-    expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
+    expect(apiMocks.getDocumentReader).toHaveBeenCalledWith('doc-7', '', null)
   })
 
   it('normalizes extension-like fileType values before routing', () => {

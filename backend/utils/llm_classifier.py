@@ -3,11 +3,10 @@ LLM智能分类器 - 使用大模型进行文档分类
 使用豆包 API 进行文档分类
 """
 import os
-import logging
 import requests
 from typing import Dict, Any, Optional
 
-logger = logging.getLogger(__name__)
+from app.core.logger import logger
 
 _llm_client = None
 
@@ -163,7 +162,14 @@ def classify_with_llm(doc_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     preview = content[:2000] if content else ''
 
-    prompt = f"""你是一个专业的文档分类助手。请根据文件名和文档内容，为文档分类。
+    prompt = f"""你现在是一个资深的跨国企业档案管理员。请根据以下文档的内容摘要，为其归纳出一个专业的、符合企业办公场景的语义分类标签。
+
+要求：
+1. 标签名称必须是具体的业务领域或文档类型，如：劳动合同、财务月报、前端开发规范、会议记录。
+2. 绝对不能使用无意义的词汇，如：文档、正文、一个、测试。
+3. 如果文档内容是不完整的错误信息（如 OCR 失败、解析失败），请输出特殊标签 'Error'。
+4. 除 Error 外，标签字数控制在 4-8 个字以内，体现专业度。
+5. 如需参考分类体系，可优先映射到以下类别中最贴近的专业标签。
 
 文件名: {filename}
 文档内容预览:
@@ -171,8 +177,7 @@ def classify_with_llm(doc_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 {CATEGORY_DESCRIPTIONS}
 
-请从上述分类体系中选择最合适的一个分类，只返回分类名称，不要其他内容。
-例如：书籍-编程技术
+请只返回最终分类标签，不要其他内容。
 
 分类结果："""
 

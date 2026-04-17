@@ -1,7 +1,8 @@
 import os
-import logging
+import json
 import chardet
 import re
+import sys
 import tempfile
 import shutil
 import subprocess
@@ -9,9 +10,8 @@ from pathlib import Path
 from email import policy
 from email.parser import BytesParser
 
+from app.core.logger import logger
 from config import MAX_FILE_SIZE, MAX_TEXT_LENGTH, PDF_PAGE_LIMIT, EXCEL_CHUNK_SIZE
-
-logger = logging.getLogger(__name__)
 
 try:
     from PyPDF2 import PdfReader
@@ -109,6 +109,125 @@ def _is_processing_error(content):
         return True
     return any(content.startswith(prefix) for prefix in PROCESSING_ERROR_PREFIXES)
 
+
+def _resolve_magic_pdf_command():
+    cli_path = shutil.which("magic-pdf")
+    if cli_path:
+        return cli_path
+
+    python_dir = Path(sys.executable).parent
+    sibling_cli = python_dir / "magic-pdf"
+    if sibling_cli.exists():
+        return str(sibling_cli)
+    return None
+
+
+def _resolve_mineru_models_dir() -> Path | None:
+    env_value = os.getenv("MINERU_MODELS_DIR")
+    if env_value:
+        candidate = Path(env_value).expanduser()
+        if candidate.exists():
+            return candidate
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    candidates = [
+        backend_dir / "models" / "modelscope-cache" / "opendatalab" / "PDF-Extract-Kit-1.0" / "models",
+        backend_dir / "models" / "modelscope-cache" / "opendatalab" / "PDF-Extract-Kit-1___0" / "models",
+        backend_dir / "models" / "PDF-Extract-Kit-1.0" / "models",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_layoutreader_model_dir() -> Path | None:
+    env_value = os.getenv("MINERU_LAYOUTREADER_MODELS_DIR")
+    if env_value:
+        candidate = Path(env_value).expanduser()
+        if candidate.exists():
+            return candidate
+
+    home_dir = Path.home()
+    candidates = [
+        home_dir / ".cache" / "modelscope" / "hub" / "ppaanngggg" / "layoutreader",
+        home_dir / ".cache" / "huggingface" / "hub" / "models--hantian--layoutreader",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _ensure_mineru_model_aliases(models_dir: Path | None) -> None:
+    if models_dir is None:
+        return
+
+    ocr_dir = models_dir / "OCR" / "paddleocr_torch"
+    if not ocr_dir.exists():
+        return
+
+    alias_pairs = [
+        ("ch_PP-OCRv5_det_infer.pth", "ch_PP-OCRv3_det_infer.pth"),
+    ]
+    for source_name, alias_name in alias_pairs:
+        source = ocr_dir / source_name
+        alias = ocr_dir / alias_name
+        if not source.exists() or alias.exists():
+            continue
+        try:
+            alias.symlink_to(source.name)
+        except OSError:
+            shutil.copy2(source, alias)
+
+
+def _write_mineru_runtime_config(temp_path: Path) -> Path:
+    models_dir = _resolve_mineru_models_dir()
+    layoutreader_dir = _resolve_layoutreader_model_dir()
+    _ensure_mineru_model_aliases(models_dir)
+    config_path = temp_path / "magic-pdf.json"
+    config_payload = {
+        "device-mode": "cpu",
+        "layout-config": {
+            "model": "doclayout_yolo",
+        },
+        "table-config": {
+            "enable": False,
+            "max_time": 120,
+        },
+        "formula-config": {
+            "enable": False,
+        },
+        "latex-delimiter-config": None,
+    }
+    if models_dir is not None:
+        config_payload["models-dir"] = str(models_dir)
+    if layoutreader_dir is not None:
+        config_payload["layoutreader-model-dir"] = str(layoutreader_dir)
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False), encoding="utf-8")
+    return config_path
+
+
+def _collect_mineru_markdown_files(output_dir: Path) -> list[Path]:
+    return sorted(
+        output_dir.rglob("*.md"),
+        key=lambda path: (len(path.relative_to(output_dir).parts), str(path)),
+    )
+
+
+def _extract_mineru_error_message(*messages: str) -> str:
+    for message in messages:
+        if not message or not message.strip():
+            continue
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        if not lines:
+            continue
+        for line in reversed(lines):
+            if line.startswith("Traceback"):
+                continue
+            return line[:500]
+    return "MinerU处理失败"
+
 # ===================== 工具：扫描版PDF检测 =====================
 def _is_scanned_pdf(filepath, min_text_length=100):
     """
@@ -143,10 +262,9 @@ def process_scanned_pdf_with_mineru(filepath):
     :return: (success: bool, content: str)
     """
     try:
-        # 1. 检查MinerU依赖是否安装
-        try:
-            from magic_pdf.cli import magic_pdf
-        except ImportError:
+        # 1. 检查MinerU CLI是否可用。新版本 magic-pdf 不再暴露 magic_pdf.cli 模块。
+        magic_pdf_command = _resolve_magic_pdf_command()
+        if not magic_pdf_command:
             logger.error("MinerU未安装，请执行：pip install magic-pdf[full]")
             return False, "MinerU未安装，请安装后重试（pip install magic-pdf[full]）"
 
@@ -157,28 +275,39 @@ def process_scanned_pdf_with_mineru(filepath):
             temp_path = Path(temp_dir)
             input_pdf = temp_path / Path(filepath).name
             shutil.copy2(filepath, input_pdf)
+            config_path = _write_mineru_runtime_config(temp_path)
 
             # 3. 调用MinerU处理（限制页数+轻量化模式）
             result = subprocess.run(
                 [
-                    "magic-pdf",
+                    magic_pdf_command,
                     "-p", str(input_pdf),
                     "-o", str(temp_path),
                     "-m", "auto",
-                    "--lang", "chinese+english"
+                    "--lang", "ch"
                 ],
                 capture_output=True,
                 text=True,
-                timeout=600
+                timeout=600,
+                env={
+                    **os.environ,
+                    "MINERU_TOOLS_CONFIG_JSON": str(config_path),
+                },
             )
 
             if result.returncode != 0:
                 logger.error(f"MinerU处理失败: {result.stderr}")
-                return False, f"MinerU处理失败: {result.stderr[:500]}"
+                return False, f"MinerU处理失败: {_extract_mineru_error_message(result.stderr, result.stdout)}"
 
             # 4. 解析MinerU输出（提取Markdown文本）
-            md_files = list(temp_path.glob("*.md"))
+            md_files = _collect_mineru_markdown_files(temp_path)
             if not md_files:
+                stderr = result.stderr or ""
+                stdout = result.stdout or ""
+                error_message = _extract_mineru_error_message(stderr, stdout)
+                if error_message != "MinerU处理失败":
+                    logger.error("MinerU处理失败: {}", error_message)
+                    return False, f"MinerU处理失败: {error_message}"
                 logger.error("MinerU未生成输出文件")
                 return False, "MinerU处理失败：未生成输出文件"
 

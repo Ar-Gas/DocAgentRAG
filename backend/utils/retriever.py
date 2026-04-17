@@ -1,4 +1,3 @@
-import logging
 import os
 import re
 import math
@@ -9,12 +8,11 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 
+from app.core.logger import logger
 from app.infra.embedding_provider import doubao_multimodal_embed
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.vector_store import get_block_collection
 from config import DATA_DIR, DOUBAO_EMBEDDING_MODEL
-
-logger = logging.getLogger(__name__)
 
 
 def get_all_documents():
@@ -936,8 +934,15 @@ def _matches_block_document_filters(
         return False
 
     if classification:
+        normalized_filter = classification.strip().lower()
+        classification_id = (document.get("classification_id") or "").strip().lower()
         document_classification = (document.get("classification_result") or "未分类").lower()
-        if classification.strip().lower() not in document_classification:
+        classification_path = str(document.get("classification_path") or "").lower()
+        if (
+            normalized_filter != classification_id
+            and normalized_filter not in document_classification
+            and normalized_filter not in classification_path
+        ):
             return False
 
     created_at = document.get("created_at_iso")

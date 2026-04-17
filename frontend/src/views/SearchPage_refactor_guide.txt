@@ -1,0 +1,41 @@
+"""
+SearchPage.vue 改造指南（不改动现有逻辑，新增功能）
+
+1. 在 import 中加入：
+   import QueryAnalysisBar from "@/components/QueryAnalysisBar.vue"
+
+2. 在 template 中搜索结果上方加入：
+   <QueryAnalysisBar :analysis="queryAnalysis" />
+
+3. 在 script 中定义：
+   const queryAnalysis = ref({
+     intent: "事实查找",
+     expanded_queries: [],
+     entity_filters: [],
+     doc_type_hint: null
+   })
+
+4. 在搜索方法中调用 API：
+   // 调用改进的检索 API
+   const response = await fetch("/api/v1/retrieval/search-with-analysis", {
+     method: "POST",
+     body: JSON.stringify({ query })
+   })
+   const result = await response.json()
+   queryAnalysis.value = result.data.query_analysis
+
+5. 在文档卡片中加入按钮：
+   <button @click="goToQAPage(doc.id)">加入问答</button>
+
+   方法：
+   const goToQAPage = (docId) => {
+     router.push({ name: 'QAPage', params: { docId } })
+   }
+
+6. 高亮实体：在显示内容时使用正则替换实体为 <mark> 标签
+"""
+
+from pathlib import Path
+
+# 这是一个说明文件，显示了如何改造 SearchPage.vue
+print(__doc__)

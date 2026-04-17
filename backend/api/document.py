@@ -6,8 +6,8 @@ from fastapi import APIRouter, UploadFile, File, Query
 from fastapi.responses import FileResponse
 from typing import List
 from pydantic import BaseModel
-import logging
 
+from app.core.logger import logger
 from app.services.document_service import DocumentService
 from app.services.errors import AppServiceError
 from api import success, paginated, BusinessException
@@ -24,24 +24,23 @@ _CONTENT_TYPES = {
     ".md":   "text/plain; charset=utf-8",
 }
 
-logger = logging.getLogger(__name__)
-
 router = APIRouter()
 document_service = DocumentService()
 
 
 def _build_document_response(doc_info: dict) -> dict:
+    payload = doc_info if isinstance(doc_info, dict) else {}
     return {
-        "id": doc_info.get("id"),
-        "filename": doc_info.get("filename"),
-        "file_type": doc_info.get("file_type"),
-        "preview_content": doc_info.get("preview_content", "")[:500],
-        "full_content_length": doc_info.get("full_content_length", 0),
-        "created_at_iso": doc_info.get("created_at_iso"),
-        "classification_result": doc_info.get("classification_result"),
-        "file_available": doc_info.get("file_available", False),
-        "extraction_status": doc_info.get("extraction_status"),
-        "parser_name": doc_info.get("parser_name"),
+        "id": payload.get("id"),
+        "filename": payload.get("filename"),
+        "file_type": payload.get("file_type"),
+        "preview_content": str(payload.get("preview_content", "") or "")[:500],
+        "full_content_length": payload.get("full_content_length", 0),
+        "created_at_iso": payload.get("created_at_iso"),
+        "classification_result": payload.get("classification_result"),
+        "file_available": payload.get("file_available", False),
+        "extraction_status": payload.get("extraction_status"),
+        "parser_name": payload.get("parser_name"),
     }
 
 @router.post("/upload", summary="上传文档")
@@ -58,9 +57,24 @@ async def get_document_list(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(10, ge=1, le=500, description="每页数量")
 ):
-    page_data = document_service.list_documents(page, page_size)
-    items = [_build_document_response(doc) for doc in page_data["items"]]
-    return paginated(items=items, total=page_data["total"], page=page, page_size=page_size)
+    logger.info("query_documents_api page={} page_size={}", page, page_size)
+    try:
+        page_data = document_service.list_documents(page, page_size)
+        items = [_build_document_response(doc) for doc in page_data.get("items", [])]
+        return paginated(items=items, total=page_data.get("total", 0), page=page, page_size=page_size)
+    except Exception as exc:
+        logger.opt(exception=exc).error("query_documents_api_failed page={} page_size={}", page, page_size)
+        return paginated(items=[], total=0, page=page, page_size=page_size)
+
+
+@router.get("/stats", summary="获取文档列表统计信息")
+async def get_document_stats():
+    logger.info("query_document_stats_api")
+    try:
+        return success(data=document_service.stats())
+    except Exception as exc:
+        logger.opt(exception=exc).error("query_document_stats_api_failed")
+        return success(data={"total": 0, "categorized": 0, "uncategorized": 0})
 
 @router.get("/{document_id}", summary="获取文档详情")
 async def get_document_detail(document_id: str):
@@ -118,6 +132,7 @@ async def get_document_file(document_id: str):
         raise BusinessException(code=exc.code, detail=exc.detail)
 
 
+@router.delete("/{document_id}", summary="删除文档")
 async def delete_document_api(document_id: str):
     try:
         result = document_service.delete_document(document_id)

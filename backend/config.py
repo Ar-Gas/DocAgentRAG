@@ -40,6 +40,21 @@ DOUBAO_LLM_MODEL = _get_secret_or_env("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115
 
 DOUBAO_DEFAULT_LLM_MODEL = DOUBAO_MINI_LLM_MODEL
 
+# LLM Gateway 配置（自动从环境变量读取）
+SEMANTIC_CACHE_ENABLED = os.getenv("SEMANTIC_CACHE_ENABLED", "true").lower() == "true"
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "600"))
+CACHE_MAX_SIZE = int(os.getenv("CACHE_MAX_SIZE", "1000"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+TRACK_LLM_TOKENS = os.getenv("TRACK_LLM_TOKENS", "true").lower() == "true"
+
+# LLM 任务超时配置（秒）
+LLM_TIMEOUT_EXTRACT = float(os.getenv("LLM_TIMEOUT_EXTRACT", "10"))
+LLM_TIMEOUT_CLASSIFY = float(os.getenv("LLM_TIMEOUT_CLASSIFY", "8"))
+LLM_TIMEOUT_RERANK = float(os.getenv("LLM_TIMEOUT_RERANK", "15"))
+LLM_TIMEOUT_QA = float(os.getenv("LLM_TIMEOUT_QA", "30"))
+LLM_TIMEOUT_ANALYZE = float(os.getenv("LLM_TIMEOUT_ANALYZE", "10"))
+LLM_TIMEOUT_SUMMARIZE = float(os.getenv("LLM_TIMEOUT_SUMMARIZE", "20"))
+
 # LLM 可用性标志（启动时由 main.py 检查后设置）
 LLM_AVAILABLE: bool = bool(DOUBAO_API_KEY)
 

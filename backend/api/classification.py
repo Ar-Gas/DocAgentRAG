@@ -1,6 +1,6 @@
 from fastapi import APIRouter
-import logging
 
+from app.core.logger import logger
 from app.schemas.classification import (
     ClassificationRequest,
     ClassificationResponse,
@@ -13,8 +13,6 @@ from app.schemas.classification import (
 from app.services.classification_service import ClassificationService
 from app.services.errors import AppServiceError
 from api import success, BusinessException
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 classification_service = ClassificationService()

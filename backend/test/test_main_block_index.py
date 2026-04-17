@@ -47,6 +47,7 @@ def _load_main_module(fake_indexing_service_cls):
     api_module.generic_exception_handler = lambda *args, **kwargs: None
 
     app_module = types.ModuleType("app")
+    app_core_module = types.ModuleType("app.core")
     app_infra_module = types.ModuleType("app.infra")
     app_infra_repositories_module = types.ModuleType("app.infra.repositories")
     app_services_module = types.ModuleType("app.services")
@@ -78,8 +79,10 @@ def _load_main_module(fake_indexing_service_cls):
     indexing_service_module = types.ModuleType("app.services.indexing_service")
     indexing_service_module.IndexingService = fake_indexing_service_cls
 
-    logger_module = types.ModuleType("utils.logger")
-    logger_module.setup_logging = lambda: None
+    core_logger_module = types.ModuleType("app.core.logger")
+    core_logger_module.logger = mock.Mock()
+    core_logger_module.setup_logging = lambda *args, **kwargs: None
+    core_logger_module.RequestContextMiddleware = type("RequestContextMiddleware", (), {})
 
     with mock.patch.dict(
         sys.modules,
@@ -91,14 +94,15 @@ def _load_main_module(fake_indexing_service_cls):
             "fastapi.responses": responses_module,
             "api": api_module,
             "app": app_module,
+            "app.core": app_core_module,
             "app.infra": app_infra_module,
             "app.infra.repositories": app_infra_repositories_module,
             "app.services": app_services_module,
+            "app.core.logger": core_logger_module,
             "app.infra.embedding_provider": embedding_provider_module,
             "app.infra.repositories.document_repository": document_repository_module,
             "app.infra.vector_store": vector_store_module,
             "app.services.indexing_service": indexing_service_module,
-            "utils.logger": logger_module,
         },
         clear=False,
     ):
@@ -109,11 +113,13 @@ class _FakeFastAPIApp:
     def __init__(self, *args, **kwargs):
         self.args = args
         self.kwargs = kwargs
+        self.middlewares = []
 
     def add_exception_handler(self, *args, **kwargs):
         return None
 
     def add_middleware(self, *args, **kwargs):
+        self.middlewares.append((args, kwargs))
         return None
 
     def include_router(self, *args, **kwargs):
@@ -183,3 +189,37 @@ def test_startup_block_check_can_auto_rebuild_candidates(monkeypatch):
 
     assert payload["rebuild_candidates"] == ["doc-1", "doc-2"]
     assert calls == [("doc-1", True), ("doc-2", True)]
+
+
+def test_default_wildcard_cors_disables_credentials(monkeypatch):
+    class FakeIndexingService:
+        def audit_block_index(self):
+            return {"documents": [], "rebuild_candidates": [], "orphan_block_ids": []}
+
+        def index_document(self, document_id: str, force: bool = False):
+            return {"document_id": document_id, "block_index_status": "ready"}
+
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    module = _load_main_module(FakeIndexingService)
+
+    cors_kwargs = module.app.middlewares[0][1]
+
+    assert cors_kwargs["allow_origins"] == ["*"]
+    assert cors_kwargs["allow_credentials"] is False
+
+
+def test_explicit_cors_origins_keep_credentials_enabled(monkeypatch):
+    class FakeIndexingService:
+        def audit_block_index(self):
+            return {"documents": [], "rebuild_candidates": [], "orphan_block_ids": []}
+
+        def index_document(self, document_id: str, force: bool = False):
+            return {"document_id": document_id, "block_index_status": "ready"}
+
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:3000,https://docagent.example.com")
+    module = _load_main_module(FakeIndexingService)
+
+    cors_kwargs = module.app.middlewares[0][1]
+
+    assert cors_kwargs["allow_origins"] == ["http://localhost:3000", "https://docagent.example.com"]
+    assert cors_kwargs["allow_credentials"] is True

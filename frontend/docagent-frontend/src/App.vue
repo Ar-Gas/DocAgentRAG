@@ -56,16 +56,24 @@
 <script setup>
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
-import { DataBoard, Document, Search } from '@element-plus/icons-vue'
+import { DataBoard, Document, Search, ChatDotRound, Share } from '@element-plus/icons-vue'
 
 const navItems = [
   { to: '/',          label: '总览',     icon: DataBoard },
   { to: '/documents', label: '文档管理', icon: Document  },
   { to: '/search',    label: '智能检索', icon: Search    },
+  { to: '/qa',        label: '智能问答', icon: ChatDotRound },
+  { to: '/graph',     label: '知识图谱', icon: Share },
 ]
 
 const route = useRoute()
-const pageTitleMap = { '/': '总览', '/documents': '文档管理', '/search': '智能检索' }
+const pageTitleMap = {
+  '/': '总览',
+  '/documents': '文档管理',
+  '/search': '智能检索',
+  '/qa': '智能问答',
+  '/graph': '知识图谱',
+}
 const currentPageTitle = computed(() => pageTitleMap[route.path] || 'DocAgent')
 </script>
 

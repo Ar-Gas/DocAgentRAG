@@ -1,4 +1,3 @@
-import logging
 import os
 import shutil
 import threading
@@ -9,10 +8,9 @@ from typing import Optional, Tuple
 from chromadb import EphemeralClient, PersistentClient
 from chromadb.utils import embedding_functions
 
+from app.core.logger import logger
 from app.infra.embedding_provider import DoubaoEmbeddingFunction, doubao_multimodal_embed
 from config import CHROMA_DB_PATH
-
-logger = logging.getLogger(__name__)
 
 _chroma_client = None
 _chroma_block_collection = None
@@ -31,7 +29,7 @@ def backup_legacy_chroma_store(reason: Exception, chroma_db_path: Path = CHROMA_
 
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     backup_path = chroma_db_path.parent / f"{chroma_db_path.name}_legacy_{timestamp}"
-    logger.warning("检测到旧版 Chroma 数据结构，备份到 %s，原因: %s", backup_path, reason)
+    logger.warning("检测到旧版 Chroma 数据结构，备份到 {}，原因: {}", backup_path, reason)
     if backup_path.exists():
         shutil.rmtree(backup_path)
     chroma_db_path.rename(backup_path)
@@ -43,7 +41,7 @@ def resolve_embedding_function():
     test_embedding = doubao_multimodal_embed("测试连接")
     if test_embedding is not None:
         bge_model = os.getenv("BGE_MODEL", "BAAI/bge-small-zh-v1.5")
-        logger.info("豆包API可用，回退模型配置: %s", bge_model)
+        logger.info("豆包API可用，回退模型配置: {}", bge_model)
         return DoubaoEmbeddingFunction(fallback_model_name=bge_model)
 
     logger.info("豆包嵌入不可用，尝试本地 BGE 模型...")
@@ -51,7 +49,7 @@ def resolve_embedding_function():
         bge_model = os.getenv("BGE_MODEL", "BAAI/bge-small-zh-v1.5")
         return embedding_functions.SentenceTransformerEmbeddingFunction(model_name=bge_model)
     except Exception as exc:
-        logger.error("BGE模型加载失败: %s", exc)
+        logger.error("BGE模型加载失败: {}", exc)
         logger.warning("回退到默认嵌入函数...")
         return embedding_functions.DefaultEmbeddingFunction()
 
@@ -92,7 +90,7 @@ def init_chroma_client(
                 raise RuntimeError("豆包API测试失败")
 
             bge_model = os.getenv("BGE_MODEL", "BAAI/bge-small-zh-v1.5")
-            logger.info("豆包API可用，回退模型配置: %s", bge_model)
+            logger.info("豆包API可用，回退模型配置: {}", bge_model)
             doubao_ef = DoubaoEmbeddingFunction(fallback_model_name=bge_model)
 
             block_collection_exists = False
@@ -110,11 +108,11 @@ def init_chroma_client(
                     logger.info("现有 document_blocks collection 维度匹配")
                 except Exception as exc:
                     if "dimension" in str(exc).lower():
-                        logger.warning("检测到 document_blocks 维度不匹配，删除旧 collection: %s", exc)
+                        logger.warning("检测到 document_blocks 维度不匹配，删除旧 collection: {}", exc)
                         client.delete_collection(name="document_blocks")
                         block_collection_exists = False
                     else:
-                        logger.warning("测试 document_blocks collection 时出错: %s", exc)
+                        logger.warning("测试 document_blocks collection 时出错: {}", exc)
             if not block_collection_exists:
                 block_collection = client.create_collection(name="document_blocks", embedding_function=doubao_ef)
             logger.info("Chroma block 客户端初始化成功（使用豆包多模态嵌入API）")
@@ -125,14 +123,14 @@ def init_chroma_client(
             if is_legacy_chroma_schema_error(doubao_error) and not recovered_legacy_schema:
                 backup_legacy_chroma_store(doubao_error, chroma_db_path=chroma_db_path)
                 return init_chroma_client(chroma_db_path=chroma_db_path, recovered_legacy_schema=True)
-            logger.warning("豆包嵌入初始化出错: %s", doubao_error, exc_info=True)
+            logger.opt(exception=doubao_error).warning("豆包嵌入初始化出错")
             logger.info("回退到本地BGE嵌入模型...")
             try:
                 bge_model = os.getenv("BGE_MODEL", "BAAI/bge-small-zh-v1.5")
-                logger.info("正在加载中文嵌入模型: %s", bge_model)
+                logger.info("正在加载中文嵌入模型: {}", bge_model)
                 ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=bge_model)
                 block_collection = client.get_or_create_collection(name="document_blocks", embedding_function=ef)
-                logger.info("Chroma block 客户端初始化成功（使用本地BGE模型: %s）", bge_model)
+                logger.info("Chroma block 客户端初始化成功（使用本地BGE模型: {}）", bge_model)
                 _chroma_client = client
                 _chroma_block_collection = block_collection
                 return client, block_collection
@@ -140,7 +138,7 @@ def init_chroma_client(
                 if is_legacy_chroma_schema_error(bge_error) and not recovered_legacy_schema:
                     backup_legacy_chroma_store(bge_error, chroma_db_path=chroma_db_path)
                     return init_chroma_client(chroma_db_path=chroma_db_path, recovered_legacy_schema=True)
-                logger.error("BGE模型加载失败: %s", bge_error)
+                logger.error("BGE模型加载失败: {}", bge_error)
                 logger.warning("回退到默认嵌入函数...")
                 try:
                     ef = embedding_functions.DefaultEmbeddingFunction()
@@ -153,14 +151,14 @@ def init_chroma_client(
                     if is_legacy_chroma_schema_error(fallback_error) and not recovered_legacy_schema:
                         backup_legacy_chroma_store(fallback_error, chroma_db_path=chroma_db_path)
                         return init_chroma_client(chroma_db_path=chroma_db_path, recovered_legacy_schema=True)
-                    logger.error("兜底初始化也失败: %s", fallback_error)
+                    logger.error("兜底初始化也失败: {}", fallback_error)
                     try:
                         client, block_collection = init_ephemeral_chroma_client()
                         _chroma_client = client
                         _chroma_block_collection = block_collection
                         return client, block_collection
                     except Exception as ephemeral_error:
-                        logger.error("内存 Chroma 初始化失败: %s", ephemeral_error)
+                        logger.error("内存 Chroma 初始化失败: {}", ephemeral_error)
                         return None, None
 
 

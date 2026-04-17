@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import types
@@ -36,16 +37,10 @@ def test_is_scanned_pdf_uses_pdf_reader(monkeypatch):
 
 
 def test_process_scanned_pdf_with_mineru_success(monkeypatch, tmp_path: Path):
-    fake_magic_pdf = types.ModuleType("magic_pdf")
-    fake_magic_pdf_cli = types.ModuleType("magic_pdf.cli")
-    fake_magic_pdf_cli.magic_pdf = object()
-    fake_magic_pdf.cli = fake_magic_pdf_cli
-
-    sys.modules["magic_pdf"] = fake_magic_pdf
-    sys.modules["magic_pdf.cli"] = fake_magic_pdf_cli
-
-    md_file = tmp_path / "result.md"
+    md_file = tmp_path / "fake" / "auto" / "fake.md"
+    md_file.parent.mkdir(parents=True)
     md_file.write_text("![img](x.png)\n\n正文一\n\n\n正文二", encoding="utf-8")
+    captured = {}
 
     class FakeTempDir:
         def __enter__(self):
@@ -54,6 +49,64 @@ def test_process_scanned_pdf_with_mineru_success(monkeypatch, tmp_path: Path):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+    monkeypatch.setattr(document_processor.tempfile, "TemporaryDirectory", lambda: FakeTempDir())
+    monkeypatch.setattr(document_processor.shutil, "copy2", lambda src, dst: None)
+    monkeypatch.setattr(document_processor, "_resolve_magic_pdf_command", lambda: "magic-pdf")
+    monkeypatch.setattr(document_processor, "_resolve_mineru_models_dir", lambda: tmp_path / "models")
+    monkeypatch.setattr(document_processor, "_ensure_mineru_model_aliases", lambda models_dir: None)
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return types.SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(
+        document_processor.subprocess,
+        "run",
+        fake_run,
+    )
+
+    success, content = document_processor.process_scanned_pdf_with_mineru("fake.pdf")
+
+    assert success is True
+    assert "正文一" in content
+    assert "![img]" not in content
+    config_path = Path(captured["kwargs"]["env"]["MINERU_TOOLS_CONFIG_JSON"])
+    assert config_path.exists()
+    config_text = config_path.read_text(encoding="utf-8")
+    assert config_text.strip()
+    assert "doclayout_yolo" in config_text
+    assert str(tmp_path / "models") in config_text
+
+
+def test_process_scanned_pdf_with_mineru_uses_virtualenv_cli_when_python_module_layout_changes(
+    monkeypatch,
+    tmp_path: Path,
+):
+    fake_bin_dir = tmp_path / "bin"
+    fake_bin_dir.mkdir()
+    fake_python = fake_bin_dir / "python"
+    fake_python.write_text("", encoding="utf-8")
+    fake_magic_pdf = fake_bin_dir / "magic-pdf"
+    fake_magic_pdf.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    md_file = tmp_path / "result.md"
+    md_file.write_text("扫描版正文", encoding="utf-8")
+
+    class FakeTempDir:
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(document_processor.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        document_processor,
+        "sys",
+        types.SimpleNamespace(executable=str(fake_python)),
+        raising=False,
+    )
     monkeypatch.setattr(document_processor.tempfile, "TemporaryDirectory", lambda: FakeTempDir())
     monkeypatch.setattr(document_processor.shutil, "copy2", lambda src, dst: None)
     monkeypatch.setattr(
@@ -65,11 +118,129 @@ def test_process_scanned_pdf_with_mineru_success(monkeypatch, tmp_path: Path):
     success, content = document_processor.process_scanned_pdf_with_mineru("fake.pdf")
 
     assert success is True
-    assert "正文一" in content
-    assert "![img]" not in content
+    assert "扫描版正文" in content
 
-    sys.modules.pop("magic_pdf", None)
-    sys.modules.pop("magic_pdf.cli", None)
+
+def test_resolve_magic_pdf_command_uses_virtualenv_entrypoint_parent_without_resolving_symlink(
+    monkeypatch,
+    tmp_path: Path,
+):
+    venv_bin = tmp_path / "venv-bin"
+    system_bin = tmp_path / "system-bin"
+    venv_bin.mkdir()
+    system_bin.mkdir()
+
+    real_python = system_bin / "python-real"
+    real_python.write_text("", encoding="utf-8")
+    venv_python = venv_bin / "python"
+    venv_python.symlink_to(real_python)
+    venv_magic_pdf = venv_bin / "magic-pdf"
+    venv_magic_pdf.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(document_processor.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        document_processor,
+        "sys",
+        types.SimpleNamespace(executable=str(venv_python)),
+        raising=False,
+    )
+
+    assert document_processor._resolve_magic_pdf_command() == str(venv_magic_pdf)
+
+
+def test_process_scanned_pdf_with_mineru_surfaces_stderr_traceback_when_cli_returns_zero(
+    monkeypatch,
+    tmp_path: Path,
+):
+    class FakeTempDir:
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(document_processor.tempfile, "TemporaryDirectory", lambda: FakeTempDir())
+    monkeypatch.setattr(document_processor.shutil, "copy2", lambda src, dst: None)
+    monkeypatch.setattr(document_processor, "_resolve_magic_pdf_command", lambda: "magic-pdf")
+    monkeypatch.setattr(
+        document_processor.subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            returncode=0,
+            stderr="Traceback (most recent call last):\npymupdf.EmptyFileError: Cannot open empty stream.\n",
+            stdout="",
+        ),
+    )
+
+    success, content = document_processor.process_scanned_pdf_with_mineru("fake.pdf")
+
+    assert success is False
+    assert "Cannot open empty stream" in content
+
+
+def test_write_mineru_runtime_config_creates_ocr_detector_alias_when_only_v5_exists(tmp_path: Path, monkeypatch):
+    models_dir = tmp_path / "modelscope-cache" / "opendatalab" / "PDF-Extract-Kit-1.0" / "models"
+    ocr_dir = models_dir / "OCR" / "paddleocr_torch"
+    ocr_dir.mkdir(parents=True)
+    (ocr_dir / "ch_PP-OCRv5_det_infer.pth").write_text("weights", encoding="utf-8")
+
+    monkeypatch.setattr(document_processor, "_resolve_mineru_models_dir", lambda: models_dir)
+
+    config_path = document_processor._write_mineru_runtime_config(tmp_path)
+
+    alias = ocr_dir / "ch_PP-OCRv3_det_infer.pth"
+    assert alias.exists()
+    assert json.loads(config_path.read_text(encoding="utf-8"))["models-dir"] == str(models_dir)
+
+
+def test_write_mineru_runtime_config_includes_layoutreader_dir_when_available(tmp_path: Path, monkeypatch):
+    models_dir = tmp_path / "models"
+    layoutreader_dir = tmp_path / "layoutreader"
+    models_dir.mkdir()
+    layoutreader_dir.mkdir()
+
+    monkeypatch.setattr(document_processor, "_resolve_mineru_models_dir", lambda: models_dir)
+    monkeypatch.setattr(
+        document_processor,
+        "_resolve_layoutreader_model_dir",
+        lambda: layoutreader_dir,
+        raising=False,
+    )
+
+    config_path = document_processor._write_mineru_runtime_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert config["layoutreader-model-dir"] == str(layoutreader_dir)
+
+
+def test_process_scanned_pdf_with_mineru_surfaces_stderr_when_output_missing(
+    monkeypatch,
+    tmp_path: Path,
+):
+    class FakeTempDir:
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(document_processor.tempfile, "TemporaryDirectory", lambda: FakeTempDir())
+    monkeypatch.setattr(document_processor.shutil, "copy2", lambda src, dst: None)
+    monkeypatch.setattr(document_processor, "_resolve_magic_pdf_command", lambda: "magic-pdf")
+    monkeypatch.setattr(
+        document_processor.subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            returncode=0,
+            stderr="layoutreader download failed: network timeout",
+            stdout="",
+        ),
+    )
+
+    success, content = document_processor.process_scanned_pdf_with_mineru("fake.pdf")
+
+    assert success is False
+    assert "layoutreader download failed" in content
 
 
 def test_process_pdf_uses_text_or_ocr(monkeypatch):

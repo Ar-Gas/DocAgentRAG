@@ -9,6 +9,7 @@ from app.infra.embedding_provider import embed_text
 from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
 from app.infra.vector_store import get_block_collection
+from app.services.document_label_resolver import is_error_document
 from config import DATA_DIR
 
 
@@ -73,9 +74,14 @@ class TopicClustering:
         excluded: List[Dict[str, Any]] = []
 
         for document in documents:
+            document_id = document.get("document_id", "")
+            if is_error_document(document_id, document):
+                excluded.append({**document, "exclude_reason": "unusable_content"})
+                continue
+
             vector = self._derive_document_vector(document)
             if vector is None:
-                excluded.append(document)
+                excluded.append({**document, "exclude_reason": "missing_vector"})
                 continue
             prepared.append({**document, "vector": vector})
 
@@ -91,7 +97,7 @@ class TopicClustering:
             if len(item["vector"]) == dominant_dimension:
                 filtered.append(item)
             else:
-                excluded.append(item)
+                excluded.append({**item, "exclude_reason": "dimension_mismatch"})
         return filtered, excluded
 
     def cluster_documents(self, documents: List[Dict[str, Any]], level: int) -> List[Dict[str, Any]]:
@@ -126,13 +132,14 @@ class TopicClustering:
                 }
             )
 
-        return sorted(
+        sorted_clusters = sorted(
             clusters,
             key=lambda item: (
                 -len(item["documents"]),
                 item["documents"][0].get("filename", ""),
             ),
         )
+        return sorted_clusters
 
     def pick_representatives(
         self, documents: List[Dict[str, Any]], center: np.ndarray, limit: int | None = None

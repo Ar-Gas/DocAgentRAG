@@ -90,6 +90,8 @@
       :document-id="viewerDoc.document_id"
       :filename="viewerDoc.filename"
       :file-type="viewerDoc.file_type"
+      :query="filters.query"
+      :anchor-block-id="viewerDoc.best_block_id || ''"
       :file-available="viewerDoc.file_available"
     />
   </section>
@@ -185,6 +187,14 @@ const buildWorkspaceLabel = () => {
   return parts || '当前检索结果'
 }
 
+const normalizeCategoriesResponse = (payload) => {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.data)) return payload.data
+  if (Array.isArray(payload?.data?.categories)) return payload.data.categories
+  if (Array.isArray(payload?.categories)) return payload.categories
+  return []
+}
+
 const loadWorkspaceChrome = async () => {
   topicLoading.value = true
   try {
@@ -194,7 +204,7 @@ const loadWorkspaceChrome = async () => {
       api.getTopicTree()
     ])
     stats.value = statsRes.data || {}
-    categories.value = categoriesRes.data?.categories || []
+    categories.value = normalizeCategoriesResponse(categoriesRes)
     topicTree.value = topicRes.data || { topics: [], total_documents: 0 }
   } finally {
     topicLoading.value = false

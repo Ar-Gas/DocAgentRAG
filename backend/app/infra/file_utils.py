@@ -1,10 +1,8 @@
-import logging
 import shutil
 from pathlib import Path
 from typing import Callable, List, Optional, Union
 
-
-logger = logging.getLogger(__name__)
+from app.core.logger import logger
 
 
 def ordered_document_search_roots(base_dir: Path, doc_dir: Path, original_path: str) -> List[Path]:
@@ -129,7 +127,7 @@ def create_classification_directory(
 
         original_path = Path(doc_info["filepath"])
         if not original_path.exists():
-            logger.warning("原文件不存在，跳过移动：%s", original_path)
+            logger.warning("原文件不存在，跳过移动：{}", original_path)
             return False, ""
 
         target_path = category_dir / original_path.name
@@ -139,8 +137,8 @@ def create_classification_directory(
             counter += 1
 
         shutil.move(str(original_path), str(target_path))
-        logger.info("文件已移动到分类目录：%s -> %s", original_path.name, target_path)
+        logger.info("文件已移动到分类目录：{} -> {}", original_path.name, target_path)
         return True, str(target_path)
     except Exception as exc:
-        logger.error("创建分类目录/移动文件失败: %s", exc)
+        logger.opt(exception=exc).error("创建分类目录/移动文件失败")
         return False, ""

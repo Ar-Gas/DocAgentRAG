@@ -82,12 +82,19 @@
           placeholder="全部分类"
           @update:model-value="updateField('classification', $event)"
         >
-          <el-option
-            v-for="category in categories"
-            :key="category"
-            :label="category"
-            :value="category"
-          />
+          <el-option label="全部分类" value="" />
+          <el-option-group
+            v-for="group in groupedCategories"
+            :key="group.domain"
+            :label="group.domain"
+          >
+            <el-option
+              v-for="category in group.options"
+              :key="category.id"
+              :label="category.label"
+              :value="category.id"
+            />
+          </el-option-group>
         </el-select>
       </label>
 
@@ -203,6 +210,45 @@ const emit = defineEmits([
 
 const form = computed(() => props.modelValue || {})
 const fileTypeOptions = computed(() => Object.keys(props.stats.file_types || {}))
+
+const normalizeCategory = (category) => {
+  if (typeof category === 'string') {
+    return {
+      id: category,
+      label: category,
+      path: [],
+      domain: '未分组'
+    }
+  }
+
+  const path = Array.isArray(category?.path) ? category.path.filter(Boolean) : []
+  const label = category?.label || path.at(-1) || category?.id || ''
+  return {
+    id: category?.id || label,
+    label,
+    path,
+    domain: category?.domain || path[0] || '未分组'
+  }
+}
+
+const groupedCategories = computed(() => {
+  const groups = new Map()
+
+  ;(props.categories || [])
+    .map(normalizeCategory)
+    .filter(category => category.id && category.label)
+    .forEach((category) => {
+      if (!groups.has(category.domain)) {
+        groups.set(category.domain, [])
+      }
+      groups.get(category.domain).push(category)
+    })
+
+  return Array.from(groups.entries()).map(([domain, options]) => ({
+    domain,
+    options
+  }))
+})
 
 const modeMeta = computed(() => {
   const currentMode = form.value.mode || 'hybrid'

@@ -1,5 +1,4 @@
 import base64
-import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -9,16 +8,16 @@ import requests
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from chromadb.utils import embedding_functions
 
+from app.core.logger import logger
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.repositories.runtime_artifact_repository import RuntimeArtifactRepository
 from config import DATA_DIR, DOUBAO_API_KEY, DOUBAO_EMBEDDING_API_URL, DOUBAO_EMBEDDING_MODEL
-
-logger = logging.getLogger(__name__)
 
 _embed_consecutive_failures = 0
 _EMBED_MAX_FAILURES = 3
 _bge_ef = None
 _EMBEDDING_DIM_ARTIFACT = "embedding_dimension"
+_DOUBAO_REQUEST_TIMEOUT_SECONDS = float(os.getenv("DOUBAO_REQUEST_TIMEOUT_SECONDS", "2"))
 
 
 def doubao_multimodal_embed(
@@ -46,10 +45,10 @@ def doubao_multimodal_embed(
                 "Authorization": f"Bearer {DOUBAO_API_KEY}",
             },
             json={"model": DOUBAO_EMBEDDING_MODEL, "input": input_data},
-            timeout=30,
+            timeout=_DOUBAO_REQUEST_TIMEOUT_SECONDS,
         )
         if response.status_code != 200:
-            logger.error("豆包嵌入API调用失败: %s - %s", response.status_code, response.text)
+            logger.error("豆包嵌入API调用失败: {} - {}", response.status_code, response.text)
             return None
 
         result = response.json()
@@ -59,20 +58,20 @@ def doubao_multimodal_embed(
         elif isinstance(data, dict):
             embedding = data.get("embedding")
         else:
-            logger.error("豆包嵌入响应格式错误: %s", result)
+            logger.error("豆包嵌入响应格式错误: {}", result)
             return None
         if embedding:
             return embedding
-        logger.error("豆包嵌入响应缺少embedding字段: %s", result)
+        logger.error("豆包嵌入响应缺少embedding字段: {}", result)
         return None
     except requests.exceptions.Timeout:
         logger.error("豆包嵌入API超时")
         return None
     except requests.exceptions.RequestException as exc:
-        logger.error("豆包嵌入API请求异常: %s", exc)
+        logger.error("豆包嵌入API请求异常: {}", exc)
         return None
     except Exception as exc:
-        logger.error("豆包嵌入处理异常: %s", exc, exc_info=True)
+        logger.opt(exception=exc).error("豆包嵌入处理异常")
         return None
 
 
@@ -84,7 +83,7 @@ def _get_bge_ef():
     global _bge_ef
     if _bge_ef is None:
         bge_model = os.getenv("BGE_MODEL", "BAAI/bge-small-zh-v1.5")
-        logger.info("加载 BGE 本地模型: %s", bge_model)
+        logger.info("加载 BGE 本地模型: {}", bge_model)
         _bge_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=bge_model)
     return _bge_ef
 
@@ -110,7 +109,7 @@ def embed_text(text: str) -> Optional[List[float]]:
         if result:
             return list(result[0])
     except Exception as exc:
-        logger.error("BGE embed 失败: %s", exc)
+        logger.error("BGE embed 失败: {}", exc)
     return None
 
 
@@ -125,17 +124,17 @@ def detect_and_lock_embedding_dim() -> None:
         stored = artifacts.load(_EMBEDDING_DIM_ARTIFACT)
         if stored is None:
             artifacts.save(_EMBEDDING_DIM_ARTIFACT, {"dim": current_dim})
-            logger.info("Embedding 维度已锁定: %s", current_dim)
+            logger.info("Embedding 维度已锁定: {}", current_dim)
         elif int(stored.get("dim", 0)) != current_dim:
             logger.warning(
-                "⚠️  Embedding 维度不一致！已存储=%s，当前=%s。请运行 POST /api/v1/documents/batch/rechunk 修复。",
+                "⚠️  Embedding 维度不一致！已存储={}，当前={}。请运行 POST /api/v1/documents/batch/rechunk 修复。",
                 stored.get("dim"),
                 current_dim,
             )
         else:
-            logger.info("Embedding 维度校验通过: %s", current_dim)
+            logger.info("Embedding 维度校验通过: {}", current_dim)
     except Exception as exc:
-        logger.error("detect_and_lock_embedding_dim 失败: %s", exc)
+        logger.error("detect_and_lock_embedding_dim 失败: {}", exc)
 
 
 class DoubaoEmbeddingFunction(EmbeddingFunction):
@@ -149,14 +148,14 @@ class DoubaoEmbeddingFunction(EmbeddingFunction):
 
     def _get_fallback_ef(self):
         if self._fallback_ef is None and self._fallback_model_name:
-            logger.info("正在加载回退模型: %s", self._fallback_model_name)
+            logger.info("正在加载回退模型: {}", self._fallback_model_name)
             try:
                 self._fallback_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
                     model_name=self._fallback_model_name
                 )
                 logger.info("回退模型加载成功")
             except Exception as exc:
-                logger.error("回退模型加载失败: %s", exc)
+                logger.error("回退模型加载失败: {}", exc)
         return self._fallback_ef
 
     def __call__(self, input: Documents) -> Embeddings:
@@ -216,13 +215,13 @@ def generate_document_embedding(
                     img_base64 = base64.b64encode(handle.read()).decode("utf-8")
                 embedding = doubao_multimodal_embed(content, image_base64=img_base64)
                 if embedding:
-                    logger.info("文档 %s 多模态嵌入生成成功", document_id)
+                    logger.info("文档 {} 多模态嵌入生成成功", document_id)
                     return embedding
             except Exception as exc:
-                logger.warning("处理图片 %s 失败: %s", img_path, exc)
+                logger.warning("处理图片 {} 失败: {}", img_path, exc)
     embedding = doubao_multimodal_embed(content)
     if embedding:
-        logger.info("文档 %s 文本嵌入生成成功", document_id)
+        logger.info("文档 {} 文本嵌入生成成功", document_id)
     return embedding
 
 
@@ -240,7 +239,7 @@ def generate_paragraph_embeddings(document_id: str, paragraphs: List[dict]) -> L
                 "paragraph_index": index,
             }
         )
-    logger.info("文档 %s 生成 %s 个段落嵌入", document_id, len(result))
+    logger.info("文档 {} 生成 {} 个段落嵌入", document_id, len(result))
     return result
 
 
@@ -254,7 +253,7 @@ def save_embeddings_to_document(
     repository = document_repository or DocumentRepository(data_dir=DATA_DIR)
     doc_info = repository.get(document_id)
     if not doc_info:
-        logger.error("保存嵌入失败：文档 %s 不存在", document_id)
+        logger.error("保存嵌入失败：文档 {} 不存在", document_id)
         return False
     doc_info["embeddings"] = {
         "document_embedding": doc_embedding,

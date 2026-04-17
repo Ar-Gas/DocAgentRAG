@@ -1,10 +1,10 @@
 import os
 import re
 import shutil
-import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.core.logger import logger
 from app.infra.file_utils import enrich_document_file_state as _enrich_document_file_state
 from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.infra.repositories.document_content_repository import DocumentContentRepository
@@ -18,8 +18,6 @@ from app.services.indexing_service import IndexingService
 from config import ALLOWED_EXTENSIONS, BASE_DIR, DATA_DIR, DOC_DIR, EXTENSION_TO_DIR, MAX_FILE_SIZE
 from utils.retriever import get_query_parser
 from utils.search_cache import get_search_cache
-
-logger = logging.getLogger(__name__)
 
 
 def _document_repository() -> DocumentRepository:
@@ -119,7 +117,7 @@ def _delete_document_blocks(document_id: str) -> None:
         if ids:
             collection.delete(ids=ids)
     except Exception as exc:
-        logger.warning("删除文档 block 失败: %s", exc)
+        logger.warning("删除文档 block 失败: {}", exc)
 
 
 def _count_blocks(document_id: str) -> int:
@@ -129,7 +127,7 @@ def _count_blocks(document_id: str) -> int:
             results = collection.get(where={"document_id": document_id})
             return len((results or {}).get("ids") or [])
         except Exception as exc:
-            logger.warning("统计 block 数量失败: %s", exc)
+            logger.warning("统计 block 数量失败: {}", exc)
 
     artifact = get_document_artifact(document_id, "reader_blocks") or {}
     return len(((artifact.get("payload") or {}).get("blocks")) or [])
@@ -183,6 +181,7 @@ class DocumentService:
         return enrich_document_file_state(doc_info, persist=True)
 
     def upload(self, filename: str, file_stream) -> Dict:
+        logger.info("document_upload_started filename={}", filename)
         # 0.1 路径遍历防护：只取纯文件名，剥离任何目录部分
         safe_name = Path(filename).name
         ext = os.path.splitext(safe_name)[1].lower()
@@ -210,6 +209,7 @@ class DocumentService:
             if file_path.exists():
                 os.remove(file_path)
             raise AppServiceError(1002, f"文件保存失败: {e}")
+        logger.info("document_file_persisted filename={} path={}", safe_name, file_path)
 
         # 写入后再校验大小
         if file_path.stat().st_size > MAX_FILE_SIZE:
@@ -232,7 +232,9 @@ class DocumentService:
             if file_path.exists():
                 os.remove(file_path)
             raise AppServiceError(1002, "文档解析失败，请检查文件是否损坏或格式是否正确")
+        logger.info("document_metadata_persisted document_id={} filename={}", document_id, safe_name)
 
+        logger.info("document_indexing_started document_id={} filename={}", document_id, safe_name)
         indexing_result = self.indexing_service.index_document(document_id, force=True)
         if (indexing_result or {}).get("block_index_status") != "ready":
             delete_document(document_id)
@@ -259,16 +261,62 @@ class DocumentService:
         return self._hydrate_document(doc_info)
 
     def list_documents(self, page: int, page_size: int) -> Dict:
-        all_docs = get_all_documents()
+        logger.info("query_documents page={} page_size={}", page, page_size)
+        try:
+            all_docs = list(get_all_documents() or [])
+        except Exception as exc:
+            logger.opt(exception=exc).error("query_documents_failed page={} page_size={}", page, page_size)
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 0,
+            }
+
         total = len(all_docs)
         start = (page - 1) * page_size
         end = start + page_size
+        items: List[Dict] = []
+        for item in all_docs[start:end]:
+            if not isinstance(item, dict):
+                logger.warning("skip_invalid_document_row row_type={}", type(item).__name__)
+                continue
+            try:
+                items.append(self._hydrate_document(item))
+            except Exception as exc:
+                logger.opt(exception=exc).error(
+                    "hydrate_document_failed document_id={} filename={}",
+                    item.get("id"),
+                    item.get("filename"),
+                )
         return {
-            "items": [self._hydrate_document(item) for item in all_docs[start:end]],
+            "items": items,
             "total": total,
             "page": page,
             "page_size": page_size,
             "total_pages": (total + page_size - 1) // page_size if page_size else 0,
+        }
+
+    def stats(self) -> Dict:
+        logger.info("query_document_stats")
+        try:
+            all_docs = list(get_all_documents() or [])
+        except Exception as exc:
+            logger.opt(exception=exc).error("query_document_stats_failed")
+            return {"total": 0, "categorized": 0, "uncategorized": 0}
+
+        valid_docs = [item for item in all_docs if isinstance(item, dict)]
+        total = len(valid_docs)
+        categorized = sum(
+            1
+            for item in valid_docs
+            if str(item.get("classification_result") or "").strip()
+        )
+        return {
+            "total": total,
+            "categorized": categorized,
+            "uncategorized": max(total - categorized, 0),
         }
 
     def get_document(self, document_id: str) -> Dict:

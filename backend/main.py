@@ -3,9 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
-import logging
 import os
-from pathlib import Path
 
 from config import (
     API_PREFIX,
@@ -27,15 +25,8 @@ from api import (
 from app.infra.embedding_provider import detect_and_lock_embedding_dim
 from app.infra import vector_store as vector_store_module
 from app.infra.vector_store import init_chroma_client
+from app.core.logger import RequestContextMiddleware, logger, setup_logging
 from app.services.indexing_service import IndexingService
-from utils.logger import setup_logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-# 7.1 初始化统一日志
 setup_logging()
 
 
@@ -65,6 +56,15 @@ def _env_flag(*names: str) -> bool:
         if value is not None:
             return value.strip().lower() == "true"
     return False
+
+
+def _load_cors_settings() -> tuple[list[str], bool]:
+    origins_env = os.getenv("ALLOWED_ORIGINS", "*")
+    origins = [origin.strip() for origin in origins_env.split(",") if origin.strip()]
+    if not origins:
+        origins = ["*"]
+    allow_credentials = "*" not in origins
+    return origins, allow_credentials
 
 
 def check_and_rebuild_block_indexes():
@@ -186,16 +186,16 @@ app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, generic_exception_handler)
 
 # 0.4 CORS 通过环境变量配置，生产环境应设置 ALLOWED_ORIGINS=https://yourdomain.com
-_origins_env = os.getenv("ALLOWED_ORIGINS", "*")
-ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
+ALLOWED_ORIGINS, ALLOW_CREDENTIALS = _load_cors_settings()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestContextMiddleware)
 
 app.include_router(api_router, prefix=API_PREFIX)
 

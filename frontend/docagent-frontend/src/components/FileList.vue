@@ -13,12 +13,12 @@
         <template #default="{ row }">
           <div
             class="file-name-cell"
-            :class="{ clickable: row.file_available !== false, unavailable: row.file_available === false }"
-            @click="row.file_available !== false && emit('open-viewer', row)"
+            :class="{ clickable: true, unavailable: row.file_available === false }"
+            @click="emit('open-viewer', row)"
           >
             <el-icon><Document /></el-icon>
             <span>{{ row.filename }}</span>
-            <el-tag v-if="row.file_available === false" size="small" type="danger">原件缺失</el-tag>
+            <el-tag v-if="row.file_available === false" size="small" type="danger">文本预览</el-tag>
           </div>
         </template>
       </el-table-column>
@@ -29,12 +29,18 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="分类" width="160">
+      <el-table-column label="分类" min-width="260">
         <template #default="{ row }">
-          <el-tag v-if="row.classification_result" type="success" size="small">
-            {{ row.classification_result }}
-          </el-tag>
-          <el-tag v-else type="warning" size="small">未分类</el-tag>
+          <div class="classification-cell">
+            <span class="classification-text">{{ getClassificationText(row) }}</span>
+            <span
+              v-if="getClassificationSourceMeta(row.classification_source)"
+              class="classification-source-badge"
+              :class="`classification-source-badge--${getClassificationSourceMeta(row.classification_source).tone}`"
+            >
+              {{ getClassificationSourceMeta(row.classification_source).label }}
+            </span>
+          </div>
         </template>
       </el-table-column>
 
@@ -78,6 +84,33 @@ defineProps({
   loading: { type: Boolean, default: false }
 })
 const emit = defineEmits(['refresh', 'operate-success', 'open-viewer'])
+
+const parseClassificationPath = (value) => {
+  if (Array.isArray(value)) return value.filter(Boolean)
+  if (typeof value !== 'string' || !value.trim()) return []
+
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : []
+  } catch (_) {
+    return []
+  }
+}
+
+const getClassificationText = (row) => {
+  const path = parseClassificationPath(row.classification_path)
+  if (path.length) return path.join(' > ')
+  return row.classification_result || '未分类'
+}
+
+const getClassificationSourceMeta = (source) => {
+  const dictionary = {
+    llm: { label: 'AI', tone: 'ai' },
+    keyword: { label: '关键词', tone: 'keyword' },
+    fallback: { label: '待确认', tone: 'fallback' }
+  }
+  return dictionary[source] || null
+}
 
 const handleReclassify = async (row) => {
   row._reclassifying = true
@@ -160,8 +193,45 @@ const handleDelete = async (row) => {
   }
 
   &.unavailable {
-    cursor: not-allowed;
     opacity: 0.72;
   }
+}
+
+.classification-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.classification-text {
+  font-size: 13px;
+  color: var(--ink-strong);
+  line-height: 1.5;
+}
+
+.classification-source-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.classification-source-badge--ai {
+  background: var(--color-background-info, var(--blue-50));
+  color: var(--color-text-info, var(--blue-700));
+}
+
+.classification-source-badge--keyword {
+  background: var(--color-background-success, var(--green-50));
+  color: var(--color-text-success, var(--green-600));
+}
+
+.classification-source-badge--fallback {
+  background: var(--color-background-warning, var(--amber-50));
+  color: var(--color-text-warning, var(--amber-600));
 }
 </style>

@@ -21,8 +21,8 @@
           <div class="card-title">
             <span
               class="filename"
-              :class="{ 'is-disabled': document.file_available === false }"
-              @click.stop="document.file_available !== false && emit('open-viewer', document)"
+              :class="{ 'is-fallback': document.file_available === false }"
+              @click.stop="emit('open-viewer', document)"
             >
               {{ document.filename }}
             </span>
@@ -94,10 +94,9 @@
             <button
               type="button"
               class="action-btn"
-              :disabled="document.file_available === false"
               @click.stop="emit('open-viewer', document)"
             >
-              原文预览
+              {{ document.file_available === false ? '提取文本预览' : '原文预览' }}
             </button>
           </div>
         </div>
@@ -242,10 +241,8 @@ const highlightSnippet = (text, query) =>
   cursor: pointer;
   &:hover { text-decoration: underline; }
 
-  &.is-disabled {
-    color: var(--ink-muted);
-    cursor: not-allowed;
-    &:hover { text-decoration: none; }
+  &.is-fallback {
+    color: var(--ink-body);
   }
 }
 

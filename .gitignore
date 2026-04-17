@@ -41,3 +41,4 @@ backend/chromadb/
 backend/models/
 homework/
 .worktrees/
+.bashrc

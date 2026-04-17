@@ -1,14 +1,12 @@
-import logging
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 
+from app.core.logger import logger
 from .noise_filter import NoiseFilter
 from .semantic_segmenter import SemanticSegmenter, SemanticSegment
 from .hierarchy_builder import HierarchyBuilder, HierarchyNode
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass

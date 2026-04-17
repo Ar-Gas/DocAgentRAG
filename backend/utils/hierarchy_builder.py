@@ -1,11 +1,9 @@
-import logging
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
+from app.core.logger import logger
 from .semantic_segmenter import SemanticSegment, SemanticSegmenter
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass

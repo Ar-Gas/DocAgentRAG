@@ -1,15 +1,13 @@
-import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.core.logger import logger
 from app.infra.repositories.document_content_repository import DocumentContentRepository
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
 from utils.document_processor import process_document
-
-logger = logging.getLogger(__name__)
 
 
 class DocumentVectorIndexService:
@@ -33,7 +31,7 @@ class DocumentVectorIndexService:
     ):
         filepath_path = Path(filepath) if filepath else None
         if not filepath_path or not filepath_path.exists():
-            logger.error("保存摘要失败：文件不存在 %s", filepath)
+            logger.error("保存摘要失败：文件不存在 {}", filepath)
             return None, None
         try:
             document_id = str(uuid.uuid4())
@@ -43,7 +41,7 @@ class DocumentVectorIndexService:
             if content is None:
                 success, content = process_document(filepath)
                 if not success:
-                    logger.error("文档内容无效：%s", filepath)
+                    logger.error("文档内容无效：{}", filepath)
                     return None, None
 
             preview_content = content[:1000] if len(content) > 1000 else content
@@ -71,5 +69,5 @@ class DocumentVectorIndexService:
                 return document_id, doc_info
             return None, None
         except Exception as exc:
-            logger.error("保存文档摘要失败: %s", exc)
+            logger.opt(exception=exc).error("保存文档摘要失败 filepath={}", filepath)
             return None, None

@@ -104,24 +104,62 @@ def test_classify_returns_topic_tree_assignment_payload(monkeypatch):
         lambda document_id: {
             "id": document_id,
             "filename": "guide.pdf",
+            "file_type": ".pdf",
         },
     )
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_content_record",
+        lambda document_id: {"full_content": "候选人录用审批，需要确认薪资包、职级、offer和入职日期。"},
+    )
+    monkeypatch.setattr(classification_service_module, "is_error_document", lambda *args, **kwargs: False)
 
-    service = ClassificationService()
-    service.topic_tree_service = Mock(
-        classify_document=Mock(
-            return_value={
-                "document_id": "doc-1",
-                "topic_id": "topic-1-1",
-                "topic_label": "年度审计",
-                "topic_path": ["财务治理", "年度审计"],
-                "confidence": 1.0,
-            }
-        )
+    updates = []
+    monkeypatch.setattr(
+        classification_service_module,
+        "update_document_info",
+        lambda document_id, updated_info: updates.append((document_id, updated_info)) or True,
     )
 
-    result = service.classify("doc-1")
+    class FakeTaxonomyClassifier:
+        async def classify(self, document_id, content, filename="", file_type=""):
+            assert document_id == "doc-1"
+            assert "候选人录用审批" in content
+            assert filename == "guide.pdf"
+            assert file_type == ".pdf"
+            return {
+                "classification_id": "hr.offer_approval",
+                "classification_label": "Offer审批",
+                "classification_path": ["人力资源", "招聘管理", "Offer审批"],
+                "classification_score": 0.91,
+                "classification_source": "llm",
+                "classification_candidates": ["hr.offer_approval", "hr.recruitment"],
+            }
 
-    assert result["categories"] == ["财务治理", "年度审计"]
-    assert result["topic_id"] == "topic-1-1"
-    assert result["topic_label"] == "年度审计"
+    monkeypatch.setattr(classification_service_module, "TaxonomyClassifier", FakeTaxonomyClassifier)
+
+    scheduled = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        return Mock()
+
+    monkeypatch.setattr(classification_service_module.asyncio, "create_task", fake_create_task)
+
+    service = ClassificationService()
+    service.topic_tree_service = Mock(classify_document=Mock())
+
+    async def async_case():
+        return service.classify("doc-1")
+
+    result = asyncio.run(async_case())
+
+    assert result["categories"] == ["人力资源", "招聘管理", "Offer审批"]
+    assert result["topic_id"] == "hr.offer_approval"
+    assert result["topic_label"] == "Offer审批"
+    assert result["classification_source"] == "llm"
+    assert updates[0][1]["classification_result"] == "Offer审批"
+    assert updates[0][1]["classification_id"] == "hr.offer_approval"
+    assert len(scheduled) == 1
+    scheduled[0].close()
+    service.topic_tree_service.classify_document.assert_not_called()

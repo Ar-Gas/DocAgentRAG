@@ -4,13 +4,13 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, validator
 import asyncio
 import json
-import logging
 import tempfile
 import os
 
 # 0.3 合法文件类型 allowlist
 ALLOWED_FILE_TYPES = {"pdf", "word", "excel", "ppt", "eml", "txt", "image"}
 
+from app.core.logger import logger
 from app.services.errors import AppServiceError
 from app.services.retrieval_service import RetrievalService
 from utils.retriever import (
@@ -22,8 +22,6 @@ from utils.smart_retrieval import (
     is_llm_available,
 )
 from api import success, BusinessException
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 retrieval_service = RetrievalService()

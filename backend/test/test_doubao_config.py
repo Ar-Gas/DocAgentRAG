@@ -12,6 +12,7 @@ CONFIG_PATH = BACKEND_DIR / "config.py"
 MAIN_PATH = BACKEND_DIR / "main.py"
 RETRIEVAL_SERVICE_PATH = BACKEND_DIR / "app" / "services" / "retrieval_service.py"
 SMART_RETRIEVAL_PATH = BACKEND_DIR / "utils" / "smart_retrieval.py"
+LLM_GATEWAY_CONFIG_PATH = BACKEND_DIR / "app" / "domain" / "llm" / "config.py"
 
 
 def _load_module_from_path(module_name: str, module_path: Path):
@@ -24,15 +25,19 @@ def _load_module_from_path(module_name: str, module_path: Path):
 
 def _make_fake_retrieval_dependencies(llm_available: bool):
     app_module = types.ModuleType("app")
+    app_core_module = types.ModuleType("app.core")
     app_services_module = types.ModuleType("app.services")
     app_infra_module = types.ModuleType("app.infra")
     app_infra_repositories_module = types.ModuleType("app.infra.repositories")
     app_errors_module = types.ModuleType("app.services.errors")
     app_errors_module.AppServiceError = type("AppServiceError", (Exception,), {})
 
-    logger_module = types.ModuleType("utils.logger")
-    logger_module.get_logger = lambda *args, **kwargs: mock.Mock()
-    logger_module.log_retrieval = lambda fn: fn
+    core_logger_module = types.ModuleType("app.core.logger")
+    core_logger_module.logger = mock.Mock()
+    core_logger_module.get_logger = lambda *args, **kwargs: mock.Mock()
+    core_logger_module.log_retrieval = lambda fn: fn
+    core_logger_module.setup_logging = lambda *args, **kwargs: None
+    core_logger_module.RequestContextMiddleware = type("RequestContextMiddleware", (), {})
 
     cache_module = types.ModuleType("utils.search_cache")
     cache_module.get_search_cache = lambda: mock.Mock(get=lambda *args, **kwargs: None)
@@ -98,6 +103,8 @@ def _make_fake_retrieval_dependencies(llm_available: bool):
 
     return {
         "app": app_module,
+        "app.core": app_core_module,
+        "app.core.logger": core_logger_module,
         "app.services": app_services_module,
         "app.infra": app_infra_module,
         "app.infra.repositories": app_infra_repositories_module,
@@ -106,7 +113,6 @@ def _make_fake_retrieval_dependencies(llm_available: bool):
         "app.infra.repositories.document_repository": document_repository_module,
         "app.infra.repositories.document_content_repository": content_repository_module,
         "app.infra.repositories.document_segment_repository": segment_repository_module,
-        "utils.logger": logger_module,
         "utils.search_cache": cache_module,
         "utils.retriever": retriever_module,
         "utils.smart_retrieval": smart_module,
@@ -152,6 +158,8 @@ class DoubaoConfigTests(unittest.TestCase):
                 sys.modules.pop(key, None)
             if key.startswith("retrieval_service_under_test_") or key.startswith("smart_retrieval_under_test_"):
                 sys.modules.pop(key, None)
+            if key.startswith("llm_gateway_config_under_test_"):
+                sys.modules.pop(key, None)
         sys.modules.pop("secrets_api", None)
 
     def _load_config(self, suffix: str, fake_secrets_module=None):
@@ -181,6 +189,14 @@ class DoubaoConfigTests(unittest.TestCase):
         sys.modules.pop(module_name, None)
         with mock.patch.dict(sys.modules, {"config": config_module}, clear=False):
             return _load_module_from_path(module_name, SMART_RETRIEVAL_PATH)
+
+    def _load_llm_gateway_config(self, suffix: str, config_module=None):
+        module_name = f"llm_gateway_config_under_test_{suffix}"
+        sys.modules.pop(module_name, None)
+        if config_module is None:
+            return _load_module_from_path(module_name, LLM_GATEWAY_CONFIG_PATH)
+        with mock.patch.dict(sys.modules, {"config": config_module}, clear=False):
+            return _load_module_from_path(module_name, LLM_GATEWAY_CONFIG_PATH)
 
     def test_config_falls_back_to_env_when_secrets_api_module_missing(self):
         os.environ["DOUBAO_API_KEY"] = "env-doubao-key"
@@ -238,6 +254,46 @@ class DoubaoConfigTests(unittest.TestCase):
         module = self._load_config("llm_true", fake_secrets_module=fake_secrets)
         self.assertTrue(module.LLM_AVAILABLE)
 
+    def test_llm_gateway_config_falls_back_to_config_module_when_env_absent_or_empty(self):
+        os.environ.pop("DOUBAO_API_KEY", None)
+        os.environ["DOUBAO_LLM_API_URL"] = ""
+        os.environ["DOUBAO_MINI_LLM_MODEL"] = ""
+        os.environ.pop("DOUBAO_LLM_MODEL", None)
+
+        config_module = types.ModuleType("config")
+        config_module.DOUBAO_API_KEY = "config-doubao-key"
+        config_module.DOUBAO_LLM_API_URL = "https://config.example/chat"
+        config_module.DOUBAO_MINI_LLM_MODEL = "config-mini-model"
+        config_module.DOUBAO_LLM_MODEL = "config-pro-model"
+
+        module = self._load_llm_gateway_config("fallback_config", config_module=config_module)
+        llm_config = module.LLMConfig()
+
+        self.assertEqual(llm_config.api_key, "config-doubao-key")
+        self.assertEqual(llm_config.api_url, "https://config.example/chat")
+        self.assertEqual(llm_config.get_model("extract"), "config-mini-model")
+        self.assertEqual(llm_config.get_model("qa"), "config-pro-model")
+
+    def test_llm_gateway_config_prefers_env_over_config_module(self):
+        os.environ["DOUBAO_API_KEY"] = "env-doubao-key"
+        os.environ["DOUBAO_LLM_API_URL"] = "https://env.example/chat"
+        os.environ["DOUBAO_MINI_LLM_MODEL"] = "env-mini-model"
+        os.environ["DOUBAO_LLM_MODEL"] = "env-pro-model"
+
+        config_module = types.ModuleType("config")
+        config_module.DOUBAO_API_KEY = "config-doubao-key"
+        config_module.DOUBAO_LLM_API_URL = "https://config.example/chat"
+        config_module.DOUBAO_MINI_LLM_MODEL = "config-mini-model"
+        config_module.DOUBAO_LLM_MODEL = "config-pro-model"
+
+        module = self._load_llm_gateway_config("env_precedence", config_module=config_module)
+        llm_config = module.LLMConfig()
+
+        self.assertEqual(llm_config.api_key, "env-doubao-key")
+        self.assertEqual(llm_config.api_url, "https://env.example/chat")
+        self.assertEqual(llm_config.get_model("extract"), "env-mini-model")
+        self.assertEqual(llm_config.get_model("qa"), "env-pro-model")
+
     def test_main_sync_helper_updates_llm_availability_and_logs(self):
         config_module = types.ModuleType("config")
         config_module.API_PREFIX = "/api/v1"
@@ -269,6 +325,7 @@ class DoubaoConfigTests(unittest.TestCase):
         api_module.generic_exception_handler = lambda *args, **kwargs: None
 
         app_module = types.ModuleType("app")
+        app_core_module = types.ModuleType("app.core")
         app_infra_module = types.ModuleType("app.infra")
         app_infra_repositories_module = types.ModuleType("app.infra.repositories")
         app_services_module = types.ModuleType("app.services")
@@ -311,8 +368,10 @@ class DoubaoConfigTests(unittest.TestCase):
         document_vector_index_service_module = types.ModuleType("app.services.document_vector_index_service")
         document_vector_index_service_module.DocumentVectorIndexService = _FakeDocumentVectorIndexService
 
-        logger_module = types.ModuleType("utils.logger")
-        logger_module.setup_logging = lambda: None
+        core_logger_module = types.ModuleType("app.core.logger")
+        core_logger_module.logger = mock.Mock()
+        core_logger_module.setup_logging = lambda *args, **kwargs: None
+        core_logger_module.RequestContextMiddleware = type("RequestContextMiddleware", (), {})
 
         with mock.patch.dict(
             sys.modules,
@@ -324,15 +383,16 @@ class DoubaoConfigTests(unittest.TestCase):
                 "fastapi.responses": responses_module,
                 "api": api_module,
                 "app": app_module,
+                "app.core": app_core_module,
                 "app.infra": app_infra_module,
                 "app.infra.repositories": app_infra_repositories_module,
                 "app.services": app_services_module,
+                "app.core.logger": core_logger_module,
                 "app.infra.embedding_provider": embedding_provider_module,
                 "app.infra.repositories.document_repository": document_repository_module,
                 "app.infra.vector_store": vector_store_module,
                 "app.services.indexing_service": indexing_service_module,
                 "app.services.document_vector_index_service": document_vector_index_service_module,
-                "utils.logger": logger_module,
             },
             clear=False,
         ):
@@ -408,6 +468,7 @@ class DoubaoConfigTests(unittest.TestCase):
 
         self.assertEqual(content, "ok")
         self.assertEqual(post_mock.call_args.kwargs["json"]["model"], "doubao-mini-for-test")
+        self.assertLessEqual(post_mock.call_args.kwargs["timeout"], 5)
 
     def test_smart_retrieval_runtime_path_uses_default_model_when_env_pro_conflicts(self):
         config_module = types.ModuleType("config")

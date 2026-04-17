@@ -1,6 +1,5 @@
 import json
 import hashlib
-import logging
 import sqlite3
 import threading
 import uuid
@@ -8,10 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.core.logger import logger
 from app.core.database import connect_sqlite
 from config import DATA_DIR
-
-logger = logging.getLogger(__name__)
 
 
 class DocumentMetadataStore:
@@ -44,6 +42,11 @@ class DocumentMetadataStore:
                         filepath TEXT,
                         file_type TEXT,
                         classification_result TEXT,
+                        classification_id TEXT,
+                        classification_path TEXT,
+                        classification_score REAL,
+                        classification_source TEXT,
+                        classification_candidates TEXT,
                         created_at REAL,
                         created_at_iso TEXT,
                         updated_at TEXT,
@@ -122,11 +125,97 @@ class DocumentMetadataStore:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_classification_tables_updated_at ON classification_tables(updated_at)"
                 )
+
+                # ====== PHASE 1 新增：RAG 相关表 ======
+                # doc_entities：存储文档中抽取的实体
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS doc_entities (
+                        id TEXT PRIMARY KEY,
+                        doc_id TEXT NOT NULL,
+                        entity_text TEXT NOT NULL,
+                        entity_type TEXT NOT NULL,
+                        context TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+
+                # qa_sessions：存储问答历史和引用溯源
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS qa_sessions (
+                        id TEXT PRIMARY KEY,
+                        query TEXT NOT NULL,
+                        doc_ids TEXT NOT NULL,
+                        answer TEXT NOT NULL,
+                        citations TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+
+                # kg_triples：知识图谱三元组（主语、关系、宾语）
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS kg_triples (
+                        id TEXT PRIMARY KEY,
+                        doc_id TEXT NOT NULL,
+                        subject TEXT NOT NULL,
+                        predicate TEXT NOT NULL,
+                        object TEXT NOT NULL,
+                        confidence REAL DEFAULT 1.0,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+
+                # classification_feedback：分类反馈，支持 few-shot 学习
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classification_feedback (
+                        id TEXT PRIMARY KEY,
+                        doc_id TEXT NOT NULL,
+                        original_label TEXT,
+                        corrected_label TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+
+                # 创建索引以提高查询性能
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_doc_entities_doc ON doc_entities(doc_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_doc_entities_text ON doc_entities(entity_text)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_qa_sessions_created ON qa_sessions(created_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_triples_doc ON kg_triples(doc_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_triples_subject ON kg_triples(subject)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_kg_triples_object ON kg_triples(object)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classification_feedback_doc ON classification_feedback(doc_id)"
+                )
+                # ====== PHASE 1 新增：END ======
                 # 6.1 documents 表状态机字段（幂等 ALTER，已有列会被忽略）
                 for _col_sql in [
                     "ALTER TABLE documents ADD COLUMN status TEXT DEFAULT 'ready'",
                     "ALTER TABLE documents ADD COLUMN error_message TEXT",
                     "ALTER TABLE documents ADD COLUMN retry_count INTEGER DEFAULT 0",
+                    "ALTER TABLE documents ADD COLUMN classification_id TEXT",
+                    "ALTER TABLE documents ADD COLUMN classification_path TEXT",
+                    "ALTER TABLE documents ADD COLUMN classification_score REAL",
+                    "ALTER TABLE documents ADD COLUMN classification_source TEXT",
+                    "ALTER TABLE documents ADD COLUMN classification_candidates TEXT",
                 ]:
                     try:
                         connection.execute(_col_sql)
@@ -144,6 +233,11 @@ class DocumentMetadataStore:
             "filepath": payload.get("filepath", ""),
             "file_type": payload.get("file_type", ""),
             "classification_result": payload.get("classification_result"),
+            "classification_id": payload.get("classification_id"),
+            "classification_path": payload.get("classification_path"),
+            "classification_score": payload.get("classification_score"),
+            "classification_source": payload.get("classification_source"),
+            "classification_candidates": payload.get("classification_candidates"),
             "created_at": payload.get("created_at"),
             "created_at_iso": payload.get("created_at_iso"),
             "updated_at": payload.get("updated_at"),
@@ -160,13 +254,20 @@ class DocumentMetadataStore:
                 """
                 INSERT INTO documents (
                     id, filename, filepath, file_type, classification_result,
+                    classification_id, classification_path, classification_score, classification_source,
+                    classification_candidates,
                     created_at, created_at_iso, updated_at, payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     filename = excluded.filename,
                     filepath = excluded.filepath,
                     file_type = excluded.file_type,
                     classification_result = excluded.classification_result,
+                    classification_id = excluded.classification_id,
+                    classification_path = excluded.classification_path,
+                    classification_score = excluded.classification_score,
+                    classification_source = excluded.classification_source,
+                    classification_candidates = excluded.classification_candidates,
                     created_at = excluded.created_at,
                     created_at_iso = excluded.created_at_iso,
                     updated_at = excluded.updated_at,
@@ -178,6 +279,11 @@ class DocumentMetadataStore:
                     payload["filepath"],
                     payload["file_type"],
                     payload["classification_result"],
+                    payload["classification_id"],
+                    payload["classification_path"],
+                    payload["classification_score"],
+                    payload["classification_source"],
+                    payload["classification_candidates"],
                     payload["created_at"],
                     payload["created_at_iso"],
                     payload["updated_at"],

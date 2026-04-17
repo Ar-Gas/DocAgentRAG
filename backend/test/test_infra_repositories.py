@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.infra.repositories.classification_table_repository import ClassificationTableRepository
+from app.infra.graph_store import GraphStore
 from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.infra.repositories.document_content_repository import DocumentContentRepository
 from app.infra.repositories.document_repository import DocumentRepository
@@ -87,3 +88,34 @@ def test_repositories_roundtrip_runtime_artifacts_and_classification_tables(tmp_
     assert table_id
     assert classification_tables.get(table_id)["query"] == "项目周报"
     assert classification_tables.list(limit=10)[0]["id"] == table_id
+
+
+def test_graph_store_statistics_count_unique_entities_once(tmp_path: Path):
+    db_path = tmp_path / "docagent.db"
+    graph_store = GraphStore(db_path=db_path, data_dir=tmp_path)
+
+    with graph_store._connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE kg_triples (
+                subject TEXT,
+                predicate TEXT,
+                object TEXT,
+                doc_id TEXT,
+                confidence REAL
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO kg_triples (subject, predicate, object, doc_id, confidence) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("Alice", "knows", "Bob", "doc-1", 1.0),
+                ("Bob", "manages", "Carol", "doc-1", 0.9),
+            ],
+        )
+        conn.commit()
+
+    payload = graph_store.get_statistics()
+
+    assert payload["total_triples"] == 2
+    assert payload["total_entities"] == 3

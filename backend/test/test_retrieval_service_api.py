@@ -102,6 +102,45 @@ def test_workspace_search_groups_block_results_and_applies_filters(monkeypatch):
     assert payload["applied_filters"]["classification"] == "财务"
 
 
+def test_workspace_search_fallback_accepts_classification_id_filter(monkeypatch):
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: set())
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {"documents": [], "results": [], "meta": {"fallback_used": False}},
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "offer-guide.docx",
+                "filepath": "/docs/offer-guide.docx",
+                "file_type": ".docx",
+                "classification_result": "Offer审批",
+                "classification_id": "hr.offer_approval",
+                "created_at_iso": "2026-03-08T10:00:00",
+                "preview_content": "候选人录用审批流程。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "docx",
+            }
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="录用审批",
+        mode="hybrid",
+        retrieval_version="block",
+        classification="hr.offer_approval",
+        group_by_document=True,
+    )
+
+    assert payload["total_documents"] == 1
+    assert payload["documents"][0]["document_id"] == "doc-1"
+
+
 def test_workspace_search_api_returns_service_payload(monkeypatch):
     mock_workspace_search = Mock(
         return_value={
@@ -174,6 +213,24 @@ def test_workspace_search_block_mode_returns_documents_and_compatibility_results
         },
     )
     monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: {"doc-1"})
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "财务制度.docx",
+                "filepath": "/docs/finance-policy.docx",
+                "file_type": ".docx",
+                "classification_result": "财务制度",
+                "created_at_iso": "2026-03-08T10:00:00",
+                "preview_content": "员工差旅报销标准如下，住宿和交通按级别执行。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "docx",
+            }
+        ],
+    )
 
     payload = RetrievalService().workspace_search(
         query="报销标准",
@@ -190,20 +247,33 @@ def test_workspace_search_block_mode_returns_documents_and_compatibility_results
     assert payload["results"][0]["block_id"] == "doc-1:block-v1:14"
 
 
-def test_workspace_search_returns_empty_block_payload_when_no_ready_docs(monkeypatch):
+def test_workspace_search_falls_back_to_preview_results_when_no_ready_docs(monkeypatch):
     search_cache_module.get_search_cache().invalidate_all()
     captured = {}
 
     monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: set())
     monkeypatch.setattr(
         retrieval_service_module,
-        "hybrid_search",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("legacy hybrid_search should not be used")),
+        "search_block_documents",
+        lambda **kwargs: captured.update(kwargs) or {"documents": [], "results": [], "meta": {"fallback_used": False}},
     )
     monkeypatch.setattr(
         retrieval_service_module,
-        "search_block_documents",
-        lambda **kwargs: captured.update(kwargs) or {"documents": [], "results": [], "meta": {"fallback_used": False}},
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "财务制度.docx",
+                "filepath": "/docs/finance-policy.docx",
+                "file_type": ".docx",
+                "classification_result": "财务",
+                "created_at_iso": "2026-03-08T10:00:00",
+                "preview_content": "员工差旅报销标准如下，住宿和交通按级别执行。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "docx",
+            }
+        ],
     )
 
     payload = RetrievalService().workspace_search(
@@ -216,9 +286,108 @@ def test_workspace_search_returns_empty_block_payload_when_no_ready_docs(monkeyp
 
     assert captured["ready_document_ids"] == set()
     assert payload["retrieval_version_requested"] == "block"
+    assert payload["retrieval_version_used"] == "metadata_fallback"
+    assert payload["total_documents"] == 1
+    assert payload["total_results"] == 1
+    assert payload["results"][0]["document_id"] == "doc-1"
+    assert payload["results"][0]["content_snippet"] == "员工差旅报销标准如下，住宿和交通按级别执行。"
+    assert payload["documents"][0]["best_excerpt"] == "员工差旅报销标准如下，住宿和交通按级别执行。"
+    assert payload["meta"]["fallback_used"] is True
+    assert payload["meta"]["fallback_reason"] == "missing_block_index"
+
+
+def test_workspace_search_blends_metadata_matches_to_improve_document_ranking(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: {"doc-body", "doc-title"})
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {
+            "documents": [
+                {
+                    "document_id": "doc-body",
+                    "filename": "当代中国社会分层.pdf",
+                    "path": "/docs/social-strata.pdf",
+                    "file_type": ".pdf",
+                    "classification_result": "社会学",
+                    "created_at_iso": "2026-03-10T10:00:00",
+                    "preview_content": "讨论家庭金融资产、储蓄与居民理财结构。",
+                    "file_available": True,
+                    "score": 0.42,
+                    "hit_count": 1,
+                    "best_block_id": "doc-body:block-v1:2",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-body:block-v1:2",
+                            "block_index": 2,
+                            "block_type": "paragraph",
+                            "snippet": "讨论家庭金融资产、储蓄与居民理财结构。",
+                            "heading_path": [],
+                            "page_number": 5,
+                            "score": 0.42,
+                            "match_reason": "body match",
+                        }
+                    ],
+                }
+            ],
+            "results": [
+                {
+                    "document_id": "doc-body",
+                    "block_id": "doc-body:block-v1:2",
+                    "block_index": 2,
+                    "snippet": "讨论家庭金融资产、储蓄与居民理财结构。",
+                    "score": 0.42,
+                    "match_reason": "body match",
+                }
+            ],
+            "meta": {"fallback_used": False},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-body",
+                "filename": "当代中国社会分层.pdf",
+                "filepath": "/docs/social-strata.pdf",
+                "file_type": ".pdf",
+                "classification_result": "社会学",
+                "created_at_iso": "2026-03-10T10:00:00",
+                "preview_content": "讨论家庭金融资产、储蓄与居民理财结构。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            },
+            {
+                "id": "doc-title",
+                "filename": "中国是部金融史.pdf",
+                "filepath": "/docs/china-finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "经济",
+                "created_at_iso": "2026-03-09T10:00:00",
+                "preview_content": "本书从周朝到近现代梳理中国三千年金融演化。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            },
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="金融史",
+        mode="hybrid",
+        retrieval_version="legacy",
+        limit=10,
+        group_by_document=True,
+    )
+
     assert payload["retrieval_version_used"] == "block"
-    assert payload["total_documents"] == 0
-    assert payload["total_results"] == 0
+    assert payload["documents"][0]["document_id"] == "doc-title"
+    assert payload["documents"][0]["best_excerpt"] == "本书从周朝到近现代梳理中国三千年金融演化。"
+    assert payload["results"][0]["document_id"] == "doc-title"
+    assert payload["results"][0]["content_snippet"] == "本书从周朝到近现代梳理中国三千年金融演化。"
     assert payload["meta"]["fallback_used"] is False
 
 
@@ -452,6 +621,34 @@ def test_stats_include_document_and_index_counts(monkeypatch):
     assert payload["segment_documents"] == 2
     assert payload["total_chunks"] == 7
     assert payload["file_types"] == {".pdf": 5, ".docx": 2}
+
+
+def test_stats_returns_empty_defaults_when_dependencies_raise(monkeypatch):
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_document_stats",
+        lambda: (_ for _ in ()).throw(RuntimeError("collection missing")),
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: (_ for _ in ()).throw(RuntimeError("sqlite missing")),
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "list_document_segments",
+        lambda document_id: (_ for _ in ()).throw(RuntimeError("segments missing")),
+    )
+
+    payload = RetrievalService().stats()
+
+    assert payload == {
+        "total_documents": 0,
+        "vector_indexed_documents": 0,
+        "segment_documents": 0,
+        "total_chunks": 0,
+        "file_types": {},
+    }
 
 
 class DoubaoOnlyRetrievalTests(unittest.TestCase):

@@ -6,19 +6,19 @@
 3. Result Fusion: 合并多个查询的检索结果
 4. LLM Reranking: 使用LLM对最终结果进行精确重排序
 """
-import logging
 import asyncio
 import base64
 import json
+import os
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
+from app.core.logger import logger
 from config import DOUBAO_API_KEY, DOUBAO_DEFAULT_LLM_MODEL, DOUBAO_LLM_API_URL
-
-logger = logging.getLogger(__name__)
 
 _llm_client = None
 _llm_provider = None
+_DOUBAO_REQUEST_TIMEOUT_SECONDS = float(os.getenv("DOUBAO_REQUEST_TIMEOUT_SECONDS", "2"))
 
 def _get_llm_client():
     """获取豆包LLM客户端"""
@@ -73,13 +73,16 @@ def _call_llm(prompt: str, max_tokens: int = 200, temperature: float = 0.7) -> O
             client['base_url'],
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=_DOUBAO_REQUEST_TIMEOUT_SECONDS
         )
         if response.status_code == 200:
             result = response.json()
             return result['choices'][0]['message']['content']
 
         logger.error(f"豆包LLM调用失败: {response.status_code} - {response.text}")
+        return None
+    except requests.exceptions.Timeout:
+        logger.error("豆包LLM调用超时")
         return None
     except Exception as e:
         logger.error(f"LLM调用失败: {str(e)}")
@@ -710,7 +713,7 @@ def generate_classification_table(query: str, results: List[Dict], max_groups: i
         parsed["llm_used"] = True
         return parsed
     except Exception as exc:
-        logger.warning("解析分类表 LLM 输出失败: %s", exc)
+        logger.warning("解析分类表 LLM 输出失败: {}", exc)
         return fallback
 
 

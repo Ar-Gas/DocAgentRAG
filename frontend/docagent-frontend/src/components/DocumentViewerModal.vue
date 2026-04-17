@@ -17,8 +17,17 @@
       </div>
     </template>
 
-    <div v-if="fileUnavailable" class="viewer-empty-state">
-      <el-empty description="原文件不存在或路径已失效，当前无法预览原文。" />
+    <div v-if="fileUnavailable" class="text-fallback-viewer">
+      <div class="text-fallback-banner">
+        <p class="fallback-title">已切换到提取文本预览</p>
+        <p class="fallback-copy">原文件不存在或路径已失效，下面展示系统保留的提取文本分片。</p>
+      </div>
+
+      <DocumentReader v-if="readerPayload || readerLoading" :reader="readerPayload" :loading="readerLoading" />
+
+      <div v-else class="viewer-empty-state">
+        <el-empty :description="readerError || '原文件不存在或路径已失效，且没有可用的提取文本。'" />
+      </div>
     </div>
 
     <div v-else-if="isSupportedOfficePreview" class="office-viewer">
@@ -70,12 +79,15 @@ import '@vue-office/docx/lib/index.css'
 import '@vue-office/excel/lib/index.css'
 
 import { api } from '@/api'
+import DocumentReader from '@/components/DocumentReader.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   documentId: { type: String, default: '' },
   filename: { type: String, default: '' },
   fileType: { type: String, default: '' },
+  query: { type: String, default: '' },
+  anchorBlockId: { type: String, default: '' },
   fileAvailable: {
     default: null,
     validator: (value) => value === null || typeof value === 'boolean',
@@ -88,7 +100,11 @@ const OFFICE_RENDER_TIMEOUT_MS = 15000
 
 const officeLoading = ref(false)
 const officeError = ref('')
+const readerLoading = ref(false)
+const readerPayload = ref(null)
+const readerError = ref('')
 let renderTimeoutId = null
+let readerRequestToken = 0
 
 const normalizeFileType = (fileType, filename) => {
   const rawType = (fileType || '').trim().toLowerCase()
@@ -135,9 +151,71 @@ const scheduleRenderTimeout = () => {
   }, OFFICE_RENDER_TIMEOUT_MS)
 }
 
+const resetReaderState = () => {
+  readerLoading.value = false
+  readerPayload.value = null
+  readerError.value = ''
+}
+
+const loadExtractedTextPreview = async () => {
+  if (!props.documentId) {
+    readerPayload.value = null
+    readerError.value = '缺少文档 ID，无法加载提取文本。'
+    return
+  }
+
+  const requestToken = ++readerRequestToken
+  readerLoading.value = true
+  readerPayload.value = null
+  readerError.value = ''
+
+  try {
+    const response = await api.getDocumentReader(
+      props.documentId,
+      props.query || '',
+      props.anchorBlockId || null,
+    )
+    if (requestToken !== readerRequestToken) {
+      return
+    }
+
+    const payload = response?.data || null
+    if (payload?.blocks?.length) {
+      readerPayload.value = payload
+      return
+    }
+
+    readerPayload.value = null
+    readerError.value = '原文件不存在或路径已失效，且没有可用的提取文本。'
+  } catch (error) {
+    if (requestToken !== readerRequestToken) {
+      return
+    }
+    readerPayload.value = null
+    readerError.value = error?.message || '加载提取文本失败。'
+  } finally {
+    if (requestToken === readerRequestToken) {
+      readerLoading.value = false
+    }
+  }
+}
+
 const resetViewerState = () => {
-  officeLoading.value = props.visible && !fileUnavailable.value && isSupportedOfficePreview.value
+  clearRenderTimeout()
+  officeLoading.value = false
   officeError.value = ''
+  resetReaderState()
+
+  if (!props.visible) {
+    return
+  }
+
+  if (fileUnavailable.value) {
+    void loadExtractedTextPreview()
+    return
+  }
+
+  officeLoading.value = isSupportedOfficePreview.value
   scheduleRenderTimeout()
 }
 
@@ -153,21 +231,24 @@ const handleOfficeError = (error) => {
 }
 
 watch(
-  () => [props.visible, props.documentId, props.fileType, props.filename, props.fileAvailable],
+  () => [props.visible, props.documentId, props.fileType, props.filename, props.fileAvailable, props.query, props.anchorBlockId],
   ([visible]) => {
     if (visible) {
       resetViewerState()
       return
     }
 
+    readerRequestToken += 1
     clearRenderTimeout()
     officeLoading.value = false
     officeError.value = ''
+    resetReaderState()
   },
   { immediate: true },
 )
 
 onBeforeUnmount(() => {
+  readerRequestToken += 1
   clearRenderTimeout()
 })
 
@@ -212,6 +293,36 @@ const openInNewTab = () => {
   gap: 8px;
   align-items: center;
   flex-shrink: 0;
+}
+
+.text-fallback-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  padding: 20px;
+  overflow: hidden;
+  background: var(--bg-subtle);
+}
+
+.text-fallback-banner {
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+
+.fallback-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.fallback-copy {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-muted);
 }
 
 .office-viewer {

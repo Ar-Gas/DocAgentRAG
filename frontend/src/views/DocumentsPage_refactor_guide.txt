@@ -1,0 +1,35 @@
+"""
+DocumentsPage.vue 改造指南（不改动现有逻辑，新增功能）
+
+1. 修改文档卡片显示摘要：
+   在文档卡片中添加：
+   <div class="doc-summary">
+     <p>{{ doc.llm_summary || doc.preview_content }}</p>
+   </div>
+
+2. 显示重复文档提示：
+   <div v-if="doc.duplicate_of" class="duplicate-warning">
+     ⚠️ 该文档可能与 {{ doc.duplicate_of }} 重复
+   </div>
+
+3. 批量操作新增选项：
+   <select v-model="bulkAction">
+     <option value="">请选择操作</option>
+     <option value="merge-summary">合并总结</option>
+     <option value="batch-reclass">批量重分类</option>
+     <option value="export-pdf">导出为 PDF</option>
+     <option value="export-excel">导出为 Excel</option>
+   </select>
+
+4. 调用后端 API：
+   const executeBulkAction = async () => {
+     if (bulkAction.value === "merge-summary") {
+       // 调用 /api/v1/qa 进行跨文档总结
+     } else if (bulkAction.value === "export-pdf") {
+       // 调用 /api/v1/documents/export?format=pdf&doc_ids=...
+     }
+   }
+"""
+
+# 这是一个说明文件
+print(__doc__)

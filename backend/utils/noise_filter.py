@@ -1,9 +1,8 @@
 import re
-import logging
 from typing import List, Dict, Tuple
 from collections import Counter
 
-logger = logging.getLogger(__name__)
+from app.core.logger import logger
 
 
 class NoiseFilter:

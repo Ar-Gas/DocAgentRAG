@@ -75,6 +75,9 @@ export const api = {
   buildTopicTree: (forceRebuild = false) => {
     return request.post('/classification/topic-tree/build', { force_rebuild: forceRebuild })
   },
+  getGraph: (params = {}) => {
+    return request.get('/topics/graph', { params })
+  },
 
   // 原文件预览：返回文件访问 URL（不发请求，直接拼 URL）
   getDocumentFileUrl: (documentId) => `/api/v1/documents/${documentId}/file`,
@@ -91,6 +94,61 @@ export const api = {
   },
   generateClassificationTable: (query, results = [], persist = false) => {
     return request.post('/classification/tables/generate', { query, results, persist })
+  },
+  streamQA: (payload, handlers = {}) => {
+    const ctrl = new AbortController()
+
+    fetch('/api/v1/qa/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text().catch(() => '')
+          throw new Error(`HTTP ${res.status}: ${text}`)
+        }
+
+        const reader = res.body?.getReader?.()
+        if (!reader) {
+          throw new Error('QA stream is unavailable')
+        }
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const frames = buffer.split('\n\n')
+          buffer = frames.pop() ?? ''
+
+          for (const frame of frames) {
+            const dataLine = frame
+              .split('\n')
+              .find((line) => line.startsWith('data: '))
+
+            if (!dataLine) continue
+
+            try {
+              const parsed = JSON.parse(dataLine.slice(6))
+              if (parsed.error) handlers.onError?.(new Error(parsed.error))
+              else if (parsed.status === 'complete') handlers.onDone?.(parsed)
+              else handlers.onMessage?.(parsed)
+            } catch (_) {
+              // 忽略无效的 SSE 帧
+            }
+          }
+        }
+      })
+      .catch((error) => {
+        if (error.name !== 'AbortError') handlers.onError?.(error)
+      })
+
+    return () => ctrl.abort()
   }
 }
 

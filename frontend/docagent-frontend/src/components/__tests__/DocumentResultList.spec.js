@@ -81,4 +81,25 @@ describe('DocumentResultList', () => {
     expect(wrapper.emitted('open-viewer')).toBeTruthy()
     expect(wrapper.emitted('open-viewer')[0][0].document_id).toBe('doc-1')
   })
+
+  it('still emits open-viewer for extracted-text fallback when file is unavailable', async () => {
+    const wrapper = mount(DocumentResultList, {
+      props: {
+        loading: false,
+        query: '',
+        selectedDocumentId: 'doc-1',
+        documents: [{ ...DOC, file_available: false }],
+      },
+      global: { stubs: STUBS },
+    })
+
+    await wrapper.vm.$nextTick()
+    const viewerBtn = wrapper.findAll('.action-btn').find((b) => b.text().includes('预览'))
+    expect(viewerBtn).toBeTruthy()
+    await viewerBtn.trigger('click')
+
+    expect(wrapper.text()).toContain('当前仅支持查看已提取文本')
+    expect(wrapper.emitted('open-viewer')).toBeTruthy()
+    expect(wrapper.emitted('open-viewer')[0][0].document_id).toBe('doc-1')
+  })
 })

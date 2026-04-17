@@ -3,7 +3,10 @@
 
 当前实现完全基于文档向量聚类 + LLM 命名，不再回退到关键词分组。
 """
+import asyncio
+import inspect
 from datetime import datetime
+from threading import Thread
 from typing import Any, Dict, List
 
 from app.infra.metadata_store import get_metadata_store
@@ -11,6 +14,7 @@ from app.infra.repositories.document_content_repository import DocumentContentRe
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
 from app.services.topic_clustering import TopicClustering
+from app.services.document_label_resolver import resolve_document_label
 from app.services.topic_labeler import TopicLabeler
 from config import DATA_DIR
 
@@ -45,8 +49,8 @@ def update_document_info(document_id: str, updated_info: Dict[str, Any]) -> bool
 
 class TopicTreeService:
     artifact_name = "topic_tree"
-    schema_version = 2
-    generation_method = "doc_embedding_cluster+llm_label"
+    schema_version = 3
+    generation_method = "doc_embedding_cluster+fallback_label_contract"
 
     def __init__(self, max_topics: int = 10):
         self.max_topics = max_topics
@@ -66,10 +70,10 @@ class TopicTreeService:
             if cached:
                 return cached
 
+        raw_documents = [doc for doc in get_all_documents() if doc.get("id")]
         documents = [
             self._build_document_profile(doc)
-            for doc in get_all_documents()
-            if doc.get("id")
+            for doc in raw_documents
         ]
         documents = [doc for doc in documents if doc]
 
@@ -79,10 +83,10 @@ class TopicTreeService:
             return payload
 
         clusterable_documents, excluded_documents = self.clustering.build_document_vectors(documents)
-        if not clusterable_documents:
-            raise RuntimeError("无法为任何文档生成主题聚类向量")
+        topics = self._build_topics(clusterable_documents) if clusterable_documents else []
+        document_lookup = {doc["id"]: doc for doc in raw_documents if doc.get("id")}
+        topics.extend(self._build_fallback_topics(excluded_documents, document_lookup))
 
-        topics = self._build_topics(clusterable_documents)
         payload = self._build_payload(
             topics,
             total_documents=len(documents),
@@ -94,7 +98,8 @@ class TopicTreeService:
         return payload
 
     def classify_document(self, document_id: str, force_rebuild: bool = False) -> Dict[str, Any]:
-        tree = self.build_topic_tree(force_rebuild=True) if force_rebuild else self.get_topic_tree()
+        del force_rebuild
+        tree = self.get_topic_tree()
         assignment = self._find_document_assignment(tree, document_id)
         if assignment:
             return assignment
@@ -309,6 +314,133 @@ class TopicTreeService:
 
         return topics
 
+    def _build_fallback_topics(
+        self,
+        excluded_documents: List[Dict[str, Any]],
+        document_lookup: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not excluded_documents:
+            return []
+
+        resolved_documents = self._resolve_excluded_documents(excluded_documents, document_lookup)
+        grouped_documents: Dict[str, Dict[str, List[Dict[str, Any]]]] = {
+            "兜底分类": {},
+            "异常文档": {},
+        }
+
+        for document in resolved_documents:
+            parent_label, child_label = self._route_excluded_document(document)
+            grouped_documents[parent_label].setdefault(child_label, []).append(document)
+
+        fallback_topics: List[Dict[str, Any]] = []
+        parent_counter = 1
+        for parent_label in ["兜底分类", "异常文档"]:
+            children_map = grouped_documents[parent_label]
+            if not children_map:
+                continue
+
+            children = []
+            for child_counter, child_label in enumerate(sorted(children_map.keys()), start=1):
+                docs = children_map[child_label]
+                children.append(
+                    {
+                        "topic_id": f"topic-fallback-{parent_counter}-{child_counter}",
+                        "label": child_label,
+                        "keywords": [],
+                        "document_count": len(docs),
+                        "documents": [self._serialize_doc(item) for item in docs],
+                        "children": [],
+                    }
+                )
+
+            fallback_topics.append(
+                {
+                    "topic_id": f"topic-fallback-{parent_counter}",
+                    "label": parent_label,
+                    "keywords": [],
+                    "document_count": sum(child["document_count"] for child in children),
+                    "documents": [],
+                    "children": children,
+                }
+            )
+            parent_counter += 1
+
+        return fallback_topics
+
+    def _resolve_excluded_documents(
+        self,
+        excluded_documents: List[Dict[str, Any]],
+        document_lookup: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        return self._run_coroutine(
+            self._resolve_excluded_documents_async(excluded_documents, document_lookup)
+        )
+
+    async def _resolve_excluded_documents_async(
+        self,
+        excluded_documents: List[Dict[str, Any]],
+        document_lookup: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        resolved: List[Dict[str, Any]] = []
+        for document in excluded_documents:
+            document_id = document.get("document_id")
+            if not document_id:
+                continue
+
+            raw_info = document_lookup.get(document_id) or {}
+            doc_info = {
+                **raw_info,
+                **document,
+                "id": raw_info.get("id") or document_id,
+                "document_id": document_id,
+            }
+            label_result = resolve_document_label(document_id, doc_info)
+            if inspect.isawaitable(label_result):
+                label_result = await label_result
+            label_result = label_result or {}
+            resolved.append(
+                {
+                    **document,
+                    "resolved_label": label_result.get("label"),
+                    "resolved_is_error": bool(label_result.get("is_error")),
+                }
+            )
+        return resolved
+
+    @staticmethod
+    def _route_excluded_document(document: Dict[str, Any]) -> tuple[str, str]:
+        if document.get("exclude_reason") == "unusable_content":
+            return "异常文档", "Error"
+
+        label = str(document.get("resolved_label") or "").strip()
+        if document.get("resolved_is_error") or label == "Error" or not label:
+            return "异常文档", "Error"
+        return "兜底分类", label
+
+    @staticmethod
+    def _run_coroutine(coroutine):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coroutine)
+
+        output: Dict[str, Any] = {}
+        error: Dict[str, Exception] = {}
+
+        def runner() -> None:
+            try:
+                output["value"] = asyncio.run(coroutine)
+            except Exception as exc:  # pragma: no cover
+                error["value"] = exc
+
+        worker = Thread(target=runner, daemon=True)
+        worker.start()
+        worker.join()
+
+        if "value" in error:
+            raise error["value"]
+        return output.get("value", [])
+
     def _build_payload(
         self,
         topics: List[Dict[str, Any]],
@@ -346,8 +478,8 @@ class TopicTreeService:
             assignment = assignments.get(document_id)
             if assignment:
                 topic_path = list(assignment.get("topic_path") or [])
+                # classification_result is now owned by TaxonomyClassifier only
                 update_payload = {
-                    "classification_result": assignment.get("topic_label"),
                     "topic_node_id": assignment.get("topic_id"),
                     "topic_label": assignment.get("topic_label"),
                     "topic_path": topic_path,
@@ -356,7 +488,6 @@ class TopicTreeService:
                 }
             else:
                 update_payload = {
-                    "classification_result": None,
                     "topic_node_id": None,
                     "topic_label": None,
                     "topic_path": [],

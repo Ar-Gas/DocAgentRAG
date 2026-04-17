@@ -10,6 +10,7 @@ from utils.retriever import (  # noqa: E402
     batch_search_documents,
     get_document_by_id,
     get_document_stats,
+    get_ready_block_document_ids,
     hybrid_search,
     keyword_search,
     multimodal_search,
@@ -116,6 +117,36 @@ class TestRetriever(unittest.TestCase):
         self.assertEqual(search_documents(123, limit=10), [])
         self.assertEqual(search_documents("预算", limit=0), [])
         self.assertEqual(search_documents("预算", limit=-1), [])
+
+    @mock.patch("utils.retriever.get_all_documents")
+    def test_get_ready_block_document_ids_accepts_classification_id_filter(
+        self,
+        mock_get_all_documents,
+    ):
+        mock_get_all_documents.return_value = [
+            {
+                "id": "doc-1",
+                "filename": "offer-guide.docx",
+                "file_type": ".docx",
+                "classification_result": "Offer审批",
+                "classification_id": "hr.offer_approval",
+                "block_index_status": "ready",
+                "created_at_iso": "2026-03-20T10:00:00",
+            },
+            {
+                "id": "doc-2",
+                "filename": "budget-guide.docx",
+                "file_type": ".docx",
+                "classification_result": "预算制度",
+                "classification_id": "finance.budget_policy",
+                "block_index_status": "ready",
+                "created_at_iso": "2026-03-20T10:00:00",
+            },
+        ]
+
+        ready_ids = get_ready_block_document_ids(classification="hr.offer_approval")
+
+        self.assertEqual(ready_ids, {"doc-1"})
 
     @mock.patch("utils.retriever.search_block_documents")
     @mock.patch("utils.retriever.get_ready_block_document_ids")

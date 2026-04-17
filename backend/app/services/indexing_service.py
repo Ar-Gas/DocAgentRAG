@@ -1,7 +1,10 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List
 
+from app.core.logger import logger
 from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.vector_store import get_block_collection
@@ -35,6 +38,7 @@ def get_all_documents():
 
 class IndexingService:
     READER_ARTIFACT_TYPE = "reader_blocks"
+    SUPPORTED_BLOCK_FILE_TYPES = {".pdf", ".docx"}
 
     def audit_block_index(self, document_id: str = "") -> Dict[str, Any]:
         documents = self._load_documents(document_id)
@@ -58,12 +62,14 @@ class IndexingService:
             expected_block_count = self._coerce_optional_int(document.get("block_count"))
             actual_block_count = actual_counts.get(doc_id, 0)
             rebuild_reasons: List[str] = []
+            supports_block_index = self._supports_block_index(document)
 
-            if status and status != "ready":
+            if supports_block_index and status and status != "ready":
                 rebuild_reasons.append(f"status_{status}")
-            if actual_block_count == 0:
-                rebuild_reasons.append("missing_blocks")
-            elif expected_block_count is not None and expected_block_count != actual_block_count:
+            if supports_block_index and actual_block_count == 0:
+                if not (status == "ready" and expected_block_count == 0):
+                    rebuild_reasons.append("missing_blocks")
+            elif supports_block_index and expected_block_count is not None and expected_block_count != actual_block_count:
                 rebuild_reasons.append("block_count_mismatch")
 
             report = {
@@ -131,15 +137,26 @@ class IndexingService:
         return orphan_block_ids
 
     def index_document(self, document_id: str, force: bool = False) -> Dict[str, Any]:
+        started_at = perf_counter()
+        logger.info("block_index_started document_id={} force={}", document_id, force)
         doc_info = get_document_info(document_id)
         if not doc_info:
+            logger.warning("block_index_skipped_missing_document document_id={}", document_id)
             return {"document_id": document_id, "block_index_status": "failed", "error": "document not found"}
 
         block_collection = None
         old_snapshot = {"ids": [], "documents": [], "metadatas": []}
         new_ids = []
         try:
+            extraction_started_at = perf_counter()
             block_payload = extract_structured_blocks(doc_info.get("filepath", ""), document_id)
+            blocks = block_payload.get("blocks") or []
+            logger.info(
+                "block_extraction_completed document_id={} block_count={} duration_ms={:.2f}",
+                document_id,
+                len(blocks),
+                (perf_counter() - extraction_started_at) * 1000,
+            )
             block_collection = get_block_collection()
             if block_collection is None:
                 raise RuntimeError("block collection unavailable")
@@ -148,7 +165,6 @@ class IndexingService:
             if old_snapshot["ids"]:
                 block_collection.delete(ids=old_snapshot["ids"])
 
-            blocks = block_payload.get("blocks") or []
             ids = []
             documents = []
             metadatas = []
@@ -160,9 +176,16 @@ class IndexingService:
                 documents.append(block.get("text", ""))
                 metadatas.append(self._build_block_metadata(doc_info, block_payload, block, document_id, indexed_at))
 
+            vector_write_started_at = perf_counter()
             if ids:
                 block_collection.add(documents=documents, metadatas=metadatas, ids=ids)
                 new_ids = list(ids)
+            logger.info(
+                "block_vector_write_completed document_id={} block_count={} duration_ms={:.2f}",
+                document_id,
+                len(ids),
+                (perf_counter() - vector_write_started_at) * 1000,
+            )
 
             artifact_id = upsert_document_artifact(
                 document_id,
@@ -188,10 +211,21 @@ class IndexingService:
                     "block_index_error": None,
                 },
             )
+            logger.info(
+                "block_index_completed document_id={} block_count={} total_duration_ms={:.2f}",
+                document_id,
+                len(blocks),
+                (perf_counter() - started_at) * 1000,
+            )
             return {"document_id": document_id, "block_index_status": "ready"}
         except Exception as exc:
             self._rollback_blocks(block_collection, old_snapshot, new_ids)
             short_error = self._short_error(exc)
+            logger.opt(exception=exc).error(
+                "block_index_failed document_id={} total_duration_ms={:.2f}",
+                document_id,
+                (perf_counter() - started_at) * 1000,
+            )
             update_document_info(
                 document_id,
                 {
@@ -272,6 +306,15 @@ class IndexingService:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _supports_block_index(cls, document: Dict[str, Any]) -> bool:
+        file_type = str(document.get("file_type") or "").strip().lower()
+        if not file_type:
+            file_type = Path(str(document.get("filepath") or "")).suffix.lower()
+        if file_type and not file_type.startswith("."):
+            file_type = f".{file_type}"
+        return file_type in cls.SUPPORTED_BLOCK_FILE_TYPES
 
     @staticmethod
     def _load_documents(document_id: str = "") -> List[Dict[str, Any]]:

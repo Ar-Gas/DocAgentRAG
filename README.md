@@ -115,15 +115,19 @@ DocAgentRAG/
 
 ### 环境要求
 
-- Python 3.8+
-- Node.js 20+
+- Python 3.12+（建议使用虚拟环境）
+- Node.js 20.19+ 或 22.12+
 - Tesseract OCR（可选，用于扫描版 PDF）
 
 ### 后端安装与启动
 
 ```bash
-# 安装依赖
+# 创建并激活虚拟环境
 cd backend
+python3 -m venv .venv
+. .venv/bin/activate
+
+# 安装依赖
 pip install -r requirements.txt
 
 # 安装 Tesseract OCR (Ubuntu/Debian)

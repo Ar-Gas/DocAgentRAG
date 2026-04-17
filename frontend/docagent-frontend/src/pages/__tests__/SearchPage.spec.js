@@ -99,4 +99,26 @@ describe('SearchPage', () => {
     expect(apiMocks.workspaceSearch.mock.calls[0][0]).not.toHaveProperty('retrieval_version')
     expect(workspaceSearchStream).not.toHaveBeenCalled()
   })
+
+  it('accepts category API responses that return a raw array payload', async () => {
+    apiMocks.getCategories.mockResolvedValue([
+      {
+        id: 'hr.offer_approval',
+        label: 'Offer审批',
+        path: ['人力资源', '招聘管理', 'Offer审批'],
+        domain: '人力资源',
+      },
+    ])
+
+    const wrapper = await mountSearchPage()
+
+    expect(wrapper.vm.categories).toEqual([
+      {
+        id: 'hr.offer_approval',
+        label: 'Offer审批',
+        path: ['人力资源', '招聘管理', 'Offer审批'],
+        domain: '人力资源',
+      },
+    ])
+  })
 })

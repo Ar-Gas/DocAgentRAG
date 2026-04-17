@@ -1,8 +1,7 @@
 import os
-import logging
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from app.core.logger import logger
 
 def _check_tesseract_available():
     """检查Tesseract是否可用"""
