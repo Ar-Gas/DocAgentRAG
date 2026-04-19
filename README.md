@@ -167,7 +167,25 @@ pip install "lightrag-hku[api]"
 
 如果你是从 LightRAG 仓库源码部署，请在它自己的项目目录中执行官方安装步骤，并确认实际启动进程用的是这个虚拟环境。
 
-#### 3. 安装 MinerU / magic-pdf
+#### 3. 启动 DocAgentRAG 适配的 LightRAG 服务
+
+本项目对 LightRAG 增加了大文档动态 chunk profile 和文档级 LLM 抽取限流。
+本地开发环境不要直接运行裸 `lightrag-server`，否则会绕过仓库内 runtime patch。
+
+```bash
+cd backend
+python scripts/write_lightrag_dev_env.py
+set -a
+. ./lightrag.env
+set +a
+./.venv/bin/python scripts/run_lightrag_server.py
+```
+
+生产环境如果把 LightRAG 独立部署，需要把等价的 `lightrag_runtime_patch`
+加载步骤接入实际启动脚本，或者直接使用 `backend/scripts/run_lightrag_server.py`
+作为启动入口。
+
+#### 4. 安装 MinerU / magic-pdf
 
 扫描版 PDF 走 OCR 时，LightRAG 会依赖 MinerU。缺少它时，上传会直接失败，并返回类似下面的报错：
 
@@ -196,7 +214,7 @@ sudo apt install -y build-essential libmagic1 libgl1 poppler-utils tesseract-ocr
 
 如果你使用 CUDA 或其他推理加速环境，请按 LightRAG 与 MinerU 当前官方说明补齐对应驱动和运行时，不要混装到 DocAgentRAG 的 backend 环境里。
 
-#### 4. 验证 MinerU 是否安装在正确环境
+#### 5. 验证 MinerU 是否安装在正确环境
 
 先进入 LightRAG 的虚拟环境，再执行：
 
@@ -206,7 +224,7 @@ python -c "import magic_pdf; print('magic-pdf ok')"
 
 如果这里导入失败，说明 MinerU 仍然没有装进 LightRAG 运行时环境。
 
-#### 5. 验证 LightRAG 健康检查
+#### 6. 验证 LightRAG 健康检查
 
 确认 LightRAG 服务启动后，在 DocAgentRAG 机器或 LightRAG 机器上执行：
 
@@ -223,10 +241,11 @@ LIGHTRAG_TIMEOUT_SECONDS=30
 LIGHTRAG_ENABLED=true
 ```
 
-#### 6. 生产部署提醒
+#### 7. 生产部署提醒
 
 - `magic-pdf[full]` 体积较大，首次部署建议单独构建镜像或单独固化 Python 环境。
 - 不要只在 DocAgentRAG 后端执行 `pip install magic-pdf[full]`，那样不能解决 LightRAG 返回的 MinerU 缺失错误。
+- 不要用裸 `lightrag-server` 启动需要大文档限流能力的实例；使用 `scripts/run_lightrag_server.py` 或等价 shim。
 - 升级 LightRAG 或 MinerU 后，建议立即重新执行 `/health` 与扫描版 PDF 上传测试。
 - 如果历史文件只存在于本地磁盘而未导入 LightRAG，可通过本文档后面的 `local_only` 批量导入 API 做补录。
 

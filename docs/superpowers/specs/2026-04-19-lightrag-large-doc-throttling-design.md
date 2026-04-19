@@ -168,25 +168,32 @@ LightRAG 当前已经支持：
 
 主要改动位于 LightRAG 运行层。
 
+本次不直接修改 `.venv/site-packages` 中的 LightRAG 源码。运行时通过仓库内 shim 在 `9621`
+启动前安装 monkeypatch，这样改动可以纳入仓库提交，也避免升级虚拟环境后补丁丢失。
+
 目标文件：
 
-- `backend/.venv/lib/python3.12/site-packages/lightrag/lightrag.py`
-- `backend/.venv/lib/python3.12/site-packages/lightrag/operate.py`
+- `backend/app/services/lightrag_runtime_patch.py`
+- `backend/scripts/run_lightrag_server.py`
+- LightRAG 上游运行时对象与函数，作为 shim 的 patch 目标
 
 职责拆分如下：
 
 #### `lightrag.py`
 
+通过仓库内 `lightrag_runtime_patch.py` 对 `LightRAG` 实例安装 wrapper：
+
 - 增加大文档 profile 计算逻辑
 - 将 profile 持久化到 `doc_status.metadata`
-- 在处理单文档时读取 profile 并选择实际 chunk 参数
+- 在 chunking wrapper 中选择实际 chunk 参数
 - 将文档级局部并发参数传给实体抽取流程
 
 #### `operate.py`
 
-- 在 chunk 级抽取入口读取文档级局部并发参数
-- 为单文档抽取任务创建局部 semaphore
-- 保持当前全局 LLM 包装逻辑不变，只在其外层增加局部 gate
+不直接改文件。shim 在调用 `extract_entities()` 前按 chunk 上的 `large_doc_profile`
+构造新的 `global_config`，将大文档的 `llm_model_max_async` 降为文档级
+`chunk_max_async`。上游 `extract_entities()` 既有的 chunk semaphore 会使用这个值，
+从而形成文档局部 gate；原有 LLM function wrapper 继续承担全局 gate。
 
 ### DocAgentRAG Adaptation Layer
 
@@ -308,14 +315,14 @@ DocAgentRAG 侧不重写主逻辑，只做三类工作：
 ## Rollout Plan
 
 1. 先补测试，锁定大文档 profile 选择与局部并发行为。
-2. 再 patch LightRAG 运行层。
-3. 保持现有 `6008` 和 `9621` 运行链路不变，只重载必要服务。
+2. 再通过仓库内 runtime shim patch LightRAG 运行层。
+3. 保持现有 `6008 -> 9621` API 链路不变，但 `9621` 必须通过 `backend/scripts/run_lightrag_server.py` 启动以加载 shim。
 4. 用当前失败样本 `重构：改善既有代码的设计（第2版）...pdf` 做真实验证。
 5. 若验证通过，再考虑是否把 profile 参数暴露到更显式的配置生成逻辑。
 
 ## Risks
 
-1. LightRAG 安装在 `site-packages`，补丁需要谨慎控制范围，避免未来升级覆盖。
+1. `9621` 如果仍用裸 `lightrag-server` 启动，会绕过仓库内 shim，因此部署命令必须同步更新。
 2. 动态增大 chunk size 可能降低抽取细粒度，少数边缘实体召回率可能下降。
 3. 局部并发收紧后，大文档完成时间可能变长，但这是稳定性换吞吐的有意取舍。
 
