@@ -9,10 +9,10 @@ from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 
 from app.core.logger import logger
-from app.infra.embedding_provider import doubao_multimodal_embed
+from app.infra.embedding_provider import doubao_multimodal_embed, get_local_embedding_model_name
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.vector_store import get_block_collection
-from config import DATA_DIR, DOUBAO_EMBEDDING_MODEL
+from config import DATA_DIR
 
 
 def get_all_documents():
@@ -635,7 +635,7 @@ def multimodal_search(
                 "chunk_index": candidate.get("block_index", 0),
                 "block_id": candidate.get("block_id"),
                 "block_index": candidate.get("block_index", 0),
-                "embedding_model": DOUBAO_EMBEDDING_MODEL,
+                "embedding_model": get_local_embedding_model_name(),
                 "multimodal_query": bool(image_url or image_path),
             }
             for candidate in candidates.values()

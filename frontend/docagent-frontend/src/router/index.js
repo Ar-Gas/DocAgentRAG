@@ -25,6 +25,11 @@ const routes = [
     path: '/graph',
     name: 'graph',
     component: () => import('@/pages/GraphPage.vue')
+  },
+  {
+    path: '/rag-studio',
+    name: 'rag-studio',
+    component: () => import('@/pages/RagStudioPage.vue')
   }
 ]
 

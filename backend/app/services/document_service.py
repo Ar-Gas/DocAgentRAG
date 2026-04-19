@@ -1,10 +1,14 @@
 import os
 import re
 import shutil
+import asyncio
+import uuid as _uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.core.logger import logger
+from app.infra.lightrag_client import LightRAGClient
 from app.infra.file_utils import enrich_document_file_state as _enrich_document_file_state
 from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.infra.repositories.document_content_repository import DocumentContentRepository
@@ -15,6 +19,7 @@ from app.services.document_vector_index_service import DocumentVectorIndexServic
 from app.services.errors import AppServiceError
 from app.services.extraction_service import ExtractionService
 from app.services.indexing_service import IndexingService
+from app.services.local_embedding_runtime import LocalEmbeddingRuntime
 from config import ALLOWED_EXTENSIONS, BASE_DIR, DATA_DIR, DOC_DIR, EXTENSION_TO_DIR, MAX_FILE_SIZE
 from utils.retriever import get_query_parser
 from utils.search_cache import get_search_cache
@@ -54,6 +59,24 @@ def get_all_documents():
 
 def update_document_info(document_id: str, updated_info: Dict) -> bool:
     return _document_repository().update(document_id, updated_info)
+
+
+def update_document_ingest_status(
+    document_id: str,
+    ingest_status: str,
+    ingest_error: Optional[str] = None,
+    lightrag_track_id: Optional[str] = None,
+    lightrag_doc_id: Optional[str] = None,
+    last_status_sync_at: Optional[str] = None,
+) -> bool:
+    return _document_repository().update_ingest_status(
+        document_id,
+        ingest_status=ingest_status,
+        ingest_error=ingest_error,
+        lightrag_track_id=lightrag_track_id,
+        lightrag_doc_id=lightrag_doc_id,
+        last_status_sync_at=last_status_sync_at,
+    )
 
 
 def save_classification_result(document_id: str, classification_result: str) -> bool:
@@ -172,13 +195,204 @@ def get_block_status(document_id: str) -> Dict:
 
 
 class DocumentService:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        document_repository: Optional[DocumentRepository] = None,
+        data_dir: Path = DATA_DIR,
+        doc_dir: Path = DOC_DIR,
+        lightrag_client=None,
+        local_embedding_runtime=None,
+        enqueue_background: bool = True,
+    ):
+        self.document_repository = document_repository
+        self.data_dir = Path(data_dir)
+        self.doc_dir = Path(doc_dir)
+        self.lightrag_client = lightrag_client or LightRAGClient()
+        self.local_embedding_runtime = local_embedding_runtime or LocalEmbeddingRuntime()
+        self.enqueue_background = enqueue_background
         self.extraction_service = ExtractionService()
         self.indexing_service = IndexingService()
+        self._batch_import_task = None
+        self._batch_import_status = self._initial_batch_import_status()
+
+    def _document_repository(self) -> DocumentRepository:
+        return self.document_repository or _document_repository()
+
+    def _get_document_info(self, document_id: str):
+        if self.document_repository is None:
+            return get_document_info(document_id)
+        return self.document_repository.get(document_id)
+
+    def _update_document_info(self, document_id: str, updated_info: Dict) -> bool:
+        if self.document_repository is None:
+            return update_document_info(document_id, updated_info)
+        return self.document_repository.update(document_id, updated_info)
+
+    def _update_ingest_status(
+        self,
+        document_id: str,
+        *,
+        ingest_status: str,
+        ingest_error: Optional[str] = None,
+        lightrag_track_id: Optional[str] = None,
+        lightrag_doc_id: Optional[str] = None,
+        last_status_sync_at: Optional[str] = None,
+    ) -> bool:
+        if self.document_repository is None:
+            return update_document_ingest_status(
+                document_id,
+                ingest_status,
+                ingest_error=ingest_error,
+                lightrag_track_id=lightrag_track_id,
+                lightrag_doc_id=lightrag_doc_id,
+                last_status_sync_at=last_status_sync_at,
+            )
+        return self.document_repository.update_ingest_status(
+            document_id,
+            ingest_status=ingest_status,
+            ingest_error=ingest_error,
+            lightrag_track_id=lightrag_track_id,
+            lightrag_doc_id=lightrag_doc_id,
+            last_status_sync_at=last_status_sync_at,
+        )
+
+    def _hydrate_document(self, doc_info: Dict) -> Dict:
+        return _enrich_document_file_state(
+            doc_info,
+            base_dir=BASE_DIR,
+            doc_dir=self.doc_dir,
+            get_document_info=self._get_document_info,
+            update_document_info=self._update_document_info,
+            persist=True,
+        )
 
     @staticmethod
-    def _hydrate_document(doc_info: Dict) -> Dict:
-        return enrich_document_file_state(doc_info, persist=True)
+    def _run_coroutine(coro):
+        result_holder = {}
+        error_holder = {}
+
+        def runner() -> None:
+            try:
+                result_holder["value"] = asyncio.run(coro)
+            except BaseException as exc:  # pragma: no cover - defensive bridge
+                error_holder["error"] = exc
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        import threading
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        thread.join()
+
+        if error_holder:
+            raise error_holder["error"]
+        return result_holder.get("value")
+
+    @staticmethod
+    def _normalize_lightrag_doc_status(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized.startswith("docstatus."):
+            normalized = normalized.split(".", 1)[1]
+        return normalized
+
+    def _sync_processing_ingest_status(self, doc_info: Dict) -> Dict:
+        if not isinstance(doc_info, dict):
+            return doc_info
+
+        ingest_status = str(doc_info.get("ingest_status") or "").lower()
+        track_id = str(doc_info.get("lightrag_track_id") or "").strip()
+        if ingest_status not in {"processing", "failed"} or not track_id:
+            return doc_info
+
+        try:
+            payload = self._run_coroutine(self.lightrag_client.get_track_status(track_id)) or {}
+        except Exception as exc:
+            logger.warning(
+                "document_ingest_track_status_sync_failed document_id={} track_id={} error={}",
+                doc_info.get("id"),
+                track_id,
+                str(exc),
+            )
+            return doc_info
+
+        documents = list(payload.get("documents") or [])
+        if not documents:
+            return doc_info
+
+        statuses = {
+            self._normalize_lightrag_doc_status(item.get("status"))
+            for item in documents
+            if isinstance(item, dict)
+        }
+        remote_doc = next((item for item in documents if isinstance(item, dict) and item.get("id")), {}) or {}
+        now = datetime.now().isoformat()
+
+        if "failed" in statuses:
+            ingest_error = next(
+                (
+                    str(item.get("error_msg") or "").strip()
+                    for item in documents
+                    if isinstance(item, dict) and str(item.get("error_msg") or "").strip()
+                ),
+                "LightRAG processing failed",
+            )
+            self._update_ingest_status(
+                doc_info["id"],
+                ingest_status="failed",
+                ingest_error=ingest_error,
+                lightrag_doc_id=remote_doc.get("id"),
+                last_status_sync_at=now,
+            )
+            return self._get_document_info(doc_info["id"]) or doc_info
+
+        in_progress_statuses = {"pending", "processing", "preprocessed"}
+        if statuses and statuses.issubset({"processed"}):
+            self._update_ingest_status(
+                doc_info["id"],
+                ingest_status="ready",
+                ingest_error=None,
+                lightrag_doc_id=remote_doc.get("id"),
+                last_status_sync_at=now,
+            )
+            return self._get_document_info(doc_info["id"]) or doc_info
+
+        if statuses & in_progress_statuses:
+            self._update_ingest_status(
+                doc_info["id"],
+                ingest_status="processing",
+                ingest_error=None,
+                lightrag_doc_id=remote_doc.get("id"),
+                last_status_sync_at=now,
+            )
+            return self._get_document_info(doc_info["id"]) or doc_info
+
+        return doc_info
+
+    @staticmethod
+    def _initial_batch_import_status() -> Dict:
+        return {
+            "job_id": None,
+            "state": "idle",
+            "total": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "remaining": 0,
+            "current_document_ids": [],
+            "started_at": None,
+            "finished_at": None,
+            "last_error": None,
+            "concurrency": 0,
+            "interval_seconds": 0.0,
+            "include_failed": False,
+            "limit": 0,
+            "already_running": False,
+        }
 
     def upload(self, filename: str, file_stream) -> Dict:
         logger.info("document_upload_started filename={}", filename)
@@ -189,11 +403,10 @@ class DocumentService:
             raise AppServiceError(2001, f"不支持的文件类型，仅支持：{', '.join(ALLOWED_EXTENSIONS)}")
 
         type_subdir = EXTENSION_TO_DIR.get(ext, "other")
-        target_dir = DOC_DIR / type_subdir
+        target_dir = self.doc_dir / type_subdir
         target_dir.mkdir(parents=True, exist_ok=True)
 
         # 实际存储使用 UUID 文件名，保留原始扩展名；metadata 保留原始 safe_name 供展示
-        import uuid as _uuid
         stored_stem = _uuid.uuid4().hex
         file_path = target_dir / f"{stored_stem}{ext}"
         counter = 1
@@ -216,54 +429,303 @@ class DocumentService:
             os.remove(file_path)
             raise AppServiceError(2002, f"文件过大，最大支持{MAX_FILE_SIZE // 1024 // 1024}MB")
 
-        extraction = self.extraction_service.extract(str(file_path))
-        if not extraction.success:
+        document_id = str(_uuid.uuid4())
+        mtime = file_path.stat().st_mtime
+        now = datetime.now().isoformat()
+        doc_info = {
+            "id": document_id,
+            "filename": safe_name,
+            "filepath": str(file_path),
+            "file_type": ext,
+            "preview_content": "",
+            "full_content_length": 0,
+            "parser_name": None,
+            "extraction_status": "pending",
+            "created_at": mtime,
+            "created_at_iso": datetime.fromtimestamp(mtime).isoformat(),
+            "updated_at": now,
+            "ingest_status": "queued",
+            "ingest_error": None,
+            "lightrag_track_id": None,
+            "lightrag_doc_id": None,
+            "last_status_sync_at": None,
+        }
+        if not self._document_repository().upsert(doc_info):
             if file_path.exists():
                 os.remove(file_path)
-            raise AppServiceError(1002, extraction.error or "文档解析失败，请检查文件是否损坏或格式是否正确")
-
-        document_id, doc_info = save_document_summary_for_classification(
-            str(file_path),
-            full_content=extraction.content,
-            parser_name=extraction.parser_name,
-            display_filename=safe_name,
-        )
-        if not document_id:
-            if file_path.exists():
-                os.remove(file_path)
-            raise AppServiceError(1002, "文档解析失败，请检查文件是否损坏或格式是否正确")
+            raise AppServiceError(1002, "文档元数据保存失败")
         logger.info("document_metadata_persisted document_id={} filename={}", document_id, safe_name)
 
-        logger.info("document_indexing_started document_id={} filename={}", document_id, safe_name)
-        indexing_result = self.indexing_service.index_document(document_id, force=True)
-        if (indexing_result or {}).get("block_index_status") != "ready":
-            delete_document(document_id)
-            if file_path.exists():
-                os.remove(file_path)
-            detail = (indexing_result or {}).get("error") or "block 索引构建失败"
-            raise AppServiceError(1003, f"文档索引失败: {detail}")
-
-        # 3.1/3.2 新文档入库后使搜索缓存失效
-        try:
-            get_search_cache().invalidate_all()
-        except Exception:
-            pass
-
-        try:
-            from app.services.classification_service import ClassificationService
-
-            ClassificationService().classify(document_id)
-            refreshed = get_document_info(document_id) or doc_info
-            doc_info = {**doc_info, **refreshed}
-        except Exception:
-            pass  # 主题归类失败不影响上传主流程
+        if self.enqueue_background:
+            self._enqueue_ingest(document_id)
 
         return self._hydrate_document(doc_info)
+
+    def _enqueue_ingest(self, document_id: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.process_pending_ingest(document_id))
+        except RuntimeError:
+            logger.warning("no_running_loop_for_ingest_enqueue document_id={}", document_id)
+
+    async def process_pending_ingest(self, document_id: str) -> Dict:
+        doc_info = self.get_document(document_id)
+        if (doc_info.get("ingest_status") or "") not in {"queued", "failed", "processing", "local_only"}:
+            return doc_info
+
+        self._update_ingest_status(
+            document_id,
+            ingest_status="processing",
+            ingest_error=None,
+            last_status_sync_at=datetime.now().isoformat(),
+        )
+        processing_doc = self.get_document(document_id)
+
+        try:
+            await self.local_embedding_runtime.ensure_ready()
+            result = await self.lightrag_client.upload_file(
+                processing_doc.get("filepath", ""),
+                processing_doc.get("filename", ""),
+            )
+            status = str(result.get("status") or "").lower()
+            track_id = result.get("track_id") or result.get("id")
+            if status == "duplicated" and track_id:
+                await self.lightrag_client.reprocess_failed_documents()
+                self._update_ingest_status(
+                    document_id,
+                    ingest_status="processing",
+                    ingest_error=None,
+                    lightrag_track_id=track_id,
+                    last_status_sync_at=datetime.now().isoformat(),
+                )
+                try:
+                    get_search_cache().invalidate_all()
+                except Exception:
+                    pass
+                return self._get_document_info(document_id) or processing_doc
+            if status in {"failed", "error"}:
+                raise RuntimeError(result.get("message") or "LightRAG upload failed")
+            self._update_ingest_status(
+                document_id,
+                ingest_status="processing",
+                ingest_error=None,
+                lightrag_track_id=track_id,
+                last_status_sync_at=datetime.now().isoformat(),
+            )
+            try:
+                get_search_cache().invalidate_all()
+            except Exception:
+                pass
+            return self.get_document(document_id)
+        except Exception as exc:
+            error_message = str(exc)
+            logger.warning("document_ingest_failed document_id={} error={}", document_id, error_message)
+            self._update_ingest_status(
+                document_id,
+                ingest_status="failed",
+                ingest_error=error_message,
+                last_status_sync_at=datetime.now().isoformat(),
+            )
+            return self.get_document(document_id)
+
+    def _list_batch_import_candidates(self, *, limit: int, include_failed: bool) -> List[Dict]:
+        statuses = {"local_only"}
+        if include_failed:
+            statuses.add("failed")
+
+        documents = [
+            item
+            for item in (self._document_repository().list_all() or [])
+            if isinstance(item, dict) and (item.get("ingest_status") or "").lower() in statuses
+        ]
+        documents.sort(
+            key=lambda item: (
+                str(item.get("updated_at") or item.get("created_at_iso") or ""),
+                str(item.get("filename") or ""),
+                str(item.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        if limit > 0:
+            documents = documents[:limit]
+        return documents
+
+    def _set_batch_import_status(self, **updates) -> None:
+        self._batch_import_status.update(updates)
+        total = int(self._batch_import_status.get("total") or 0)
+        processed = int(self._batch_import_status.get("processed") or 0)
+        self._batch_import_status["remaining"] = max(total - processed, 0)
+
+    def get_batch_import_status(self) -> Dict:
+        payload = dict(self._batch_import_status)
+        payload["current_document_ids"] = list(payload.get("current_document_ids") or [])
+        return payload
+
+    def start_local_only_batch_import(
+        self,
+        *,
+        limit: int = 100,
+        concurrency: int = 1,
+        interval_seconds: float = 0.5,
+        include_failed: bool = False,
+    ) -> Dict:
+        normalized_limit = max(int(limit or 0), 0)
+        normalized_concurrency = max(int(concurrency or 1), 1)
+        normalized_interval = max(float(interval_seconds or 0), 0.0)
+
+        if self._batch_import_task is not None and not self._batch_import_task.done():
+            payload = self.get_batch_import_status()
+            payload["already_running"] = True
+            return payload
+
+        candidates = self._list_batch_import_candidates(
+            limit=normalized_limit,
+            include_failed=include_failed,
+        )
+        candidate_ids = [item.get("id") for item in candidates if item.get("id")]
+        started_at = datetime.now().isoformat()
+        self._batch_import_status = self._initial_batch_import_status()
+        self._set_batch_import_status(
+            job_id=_uuid.uuid4().hex,
+            state="running" if candidate_ids else "completed",
+            total=len(candidate_ids),
+            processed=0,
+            succeeded=0,
+            failed=0,
+            current_document_ids=[],
+            started_at=started_at,
+            finished_at=None if candidate_ids else started_at,
+            last_error=None,
+            concurrency=normalized_concurrency,
+            interval_seconds=normalized_interval,
+            include_failed=include_failed,
+            limit=normalized_limit,
+            already_running=False,
+        )
+
+        if not candidate_ids:
+            self._batch_import_task = None
+            return self.get_batch_import_status()
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError as exc:
+            self._set_batch_import_status(
+                state="failed",
+                finished_at=datetime.now().isoformat(),
+                last_error="后台导入任务需要运行中的事件循环",
+            )
+            raise AppServiceError(1002, "后台导入任务需要运行中的事件循环") from exc
+
+        self._batch_import_task = loop.create_task(
+            self._run_local_only_batch_import(
+                candidate_ids,
+                concurrency=normalized_concurrency,
+                interval_seconds=normalized_interval,
+            )
+        )
+        return self.get_batch_import_status()
+
+    async def _run_local_only_batch_import(
+        self,
+        document_ids: List[str],
+        *,
+        concurrency: int,
+        interval_seconds: float,
+    ) -> None:
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        for document_id in document_ids:
+            queue.put_nowait(document_id)
+
+        async def worker() -> None:
+            while True:
+                try:
+                    document_id = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+
+                current_document_ids = list(self._batch_import_status.get("current_document_ids") or [])
+                if document_id not in current_document_ids:
+                    current_document_ids.append(document_id)
+                    self._set_batch_import_status(current_document_ids=current_document_ids)
+
+                try:
+                    result = await self.process_pending_ingest(document_id)
+                    success = (result.get("ingest_status") or "") != "failed"
+                    failed = int(self._batch_import_status.get("failed") or 0)
+                    succeeded = int(self._batch_import_status.get("succeeded") or 0)
+                    if success:
+                        succeeded += 1
+                    else:
+                        failed += 1
+                    self._set_batch_import_status(
+                        processed=int(self._batch_import_status.get("processed") or 0) + 1,
+                        succeeded=succeeded,
+                        failed=failed,
+                        last_error=None if success else result.get("ingest_error"),
+                    )
+                except Exception as exc:
+                    self._set_batch_import_status(
+                        processed=int(self._batch_import_status.get("processed") or 0) + 1,
+                        failed=int(self._batch_import_status.get("failed") or 0) + 1,
+                        last_error=str(exc),
+                    )
+                finally:
+                    current_document_ids = [
+                        item
+                        for item in (self._batch_import_status.get("current_document_ids") or [])
+                        if item != document_id
+                    ]
+                    self._set_batch_import_status(current_document_ids=current_document_ids)
+                    queue.task_done()
+                    if interval_seconds > 0:
+                        await asyncio.sleep(interval_seconds)
+
+        try:
+            workers = [asyncio.create_task(worker()) for _ in range(max(concurrency, 1))]
+            await asyncio.gather(*workers)
+            self._set_batch_import_status(
+                state="completed",
+                finished_at=datetime.now().isoformat(),
+                current_document_ids=[],
+            )
+        except Exception as exc:
+            logger.warning("local_only_batch_import_failed error={}", str(exc))
+            self._set_batch_import_status(
+                state="failed",
+                finished_at=datetime.now().isoformat(),
+                current_document_ids=[],
+                last_error=str(exc),
+            )
+            raise
+        finally:
+            self._batch_import_task = None
+
+    async def wait_for_batch_import(self) -> None:
+        if self._batch_import_task is not None:
+            await self._batch_import_task
+
+    def retry_ingest(self, document_id: str) -> Dict:
+        self.get_document(document_id)
+        self._update_document_info(
+            document_id,
+            {
+                "ingest_status": "queued",
+                "ingest_error": None,
+                "lightrag_track_id": None,
+                "lightrag_doc_id": None,
+                "last_status_sync_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+            },
+        )
+        if self.enqueue_background:
+            self._enqueue_ingest(document_id)
+        return self.get_document(document_id)
 
     def list_documents(self, page: int, page_size: int) -> Dict:
         logger.info("query_documents page={} page_size={}", page, page_size)
         try:
-            all_docs = list(get_all_documents() or [])
+            all_docs = list(get_all_documents() or []) if self.document_repository is None else list(self._document_repository().list_all() or [])
         except Exception as exc:
             logger.opt(exception=exc).error("query_documents_failed page={} page_size={}", page, page_size)
             return {
@@ -283,7 +745,8 @@ class DocumentService:
                 logger.warning("skip_invalid_document_row row_type={}", type(item).__name__)
                 continue
             try:
-                items.append(self._hydrate_document(item))
+                synced_item = self._sync_processing_ingest_status(item)
+                items.append(self._hydrate_document(synced_item))
             except Exception as exc:
                 logger.opt(exception=exc).error(
                     "hydrate_document_failed document_id={} filename={}",
@@ -301,7 +764,7 @@ class DocumentService:
     def stats(self) -> Dict:
         logger.info("query_document_stats")
         try:
-            all_docs = list(get_all_documents() or [])
+            all_docs = list(get_all_documents() or []) if self.document_repository is None else list(self._document_repository().list_all() or [])
         except Exception as exc:
             logger.opt(exception=exc).error("query_document_stats_failed")
             return {"total": 0, "categorized": 0, "uncategorized": 0}
@@ -320,9 +783,10 @@ class DocumentService:
         }
 
     def get_document(self, document_id: str) -> Dict:
-        doc_info = get_document_info(document_id)
+        doc_info = self._get_document_info(document_id)
         if not doc_info:
             raise AppServiceError(1001, f"文档ID: {document_id}")
+        doc_info = self._sync_processing_ingest_status(doc_info)
         return self._hydrate_document(doc_info)
 
     def get_document_payload(self, document_id: str) -> Dict:

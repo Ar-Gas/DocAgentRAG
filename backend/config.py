@@ -7,7 +7,6 @@ BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = BASE_DIR / "data"
 DOC_DIR = BASE_DIR / "doc"
 CHROMA_DB_PATH = BASE_DIR / "chromadb"
-MODEL_DIR = Path(os.getenv("MODEL_DIR", BASE_DIR / "models" / "all-MiniLM-L6-v2"))
 
 _secrets_api = None
 try:
@@ -25,6 +24,25 @@ def _get_secret_or_env(name: str, default: str) -> str:
     return os.getenv(name, default)
 
 
+MODEL_DIR = Path(_get_secret_or_env("MODEL_DIR", str(BASE_DIR / "models")))
+BGE_MODEL = _get_secret_or_env("BGE_MODEL", str(MODEL_DIR / "BAAI" / "bge-m3"))
+LOCAL_EMBEDDING_MODEL_NAME = Path(BGE_MODEL).name or "bge-m3"
+LOCAL_EMBEDDING_HOST = _get_secret_or_env("LOCAL_EMBEDDING_HOST", "127.0.0.1")
+LOCAL_EMBEDDING_PORT = int(_get_secret_or_env("LOCAL_EMBEDDING_PORT", "8011"))
+LOCAL_EMBEDDING_BASE_URL = _get_secret_or_env(
+    "LOCAL_EMBEDDING_BASE_URL",
+    f"http://{LOCAL_EMBEDDING_HOST}:{LOCAL_EMBEDDING_PORT}",
+)
+LOCAL_EMBEDDING_AUTO_START = (
+    _get_secret_or_env("LOCAL_EMBEDDING_AUTO_START", "true").strip().lower() == "true"
+)
+LOCAL_EMBEDDING_HEALTH_TIMEOUT_SECONDS = float(
+    _get_secret_or_env("LOCAL_EMBEDDING_HEALTH_TIMEOUT_SECONDS", "2")
+)
+LOCAL_EMBEDDING_STARTUP_TIMEOUT_SECONDS = float(
+    _get_secret_or_env("LOCAL_EMBEDDING_STARTUP_TIMEOUT_SECONDS", "45")
+)
+
 DOUBAO_API_KEY = _get_secret_or_env("DOUBAO_API_KEY", "")
 DOUBAO_EMBEDDING_API_URL = _get_secret_or_env(
     "DOUBAO_EMBEDDING_API_URL",
@@ -39,6 +57,11 @@ DOUBAO_MINI_LLM_MODEL = _get_secret_or_env("DOUBAO_MINI_LLM_MODEL", "doubao-seed
 DOUBAO_LLM_MODEL = _get_secret_or_env("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115")
 
 DOUBAO_DEFAULT_LLM_MODEL = DOUBAO_MINI_LLM_MODEL
+
+LIGHTRAG_BASE_URL = _get_secret_or_env("LIGHTRAG_BASE_URL", "http://127.0.0.1:9621")
+LIGHTRAG_API_KEY = _get_secret_or_env("LIGHTRAG_API_KEY", "")
+LIGHTRAG_TIMEOUT_SECONDS = float(_get_secret_or_env("LIGHTRAG_TIMEOUT_SECONDS", "30"))
+LIGHTRAG_ENABLED = _get_secret_or_env("LIGHTRAG_ENABLED", "true").strip().lower() == "true"
 
 # LLM Gateway 配置（自动从环境变量读取）
 SEMANTIC_CACHE_ENABLED = os.getenv("SEMANTIC_CACHE_ENABLED", "true").lower() == "true"
@@ -107,6 +130,9 @@ ERROR_CODES = {
     2003: "文件不存在",
     3001: "集合不存在",
     3002: "检索失败",
+    4001: "LightRAG 服务不可用",
+    4002: "LightRAG 请求失败",
+    4003: "LightRAG 上传失败",
 }
 
 for dir_path in [DATA_DIR, DOC_DIR, CHROMA_DB_PATH]:

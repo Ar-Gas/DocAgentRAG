@@ -20,7 +20,7 @@ vi.mock('element-plus', () => ({
   ElMessage: { error: vi.fn() },
 }))
 
-describe('api topic tree helpers', () => {
+describe('api helpers', () => {
   const originalFetch = global.fetch
 
   beforeEach(() => {
@@ -31,15 +31,6 @@ describe('api topic tree helpers', () => {
     } else {
       delete global.fetch
     }
-  })
-
-  it('posts topic tree rebuilds to the build endpoint', async () => {
-    vi.resetModules()
-    const { api } = await import('@/api')
-
-    api.buildTopicTree(true)
-
-    expect(requestMock.post).toHaveBeenCalledWith('/classification/topic-tree/build', { force_rebuild: true })
   })
 
   it('posts workspace search payload without injecting retrieval_version', async () => {
@@ -71,6 +62,15 @@ describe('api topic tree helpers', () => {
     expect(requestMock.post).toHaveBeenCalledWith('/classification/classify', { document_id: 'doc-1' })
   })
 
+  it('posts retry ingest requests to the document retry endpoint', async () => {
+    vi.resetModules()
+    const { api } = await import('@/api')
+
+    api.retryDocumentIngest('doc-1')
+
+    expect(requestMock.post).toHaveBeenCalledWith('/documents/doc-1/retry-ingest')
+  })
+
   it('gets graph payloads from the topics endpoint', async () => {
     vi.resetModules()
     const { api } = await import('@/api')
@@ -80,6 +80,15 @@ describe('api topic tree helpers', () => {
     expect(requestMock.get).toHaveBeenCalledWith('/topics/graph', {
       params: { doc_ids: ['doc-1'], limit: 20 },
     })
+  })
+
+  it('gets graph labels from the topics labels endpoint', async () => {
+    vi.resetModules()
+    const { api } = await import('@/api')
+
+    api.getGraphLabels()
+
+    expect(requestMock.get).toHaveBeenCalledWith('/topics/labels')
   })
 
   it('streams qa responses from the qa endpoint', async () => {

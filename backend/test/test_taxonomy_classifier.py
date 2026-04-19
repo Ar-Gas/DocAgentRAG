@@ -19,6 +19,13 @@ class _GatewayReturningRelease:
         return type("Response", (), {"content": "发布说明"})()
 
 
+class _GatewayReturningAdminNotice:
+    async def call(self, prompt, task="classify", max_tokens=50, temperature=0.0, use_cache=False):
+        assert "候选标签" in prompt
+        assert "通知公告" in prompt
+        return type("Response", (), {"content": "通知公告"})()
+
+
 class _GatewayFailure:
     async def call(self, prompt, task="classify", max_tokens=50, temperature=0.0, use_cache=False):
         raise RuntimeError("gateway unavailable")
@@ -82,8 +89,8 @@ def test_classify_returns_llm_selected_candidate():
     assert result["classification_score"] >= 0.7
 
 
-def test_classify_returns_fallback_when_candidates_too_weak():
-    classifier = TaxonomyClassifier(llm_gateway=_UnusedGateway())
+def test_classify_uses_template_llm_selection_when_candidates_are_weak():
+    classifier = TaxonomyClassifier(llm_gateway=_GatewayReturningAdminNotice())
 
     result = asyncio.run(
         classifier.classify(
@@ -94,13 +101,14 @@ def test_classify_returns_fallback_when_candidates_too_weak():
         )
     )
 
-    assert result["classification_id"] == "admin.unclassified"
-    assert result["classification_label"] == "待人工确认"
-    assert result["classification_source"] == "fallback"
-    assert result["classification_score"] == 0.0
+    assert result["classification_id"] == "admin.notice"
+    assert result["classification_label"] == "通知公告"
+    assert result["classification_source"] == "llm_forced"
+    assert 0.0 < result["classification_score"] < 0.5
+    assert "admin.unclassified" not in result["classification_candidates"]
 
 
-def test_classify_returns_fallback_when_llm_fails():
+def test_classify_uses_best_template_candidate_when_llm_fails():
     classifier = TaxonomyClassifier(llm_gateway=_GatewayFailure())
 
     result = asyncio.run(
@@ -112,5 +120,8 @@ def test_classify_returns_fallback_when_llm_fails():
         )
     )
 
-    assert result["classification_id"] == "admin.unclassified"
-    assert result["classification_source"] == "fallback"
+    assert result["classification_id"] == "product.release"
+    assert result["classification_label"] == "发布说明"
+    assert result["classification_source"] == "keyword_forced"
+    assert result["classification_score"] > 0
+    assert "admin.unclassified" not in result["classification_candidates"]

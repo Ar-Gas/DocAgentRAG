@@ -29,6 +29,14 @@
         </template>
       </el-table-column>
 
+      <el-table-column label="入库状态" width="120">
+        <template #default="{ row }">
+          <el-tag size="small" :type="getIngestStatusMeta(row.ingest_status).tone">
+            {{ getIngestStatusMeta(row.ingest_status).label }}
+          </el-tag>
+        </template>
+      </el-table-column>
+
       <el-table-column label="分类" min-width="260">
         <template #default="{ row }">
           <div class="classification-cell">
@@ -41,6 +49,7 @@
               {{ getClassificationSourceMeta(row.classification_source).label }}
             </span>
           </div>
+          <p v-if="row.ingest_error" class="ingest-error">{{ row.ingest_error }}</p>
         </template>
       </el-table-column>
 
@@ -57,6 +66,17 @@
           >
             <el-icon><RefreshRight /></el-icon>
             重新分类
+          </el-button>
+          <el-button
+            v-if="row.ingest_status === 'failed'"
+            type="warning"
+            link
+            size="small"
+            @click="handleRetryIngest(row)"
+            :loading="row._retrying"
+          >
+            <el-icon><RefreshRight /></el-icon>
+            重试导入
           </el-button>
           <el-button
             type="danger"
@@ -106,10 +126,24 @@ const getClassificationText = (row) => {
 const getClassificationSourceMeta = (source) => {
   const dictionary = {
     llm: { label: 'AI', tone: 'ai' },
+    llm_forced: { label: 'AI', tone: 'ai' },
     keyword: { label: '关键词', tone: 'keyword' },
-    fallback: { label: '待确认', tone: 'fallback' }
+    keyword_forced: { label: '模板分类', tone: 'keyword' },
+    fallback: { label: '待确认', tone: 'fallback' },
+    pending_sync: { label: '待同步', tone: 'pending' }
   }
   return dictionary[source] || null
+}
+
+const getIngestStatusMeta = (status) => {
+  const dictionary = {
+    queued: { label: '待导入', tone: 'info' },
+    local_only: { label: '待导入', tone: 'info' },
+    processing: { label: '导入中', tone: 'warning' },
+    ready: { label: '已入库', tone: 'success' },
+    failed: { label: '失败', tone: 'danger' }
+  }
+  return dictionary[status] || { label: '未知', tone: 'info' }
 }
 
 const handleReclassify = async (row) => {
@@ -123,6 +157,19 @@ const handleReclassify = async (row) => {
     // error already shown by interceptor
   } finally {
     row._reclassifying = false
+  }
+}
+
+const handleRetryIngest = async (row) => {
+  row._retrying = true
+  try {
+    await api.retryDocumentIngest(row.id)
+    ElMessage.success('已重新加入导入队列')
+    emit('operate-success')
+  } catch (_) {
+    // error already shown by interceptor
+  } finally {
+    row._retrying = false
   }
 }
 
@@ -208,6 +255,13 @@ const handleDelete = async (row) => {
   font-size: 13px;
   color: var(--ink-strong);
   line-height: 1.5;
+}
+
+.ingest-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--red-600);
+  line-height: 1.4;
 }
 
 .classification-source-badge {

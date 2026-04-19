@@ -32,7 +32,7 @@
           <span class="status-dot"></span>
           <span>系统运行中</span>
         </div>
-        <p class="footer-note">FastAPI · Vue 3 · ChromaDB</p>
+        <p class="footer-note">FastAPI · Vue 3 · LightRAG</p>
       </div>
     </aside>
 
@@ -42,7 +42,7 @@
           <h1 class="page-title">{{ currentPageTitle }}</h1>
         </div>
         <div class="topbar-right">
-          <span class="topbar-badge">AI 驱动 · 本地向量检索</span>
+          <span class="topbar-badge">AI 驱动 · LightRAG 检索</span>
         </div>
       </header>
 
@@ -56,7 +56,7 @@
 <script setup>
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
-import { DataBoard, Document, Search, ChatDotRound, Share } from '@element-plus/icons-vue'
+import { DataBoard, Document, Search, ChatDotRound, Share, Monitor } from '@element-plus/icons-vue'
 
 const navItems = [
   { to: '/',          label: '总览',     icon: DataBoard },
@@ -64,6 +64,7 @@ const navItems = [
   { to: '/search',    label: '智能检索', icon: Search    },
   { to: '/qa',        label: '智能问答', icon: ChatDotRound },
   { to: '/graph',     label: '知识图谱', icon: Share },
+  { to: '/rag-studio', label: 'RAG 工作台', icon: Monitor },
 ]
 
 const route = useRoute()
@@ -73,6 +74,7 @@ const pageTitleMap = {
   '/search': '智能检索',
   '/qa': '智能问答',
   '/graph': '知识图谱',
+  '/rag-studio': 'RAG 工作台',
 }
 const currentPageTitle = computed(() => pageTitleMap[route.path] || 'DocAgent')
 </script>

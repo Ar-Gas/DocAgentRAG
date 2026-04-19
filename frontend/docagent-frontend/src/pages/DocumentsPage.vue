@@ -21,7 +21,7 @@
       </div>
     </div>
 
-    <FileUpload @upload-success="loadDocuments" />
+    <FileUpload @upload-success="handleUploadSuccess" />
 
     <FileList
       :document-list="documentList"
@@ -53,6 +53,7 @@ const documentList = ref([])
 const loading = ref(false)
 const viewerVisible = ref(false)
 const viewerDoc = ref(null)
+let refreshTimer = null
 
 const openViewer = (doc) => {
   viewerDoc.value = doc
@@ -71,6 +72,14 @@ const loadDocuments = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const handleUploadSuccess = async () => {
+  await loadDocuments()
+  window.clearTimeout(refreshTimer)
+  refreshTimer = window.setTimeout(() => {
+    loadDocuments()
+  }, 2500)
 }
 
 onMounted(loadDocuments)

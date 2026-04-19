@@ -319,6 +319,219 @@ def test_reclassify_uses_taxonomy_classifier_and_returns_old_new_labels(monkeypa
     service.topic_tree_service.classify_document.assert_not_called()
 
 
+def test_classify_marks_lightrag_only_documents_as_pending_sync_instead_of_unclassified(monkeypatch):
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "scanned-contract.pdf",
+            "file_type": ".pdf",
+            "ingest_status": "ready",
+            "lightrag_doc_id": "lr-doc-1",
+            "classification_result": None,
+        },
+    )
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_content_record",
+        lambda document_id: {
+            "full_content": "",
+            "preview_content": "",
+            "extraction_status": "pending",
+        },
+    )
+    monkeypatch.setattr(classification_service_module, "is_error_document", lambda *args, **kwargs: False)
+
+    updates = []
+    monkeypatch.setattr(
+        classification_service_module,
+        "update_document_info",
+        lambda document_id, updated_info: updates.append((document_id, updated_info)) or True,
+    )
+
+    class ForbiddenTaxonomyClassifier:
+        async def classify(self, *args, **kwargs):
+            raise AssertionError("taxonomy classifier should not run before local content sync")
+
+    monkeypatch.setattr(classification_service_module, "TaxonomyClassifier", ForbiddenTaxonomyClassifier)
+
+    service = ClassificationService()
+    payload = service.classify("doc-lr-only")
+
+    assert payload["document_id"] == "doc-lr-only"
+    assert payload["categories"] == ["待同步", "待本地索引同步"]
+    assert payload["topic_label"] == "待本地索引同步"
+    assert payload["classification_source"] == "pending_sync"
+    assert payload["confidence"] == 0.0
+    assert updates[0][1]["classification_result"] == "待本地索引同步"
+    assert updates[0][1]["classification_source"] == "pending_sync"
+    assert json.loads(updates[0][1]["classification_path"]) == ["待同步", "待本地索引同步"]
+
+
+def test_reclassify_marks_local_only_documents_as_pending_sync_instead_of_unclassified(monkeypatch):
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "new-upload.pdf",
+            "file_type": ".pdf",
+            "ingest_status": "local_only",
+            "classification_result": "旧分类",
+        },
+    )
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_content_record",
+        lambda document_id: {
+            "full_content": "",
+            "preview_content": "",
+            "extraction_status": "pending",
+        },
+    )
+    monkeypatch.setattr(classification_service_module, "is_error_document", lambda *args, **kwargs: False)
+
+    updates = []
+    monkeypatch.setattr(
+        classification_service_module,
+        "update_document_info",
+        lambda document_id, updated_info: updates.append((document_id, updated_info)) or True,
+    )
+
+    class ForbiddenTaxonomyClassifier:
+        async def classify(self, *args, **kwargs):
+            raise AssertionError("taxonomy classifier should not run before local content sync")
+
+    monkeypatch.setattr(classification_service_module, "TaxonomyClassifier", ForbiddenTaxonomyClassifier)
+
+    service = ClassificationService()
+    payload = service.reclassify("doc-local-only")
+
+    assert payload["old_classification"] == "旧分类"
+    assert payload["new_classification"] == "待本地索引同步"
+    assert payload["classification_source"] == "pending_sync"
+    assert payload["categories"] == ["待同步", "待本地索引同步"]
+    assert updates[0][1]["classification_result"] == "待本地索引同步"
+
+
+def test_reclassify_pending_lightrag_document_skips_semantic_summary_lookup(monkeypatch):
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "pending.pdf",
+            "file_type": ".pdf",
+            "ingest_status": "ready",
+            "lightrag_doc_id": "lr-doc-1",
+            "classification_result": None,
+        },
+    )
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_content_record",
+        lambda document_id: {
+            "full_content": "",
+            "preview_content": "",
+            "extraction_status": "pending",
+        },
+    )
+    monkeypatch.setattr(classification_service_module, "is_error_document", lambda *args, **kwargs: False)
+
+    updates = []
+    monkeypatch.setattr(
+        classification_service_module,
+        "update_document_info",
+        lambda document_id, updated_info: updates.append((document_id, updated_info)) or True,
+    )
+
+    semantic_calls = []
+
+    class RecordingSemanticService:
+        async def get_document_semantic_snapshot(self, *args, **kwargs):
+            semantic_calls.append((args, kwargs))
+            return {"summary_text": "should not be used"}
+
+    service = ClassificationService()
+    service.semantic_service = RecordingSemanticService()
+
+    payload = service.reclassify("doc-pending")
+
+    assert payload["classification_source"] == "pending_sync"
+    assert payload["new_classification"] == "待本地索引同步"
+    assert semantic_calls == []
+    assert updates[0][1]["classification_source"] == "pending_sync"
+
+
+def test_classify_uses_lightrag_semantic_summary_when_local_content_missing(monkeypatch):
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_info",
+        lambda document_id: {
+            "id": document_id,
+            "filename": "预算制度.docx",
+            "file_type": ".docx",
+            "ingest_status": "ready",
+            "lightrag_doc_id": "lr-doc-1",
+        },
+    )
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_document_content_record",
+        lambda document_id: {
+            "full_content": "",
+            "preview_content": "",
+            "extraction_status": "ready",
+        },
+    )
+    monkeypatch.setattr(classification_service_module, "is_error_document", lambda *args, **kwargs: False)
+
+    updates = []
+    monkeypatch.setattr(
+        classification_service_module,
+        "update_document_info",
+        lambda document_id, updated_info: updates.append((document_id, updated_info)) or True,
+    )
+
+    class FakeTaxonomyClassifier:
+        async def classify(self, document_id, content, filename="", file_type=""):
+            assert "预算审批流程包括提交和复核" in content
+            return {
+                "classification_id": "finance.budget_policy",
+                "classification_label": "预算制度",
+                "classification_path": ["财务管理", "预算管理", "预算制度"],
+                "classification_score": 0.86,
+                "classification_source": "llm",
+                "classification_candidates": ["finance.budget_policy"],
+            }
+
+    monkeypatch.setattr(classification_service_module, "TaxonomyClassifier", FakeTaxonomyClassifier)
+
+    service = ClassificationService()
+
+    class FakeSemanticService:
+        async def get_document_semantic_snapshot(self, doc_info, top_k=12):
+            assert doc_info["filename"] == "预算制度.docx"
+            assert top_k == 12
+            return {
+                "summary_text": "预算审批流程包括提交和复核。预算审批: 财务流程",
+                "chunks": [{"content": "预算审批流程包括提交和复核。"}],
+                "entities": [{"entity_name": "预算审批", "description": "财务流程"}],
+                "relationships": [],
+                "references": [],
+            }
+
+    service.semantic_service = FakeSemanticService()
+
+    payload = service.classify("doc-semantic")
+
+    assert payload["classification_source"] == "llm"
+    assert payload["topic_id"] == "finance.budget_policy"
+    assert payload["categories"] == ["财务管理", "预算管理", "预算制度"]
+    assert updates[0][1]["classification_result"] == "预算制度"
+
+
 def test_classify_document_payload_field_is_absent_uses_preview_content_and_full_content(monkeypatch):
     updates = []
 
@@ -575,6 +788,42 @@ def test_categories_api_returns_topic_tree_backed_payload(monkeypatch):
     assert body["code"] == 200
     assert body["data"][0]["id"] == "hr.offer_approval"
     mock_get_categories.assert_called_once()
+
+
+def test_reclassify_api_runs_blocking_service_in_executor(monkeypatch):
+    calls = []
+    sentinel = {"document_id": "doc-async", "categories": ["财务管理"]}
+
+    class FakeExecutor:
+        pass
+
+    fake_executor = FakeExecutor()
+
+    async def fake_run_in_executor(executor, fn):
+        calls.append((executor, fn))
+        return fn()
+
+    class FakeLoop:
+        async def run_in_executor(self, executor, fn):
+            return await fake_run_in_executor(executor, fn)
+
+    monkeypatch.setattr(
+        classification_api.asyncio,
+        "get_running_loop",
+        lambda: FakeLoop(),
+    )
+    monkeypatch.setattr(classification_api, "classification_executor", fake_executor)
+    monkeypatch.setattr(
+        classification_api.classification_service,
+        "reclassify",
+        Mock(return_value=sentinel),
+    )
+
+    body = asyncio.run(classification_api.reclassify_document("doc-async"))
+
+    assert body["data"] == sentinel
+    assert calls and calls[0][0] is fake_executor
+    classification_api.classification_service.reclassify.assert_called_once_with("doc-async")
 
 
 def test_unclassified_excluded_document_should_expose_fallback_topic_contract(monkeypatch):

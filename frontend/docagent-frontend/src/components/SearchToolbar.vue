@@ -157,7 +157,6 @@
           <el-icon><Document /></el-icon>LLM 总结
         </el-button>
         <el-button :disabled="!canGenerateReport" @click="emit('generate-report')">分类报告</el-button>
-        <el-button :loading="rebuildingTopics" @click="emit('rebuild-topics')">重建主题树</el-button>
         <el-button @click="emit('reset')">清空</el-button>
       </div>
     </div>
@@ -192,10 +191,6 @@ const props = defineProps({
   canGenerateReport: {
     type: Boolean,
     default: false
-  },
-  rebuildingTopics: {
-    type: Boolean,
-    default: false
   }
 })
 
@@ -204,8 +199,7 @@ const emit = defineEmits([
   'search',
   'reset',
   'summarize',
-  'generate-report',
-  'rebuild-topics'
+  'generate-report'
 ])
 
 const form = computed(() => props.modelValue || {})

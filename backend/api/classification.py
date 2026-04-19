@@ -1,3 +1,6 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import APIRouter
 
 from app.core.logger import logger
@@ -16,11 +19,23 @@ from api import success, BusinessException
 
 router = APIRouter()
 classification_service = ClassificationService()
+classification_executor = ThreadPoolExecutor(
+    max_workers=10,
+    thread_name_prefix="classification",
+)
+
+
+async def _run_blocking_classification(callable_):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(classification_executor, callable_)
+
 
 @router.post("/classify", summary="对单个文档进行智能分类")
 async def classify_single_document(request: ClassificationRequest):
     try:
-        result = classification_service.classify(request.document_id)
+        result = await _run_blocking_classification(
+            lambda: classification_service.classify(request.document_id)
+        )
         logger.info(f"文档分类完成: {request.document_id} -> {result.get('categories', [])}")
         return success(data=result, message="文档分类完成")
     except AppServiceError as exc:
@@ -29,7 +44,9 @@ async def classify_single_document(request: ClassificationRequest):
 @router.post("/reclassify/{document_id}", summary="重新分类文档")
 async def reclassify_document(document_id: str):
     try:
-        result = classification_service.reclassify(document_id)
+        result = await _run_blocking_classification(
+            lambda: classification_service.reclassify(document_id)
+        )
         logger.info(f"文档重新分类完成: {document_id} -> {result.get('categories', [])}")
         return success(data=result, message="文档重新分类完成")
     except AppServiceError as exc:

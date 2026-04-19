@@ -92,17 +92,11 @@ def test_document_repository_list_all_and_list_by_classification(isolated_compon
 def test_init_chroma_client_returns_client_and_block_collection(monkeypatch, isolated_components):
     client = Mock()
     block_collection = Mock()
-    client.get_collection.side_effect = RuntimeError("missing")
     client.get_or_create_collection.return_value = block_collection
 
     vector_store_module.reset_clients()
-    monkeypatch.setattr(vector_store_module, "doubao_multimodal_embed", lambda text: None)
+    monkeypatch.setattr(vector_store_module, "resolve_embedding_function", lambda: object())
     monkeypatch.setattr(vector_store_module, "PersistentClient", lambda path: client)
-    monkeypatch.setattr(
-        vector_store_module.embedding_functions,
-        "SentenceTransformerEmbeddingFunction",
-        lambda model_name: object(),
-    )
 
     initialized_client, initialized_collection = vector_store_module.init_chroma_client(
         chroma_db_path=isolated_components.chroma_dir,
@@ -110,6 +104,28 @@ def test_init_chroma_client_returns_client_and_block_collection(monkeypatch, iso
 
     assert initialized_client is client
     assert initialized_collection is block_collection
+    client.get_or_create_collection.assert_called_once()
+
+
+def test_resolve_embedding_function_uses_local_bge_model(monkeypatch):
+    sentinel = object()
+    created = {}
+
+    def fake_sentence_transformer(model_name):
+        created["model_name"] = model_name
+        return sentinel
+
+    monkeypatch.setattr(
+        vector_store_module.embedding_functions,
+        "SentenceTransformerEmbeddingFunction",
+        fake_sentence_transformer,
+    )
+    monkeypatch.setenv("BGE_MODEL", "/tmp/models/BAAI/bge-m3")
+
+    result = vector_store_module.resolve_embedding_function()
+
+    assert result is sentinel
+    assert created["model_name"] == "/tmp/models/BAAI/bge-m3"
 
 
 def test_save_document_summary_for_classification_persists_content(isolated_components, tmp_path: Path):

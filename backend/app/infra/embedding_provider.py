@@ -11,13 +11,18 @@ from chromadb.utils import embedding_functions
 from app.core.logger import logger
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.repositories.runtime_artifact_repository import RuntimeArtifactRepository
-from config import DATA_DIR, DOUBAO_API_KEY, DOUBAO_EMBEDDING_API_URL, DOUBAO_EMBEDDING_MODEL
+from config import (
+    BGE_MODEL,
+    DATA_DIR,
+    DOUBAO_API_KEY,
+    DOUBAO_EMBEDDING_API_URL,
+    DOUBAO_EMBEDDING_MODEL,
+    LOCAL_EMBEDDING_MODEL_NAME,
+)
 
-_embed_consecutive_failures = 0
-_EMBED_MAX_FAILURES = 3
 _bge_ef = None
 _EMBEDDING_DIM_ARTIFACT = "embedding_dimension"
-_DOUBAO_REQUEST_TIMEOUT_SECONDS = float(os.getenv("DOUBAO_REQUEST_TIMEOUT_SECONDS", "2"))
+_DOUBAO_REQUEST_TIMEOUT_SECONDS = 2.0
 
 
 def doubao_multimodal_embed(
@@ -79,31 +84,24 @@ def doubao_batch_embed(texts: List[str]) -> List[Optional[List[float]]]:
     return [doubao_multimodal_embed(text) for text in texts]
 
 
+def get_local_embedding_model_name() -> str:
+    return Path(_get_bge_model_name()).name or LOCAL_EMBEDDING_MODEL_NAME
+
+
+def _get_bge_model_name() -> str:
+    return os.getenv("BGE_MODEL", BGE_MODEL)
+
+
 def _get_bge_ef():
     global _bge_ef
     if _bge_ef is None:
-        bge_model = os.getenv("BGE_MODEL", "BAAI/bge-small-zh-v1.5")
+        bge_model = _get_bge_model_name()
         logger.info("加载 BGE 本地模型: {}", bge_model)
         _bge_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=bge_model)
     return _bge_ef
 
 
 def embed_text(text: str) -> Optional[List[float]]:
-    global _embed_consecutive_failures
-
-    if DOUBAO_API_KEY and _embed_consecutive_failures < _EMBED_MAX_FAILURES:
-        emb = doubao_multimodal_embed(text)
-        if emb is not None:
-            _embed_consecutive_failures = 0
-            return emb
-        _embed_consecutive_failures += 1
-        logger.warning(
-            "Doubao embed 失败 (%s/%s)，%s",
-            _embed_consecutive_failures,
-            _EMBED_MAX_FAILURES,
-            "切换至 BGE" if _embed_consecutive_failures >= _EMBED_MAX_FAILURES else "下次重试",
-        )
-
     try:
         result = _get_bge_ef()([text])
         if result:
@@ -209,17 +207,8 @@ def generate_document_embedding(
     image_paths: Optional[List[str]] = None,
 ) -> Optional[List[float]]:
     if image_paths:
-        for img_path in image_paths:
-            try:
-                with open(img_path, "rb") as handle:
-                    img_base64 = base64.b64encode(handle.read()).decode("utf-8")
-                embedding = doubao_multimodal_embed(content, image_base64=img_base64)
-                if embedding:
-                    logger.info("文档 {} 多模态嵌入生成成功", document_id)
-                    return embedding
-            except Exception as exc:
-                logger.warning("处理图片 {} 失败: {}", img_path, exc)
-    embedding = doubao_multimodal_embed(content)
+        logger.info("文档 {} 包含图片附件，但文本嵌入已统一切换为本地模型", document_id)
+    embedding = embed_text(content)
     if embedding:
         logger.info("文档 {} 文本嵌入生成成功", document_id)
     return embedding
@@ -234,8 +223,8 @@ def generate_paragraph_embeddings(document_id: str, paragraphs: List[dict]) -> L
         result.append(
             {
                 **para,
-                "embedding": doubao_multimodal_embed(content),
-                "embedding_model": DOUBAO_EMBEDDING_MODEL,
+                "embedding": embed_text(content),
+                "embedding_model": get_local_embedding_model_name(),
                 "paragraph_index": index,
             }
         )
@@ -258,7 +247,7 @@ def save_embeddings_to_document(
     doc_info["embeddings"] = {
         "document_embedding": doc_embedding,
         "paragraph_embeddings": paragraph_embeddings,
-        "embedding_model": DOUBAO_EMBEDDING_MODEL,
+        "embedding_model": get_local_embedding_model_name(),
         "embedding_time": datetime.now().isoformat(),
     }
     return repository.upsert(doc_info)

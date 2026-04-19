@@ -99,6 +99,55 @@ class LLMGateway:
             "summarize": 0,
         }
 
+    def _is_responses_api(self) -> bool:
+        return "/responses" in str(self.config.api_url or "")
+
+    def _build_payload(
+        self,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        if self._is_responses_api():
+            return {
+                "model": model,
+                "input": prompt,
+                "max_output_tokens": max_tokens,
+                "temperature": temperature,
+            }
+        return {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+    @staticmethod
+    def _extract_responses_content(result: Dict[str, Any]) -> str:
+        output_text = result.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+
+        output = result.get("output") or []
+        parts: List[str] = []
+        for item in output:
+            for content in item.get("content") or []:
+                if content.get("type") == "output_text":
+                    text = content.get("text")
+                    if text:
+                        parts.append(str(text))
+        return "".join(parts).strip()
+
+    def _parse_response_payload(self, result: Dict[str, Any]) -> tuple[str, int]:
+        if self._is_responses_api():
+            content = self._extract_responses_content(result)
+        else:
+            content = result["choices"][0]["message"]["content"]
+
+        tokens_used = result.get("usage", {}).get("total_tokens", 0)
+        return content, tokens_used
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def _call_doubao(
         self,
@@ -116,12 +165,12 @@ class LLMGateway:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}"
         }
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temperature
-        }
+        payload = self._build_payload(
+            prompt=prompt,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
 
         try:
             response = requests.post(
@@ -133,8 +182,7 @@ class LLMGateway:
 
             if response.status_code == 200:
                 result = response.json()
-                content = result["choices"][0]["message"]["content"]
-                tokens_used = result.get("usage", {}).get("total_tokens", 0)
+                content, tokens_used = self._parse_response_payload(result)
                 return LLMResponse(
                     content=content,
                     tokens_used=tokens_used,

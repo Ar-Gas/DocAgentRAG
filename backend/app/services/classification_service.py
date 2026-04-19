@@ -18,6 +18,7 @@ from app.services.document_label_resolver import (
     resolve_document_label,
 )
 from app.services.errors import AppServiceError
+from app.services.lightrag_semantic_service import LightRAGSemanticService
 from app.services.taxonomy_classifier import TaxonomyClassifier
 from app.services.topic_tree_service import TopicTreeService
 from config import DATA_DIR
@@ -63,6 +64,62 @@ def list_classification_table_records(limit: int = 50):
 class ClassificationService:
     def __init__(self):
         self.topic_tree_service = TopicTreeService()
+        self.semantic_service = LightRAGSemanticService()
+
+    @staticmethod
+    def _requires_local_sync(
+        doc_info: Dict,
+        content_record: Dict | None = None,
+        semantic_summary: str = "",
+    ) -> bool:
+        content_record = content_record or {}
+        ingest_status = str(doc_info.get("ingest_status") or "").lower()
+        extraction_status = str(
+            content_record.get("extraction_status")
+            or doc_info.get("extraction_status")
+            or ""
+        ).lower()
+        has_local_content = bool(
+            str(content_record.get("full_content") or "").strip()
+            or str(content_record.get("preview_content") or "").strip()
+            or str(doc_info.get("full_content") or "").strip()
+            or str(doc_info.get("preview_content") or "").strip()
+            or str(doc_info.get("content") or "").strip()
+            or str(semantic_summary or "").strip()
+        )
+        has_lightrag_identity = bool(doc_info.get("lightrag_doc_id") or doc_info.get("lightrag_track_id"))
+
+        if has_local_content:
+            return False
+
+        if ingest_status == "local_only":
+            return True
+
+        if has_lightrag_identity and extraction_status in {"", "pending", "processing"}:
+            return True
+
+        return False
+
+    def _build_pending_sync_result(self) -> Dict:
+        return {
+            "classification_id": "system.pending_sync",
+            "classification_label": "待本地索引同步",
+            "classification_path": ["待同步", "待本地索引同步"],
+            "classification_score": 0.0,
+            "classification_source": "pending_sync",
+            "classification_candidates": [],
+        }
+
+    @classmethod
+    def _should_short_circuit_pending_sync(
+        cls,
+        doc_info: Dict,
+        content_record: Dict | None = None,
+        content: str = "",
+    ) -> bool:
+        if str(content or "").strip():
+            return False
+        return cls._requires_local_sync(doc_info, content_record, semantic_summary="")
 
     def classify(self, document_id: str) -> Dict:
         doc_info = get_document_info(document_id)
@@ -74,7 +131,24 @@ class ClassificationService:
             return self._serialize_error_assignment(doc_info)
 
         try:
+            content_record = get_document_content_record(document_id) or {}
             content = self._load_document_content(document_id, doc_info)
+            semantic_summary = ""
+            if self._should_short_circuit_pending_sync(doc_info, content_record, content):
+                result = self._build_pending_sync_result()
+                self._save_taxonomy_result(document_id, result)
+                return self._serialize_taxonomy_assignment(doc_info, result)
+
+            if not str(content or "").strip():
+                semantic_summary = self._load_lightrag_semantic_summary(document_id, doc_info)
+                if semantic_summary:
+                    content = semantic_summary
+
+            if self._requires_local_sync(doc_info, content_record, semantic_summary):
+                result = self._build_pending_sync_result()
+                self._save_taxonomy_result(document_id, result)
+                return self._serialize_taxonomy_assignment(doc_info, result)
+
             taxonomy_classifier = TaxonomyClassifier()
             result = self._run_coroutine(
                 taxonomy_classifier.classify(
@@ -105,7 +179,30 @@ class ClassificationService:
             return payload
 
         try:
+            content_record = get_document_content_record(document_id) or {}
             content = self._load_document_content(document_id, doc_info)
+            semantic_summary = ""
+            if self._should_short_circuit_pending_sync(doc_info, content_record, content):
+                result = self._build_pending_sync_result()
+                self._save_taxonomy_result(document_id, result)
+                payload = self._serialize_taxonomy_assignment(doc_info, result)
+                payload["old_classification"] = old_classification
+                payload["new_classification"] = result.get("classification_label")
+                return payload
+
+            if not str(content or "").strip():
+                semantic_summary = self._load_lightrag_semantic_summary(document_id, doc_info)
+                if semantic_summary:
+                    content = semantic_summary
+
+            if self._requires_local_sync(doc_info, content_record, semantic_summary):
+                result = self._build_pending_sync_result()
+                self._save_taxonomy_result(document_id, result)
+                payload = self._serialize_taxonomy_assignment(doc_info, result)
+                payload["old_classification"] = old_classification
+                payload["new_classification"] = result.get("classification_label")
+                return payload
+
             taxonomy_classifier = TaxonomyClassifier()
             result = self._run_coroutine(
                 taxonomy_classifier.classify(
@@ -298,6 +395,21 @@ class ClassificationService:
             or ""
         )
         return str(content or "")[:2000]
+
+    def _load_lightrag_semantic_summary(self, document_id: str, doc_info: Dict) -> str:
+        del document_id
+        has_lightrag_identity = bool(doc_info.get("lightrag_doc_id") or doc_info.get("lightrag_track_id"))
+        if not has_lightrag_identity:
+            return ""
+
+        try:
+            snapshot = self._run_coroutine(
+                self.semantic_service.get_document_semantic_snapshot(doc_info, top_k=12)
+            )
+        except Exception:
+            return ""
+
+        return str((snapshot or {}).get("summary_text") or "")[:2000]
 
     @staticmethod
     def _run_coroutine(coro):

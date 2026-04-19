@@ -9,7 +9,6 @@ from config import (
     API_PREFIX,
     DATA_DIR,
     DOC_DIR,
-    CHROMA_DB_PATH,
     FILE_TYPE_DIRS,
     DOUBAO_API_KEY,
     DOUBAO_DEFAULT_LLM_MODEL,
@@ -22,16 +21,13 @@ from api import (
     validation_exception_handler,
     generic_exception_handler
 )
-from app.infra.embedding_provider import detect_and_lock_embedding_dim
-from app.infra import vector_store as vector_store_module
-from app.infra.vector_store import init_chroma_client
 from app.core.logger import RequestContextMiddleware, logger, setup_logging
-from app.services.indexing_service import IndexingService
+from app.services.document_audit_service import DocumentAuditService
 setup_logging()
 
 
-def _indexing_service() -> IndexingService:
-    return IndexingService()
+def _document_audit_service() -> DocumentAuditService:
+    return DocumentAuditService()
 
 
 def sync_doubao_llm_availability(
@@ -67,66 +63,25 @@ def _load_cors_settings() -> tuple[list[str], bool]:
     return origins, allow_credentials
 
 
-def check_and_rebuild_block_indexes():
-    """检查 block 索引就绪状态，必要时触发重建。"""
-    logger.info("开始检查 block 索引就绪状态...")
-
+async def refresh_document_audit_state(*, register_local_only: bool = True) -> dict:
     try:
-        service = _indexing_service()
-        audit = service.audit_block_index()
-        documents = list(audit.get("documents") or [])
-        rebuild_candidates = list(audit.get("rebuild_candidates") or [])
-        orphan_block_ids = list(audit.get("orphan_block_ids") or [])
-        candidate_set = set(rebuild_candidates)
-
-        if orphan_block_ids:
-            logger.warning("检测到 %s 个孤儿 block，建议执行 scripts/backfill_block_index.py 清理。", len(orphan_block_ids))
-
-        if not rebuild_candidates:
-            logger.info("block 索引检查完成: 共检查 %s 个文档，未发现需重建文档", len(documents))
-            return audit
-
-        auto_rebuild = _env_flag("AUTO_REBUILD_BLOCK_INDEX_ON_STARTUP")
-        logger.info("发现 %s 个文档 block 索引未就绪", len(rebuild_candidates))
-
-        if not auto_rebuild:
-            logger.info("默认仅检查不自动重建。设置 AUTO_REBUILD_BLOCK_INDEX_ON_STARTUP=true 可在启动时重建。")
-            logger.info(
-                "待重建文档: %s",
-                [
-                    item.get("filename") or item.get("document_id") or "未知"
-                    for item in documents
-                    if item.get("document_id") in candidate_set
-                ][:10],
-            )
-            return audit
-
-        for item in documents:
-            document_id = item.get("document_id")
-            if document_id not in candidate_set:
-                continue
-            try:
-                result = service.index_document(document_id, force=True)
-                if (result or {}).get("block_index_status") == "ready":
-                    logger.info(
-                        "block 索引重建成功: %s (%s)",
-                        document_id,
-                        ", ".join(item.get("rebuild_reasons") or []) or "manual",
-                    )
-                else:
-                    logger.error(
-                        "block 索引重建失败: %s - %s",
-                        document_id,
-                        (result or {}).get("error", "unknown error"),
-                    )
-            except Exception as exc:
-                logger.error("重建 block 索引失败: %s - %s", document_id, exc)
-
-        logger.info("block 索引检查完成: 共检查 %s 个文档, 需要重建 %s 个", len(documents), len(rebuild_candidates))
+        audit_service = _document_audit_service()
+        registered_local_only_documents = 0
+        if register_local_only:
+            registered_local_only_documents = audit_service.register_local_only_documents()
+        audit = await audit_service.audit()
+        if register_local_only:
+            audit["registered_local_only_documents"] = registered_local_only_documents
         return audit
     except Exception as exc:
-        logger.error("检查 block 索引时出错: %s", exc, exc_info=True)
-        return {"documents": [], "rebuild_candidates": [], "orphan_block_ids": []}
+        logger.warning("document audit failed: {}", exc)
+        return {
+            "status": "failed",
+            "detail": str(exc),
+            "registered_local_only_documents": 0,
+            "lightrag": {"status": "unhealthy", "detail": str(exc)},
+            "local_embedding": {"status": "unhealthy", "detail": str(exc)},
+        }
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -134,7 +89,7 @@ async def lifespan(app: FastAPI):
     logger.info("办公文档智能分类与检索系统启动中...")
     logger.info("=" * 50)
     
-    for dir_path in [DOC_DIR, DATA_DIR, CHROMA_DB_PATH]:
+    for dir_path in [DOC_DIR, DATA_DIR]:
         dir_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"确保目录存在：{dir_path}")
     
@@ -151,18 +106,18 @@ async def lifespan(app: FastAPI):
         logger_instance=logger,
     )
 
-    logger.info("正在初始化 block 向量库客户端和加载模型...")
-    chroma_client, block_collection = init_chroma_client()
-    if chroma_client and block_collection:
-        logger.info("block 向量库客户端初始化成功")
-    else:
-        logger.error("block 向量库客户端初始化失败，请检查模型路径")
-    
-    # 检查并重建缺失的 block 索引
-    check_and_rebuild_block_indexes()
-
-    # 4.1 检查并锁定 embedding 维度（Doubao/BGE 切换后的一致性保障）
-    detect_and_lock_embedding_dim()
+    audit = await refresh_document_audit_state(register_local_only=True)
+    app.state.document_audit = audit
+    logger.info(
+        "document audit: sqlite=%s local_files=%s legacy_json=%s untracked=%s pending=%s lightrag=%s registered_local_only=%s",
+        audit.get("sqlite_documents", 0),
+        audit.get("local_files", 0),
+        audit.get("legacy_json_documents", 0),
+        len(audit.get("untracked_local_files", [])),
+        audit.get("pending_ingest_documents", 0),
+        (audit.get("lightrag") or {}).get("status", "unknown"),
+        audit.get("registered_local_only_documents", 0),
+    )
     
     logger.info("=" * 50)
     logger.info("系统启动完成！")
@@ -221,19 +176,24 @@ async def root():
 
 @app.get("/health", summary="健康检查")
 async def health_check():
-    chroma_ok = (
-        vector_store_module._chroma_client is not None
-        and vector_store_module._chroma_block_collection is not None
+    audit = await refresh_document_audit_state(register_local_only=False)
+    app.state.document_audit = audit
+    lightrag_status = (audit.get("lightrag") or {}).get("status", "unknown")
+    local_embedding_status = (audit.get("local_embedding") or {}).get("status", "unknown")
+    status = (
+        "healthy"
+        if lightrag_status == "healthy" and local_embedding_status == "healthy"
+        else "unhealthy"
     )
-    
-    status = "healthy" if chroma_ok else "unhealthy"
-    
+
     return {
         "status": status,
         "version": "1.0.0",
         "checks": {
-            "chroma": "ok" if chroma_ok else "failed"
-        }
+            "lightrag": lightrag_status,
+            "local_embedding": local_embedding_status,
+        },
+        "document_audit": audit,
     }
 
 if __name__ == "__main__":

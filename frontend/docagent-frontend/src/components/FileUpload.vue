@@ -40,7 +40,6 @@
 
 <script setup>
 import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { api } from '@/api'
 
@@ -66,7 +65,7 @@ const handleFileChange = async (file) => {
       }
     })
     uploadPercent.value = 100
-    lastResult.value = { success: true, message: `${file.name} 上传并分类成功` }
+    lastResult.value = { success: true, message: `${file.name} 已保存，正在导入知识库` }
     emit('upload-success')
   } catch (error) {
     lastResult.value = { success: false, message: `上传失败：${error.message || '未知错误'}` }

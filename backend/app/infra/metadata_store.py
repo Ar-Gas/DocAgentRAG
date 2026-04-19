@@ -47,6 +47,11 @@ class DocumentMetadataStore:
                         classification_score REAL,
                         classification_source TEXT,
                         classification_candidates TEXT,
+                        ingest_status TEXT,
+                        ingest_error TEXT,
+                        lightrag_track_id TEXT,
+                        lightrag_doc_id TEXT,
+                        last_status_sync_at TEXT,
                         created_at REAL,
                         created_at_iso TEXT,
                         updated_at TEXT,
@@ -216,6 +221,11 @@ class DocumentMetadataStore:
                     "ALTER TABLE documents ADD COLUMN classification_score REAL",
                     "ALTER TABLE documents ADD COLUMN classification_source TEXT",
                     "ALTER TABLE documents ADD COLUMN classification_candidates TEXT",
+                    "ALTER TABLE documents ADD COLUMN ingest_status TEXT",
+                    "ALTER TABLE documents ADD COLUMN ingest_error TEXT",
+                    "ALTER TABLE documents ADD COLUMN lightrag_track_id TEXT",
+                    "ALTER TABLE documents ADD COLUMN lightrag_doc_id TEXT",
+                    "ALTER TABLE documents ADD COLUMN last_status_sync_at TEXT",
                 ]:
                     try:
                         connection.execute(_col_sql)
@@ -238,6 +248,11 @@ class DocumentMetadataStore:
             "classification_score": payload.get("classification_score"),
             "classification_source": payload.get("classification_source"),
             "classification_candidates": payload.get("classification_candidates"),
+            "ingest_status": payload.get("ingest_status"),
+            "ingest_error": payload.get("ingest_error"),
+            "lightrag_track_id": payload.get("lightrag_track_id"),
+            "lightrag_doc_id": payload.get("lightrag_doc_id"),
+            "last_status_sync_at": payload.get("last_status_sync_at"),
             "created_at": payload.get("created_at"),
             "created_at_iso": payload.get("created_at_iso"),
             "updated_at": payload.get("updated_at"),
@@ -255,9 +270,10 @@ class DocumentMetadataStore:
                 INSERT INTO documents (
                     id, filename, filepath, file_type, classification_result,
                     classification_id, classification_path, classification_score, classification_source,
-                    classification_candidates,
+                    classification_candidates, ingest_status, ingest_error, lightrag_track_id,
+                    lightrag_doc_id, last_status_sync_at,
                     created_at, created_at_iso, updated_at, payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     filename = excluded.filename,
                     filepath = excluded.filepath,
@@ -268,6 +284,11 @@ class DocumentMetadataStore:
                     classification_score = excluded.classification_score,
                     classification_source = excluded.classification_source,
                     classification_candidates = excluded.classification_candidates,
+                    ingest_status = excluded.ingest_status,
+                    ingest_error = excluded.ingest_error,
+                    lightrag_track_id = excluded.lightrag_track_id,
+                    lightrag_doc_id = excluded.lightrag_doc_id,
+                    last_status_sync_at = excluded.last_status_sync_at,
                     created_at = excluded.created_at,
                     created_at_iso = excluded.created_at_iso,
                     updated_at = excluded.updated_at,
@@ -284,6 +305,11 @@ class DocumentMetadataStore:
                     payload["classification_score"],
                     payload["classification_source"],
                     payload["classification_candidates"],
+                    payload["ingest_status"],
+                    payload["ingest_error"],
+                    payload["lightrag_track_id"],
+                    payload["lightrag_doc_id"],
+                    payload["last_status_sync_at"],
                     payload["created_at"],
                     payload["created_at_iso"],
                     payload["updated_at"],
@@ -388,6 +414,36 @@ class DocumentMetadataStore:
         except Exception as exc:
             logger.error(f"update_document_status 失败: {exc}")
             return False
+
+    def update_document_ingest_status(
+        self,
+        document_id: str,
+        *,
+        ingest_status: str,
+        ingest_error: Optional[str] = None,
+        lightrag_track_id: Optional[str] = None,
+        lightrag_doc_id: Optional[str] = None,
+        last_status_sync_at: Optional[str] = None,
+    ) -> bool:
+        current = self.get_document(document_id)
+        if current is None:
+            return False
+
+        now = datetime.now().isoformat()
+        updates: Dict[str, Any] = {
+            "ingest_status": ingest_status,
+            "ingest_error": ingest_error,
+            "updated_at": now,
+        }
+        if lightrag_track_id is not None:
+            updates["lightrag_track_id"] = lightrag_track_id
+        if lightrag_doc_id is not None:
+            updates["lightrag_doc_id"] = lightrag_doc_id
+        if last_status_sync_at is not None:
+            updates["last_status_sync_at"] = last_status_sync_at
+
+        current.update(updates)
+        return self.upsert_document(current)
 
     def save_artifact(self, name: str, payload: Dict[str, Any]) -> bool:
         now = datetime.now().isoformat()

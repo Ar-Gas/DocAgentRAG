@@ -36,3 +36,22 @@ class DocumentRepository:
         error_message: Optional[str] = None,
     ) -> bool:
         return self._store.update_document_status(document_id, status=status, error_message=error_message)
+
+    def update_ingest_status(
+        self,
+        document_id: str,
+        *,
+        ingest_status: str,
+        ingest_error: Optional[str] = None,
+        lightrag_track_id: Optional[str] = None,
+        lightrag_doc_id: Optional[str] = None,
+        last_status_sync_at: Optional[str] = None,
+    ) -> bool:
+        return self._store.update_document_ingest_status(
+            document_id,
+            ingest_status=ingest_status,
+            ingest_error=ingest_error,
+            lightrag_track_id=lightrag_track_id,
+            lightrag_doc_id=lightrag_doc_id,
+            last_status_sync_at=last_status_sync_at,
+        )

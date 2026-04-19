@@ -42,6 +42,12 @@
         </div>
 
         <p v-if="error" class="error-copy">{{ error }}</p>
+        <div v-else-if="showArchitectureHint" class="graph-hint">
+          <strong>当前知识图谱仍依赖本地 KG 索引。</strong>
+          <p>
+            现有文档虽然已进入文档系统或 LightRAG，但尚未同步到本地图谱三元组表，所以这里暂时没有可展示的关系数据。
+          </p>
+        </div>
         <p v-else-if="loading" class="detail-copy">图谱加载中...</p>
         <p v-else-if="!selectedNode" class="detail-copy">
           点击左侧节点胶囊后，这里会展示与该节点直接相关的关系边。
@@ -75,9 +81,19 @@ const selectedNodeId = ref('')
 const docFilter = ref('')
 const loading = ref(false)
 const error = ref('')
+const graphStats = ref({ total_nodes: 0, total_edges: 0, total_docs: 0 })
 
 const selectedNode = computed(() => (
   nodes.value.find((node) => node.id === selectedNodeId.value) || null
+))
+
+const showArchitectureHint = computed(() => (
+  !loading.value
+  && !error.value
+  && !nodes.value.length
+  && !edges.value.length
+  && Number(graphStats.value.total_nodes || 0) === 0
+  && Number(graphStats.value.total_edges || 0) === 0
 ))
 
 const relatedEdges = computed(() => {
@@ -105,11 +121,13 @@ const loadGraph = async () => {
     const response = await api.getGraph(params)
     nodes.value = response.data?.nodes || []
     edges.value = response.data?.edges || []
+    graphStats.value = response.data?.stats || { total_nodes: 0, total_edges: 0, total_docs: 0 }
     selectedNodeId.value = nodes.value[0]?.id || ''
   } catch (graphError) {
     error.value = graphError.message || '图谱加载失败'
     nodes.value = []
     edges.value = []
+    graphStats.value = { total_nodes: 0, total_edges: 0, total_docs: 0 }
     selectedNodeId.value = ''
   } finally {
     loading.value = false
@@ -245,6 +263,22 @@ onMounted(() => {
 
 .error-copy {
   color: var(--red-600);
+}
+
+.graph-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #FFF7ED 0%, #FFFBEB 100%);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  color: #9A3412;
+
+  p {
+    margin: 0;
+    line-height: 1.7;
+  }
 }
 
 @media (max-width: 1024px) {

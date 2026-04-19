@@ -5,10 +5,8 @@ const apiMocks = vi.hoisted(() => ({
   workspaceSearch: vi.fn(),
   getStats: vi.fn(),
   getCategories: vi.fn(),
-  getTopicTree: vi.fn(),
   summarizeResults: vi.fn(),
   generateClassificationTable: vi.fn(),
-  buildTopicTree: vi.fn(),
   getDocumentReader: vi.fn(),
 }))
 
@@ -22,14 +20,13 @@ vi.mock('@/api', () => ({
 const STUBS = {
   SearchToolbar: {
     props: ['modelValue'],
-    emits: ['update:modelValue', 'search', 'reset', 'summarize', 'generate-report', 'rebuild-topics'],
+    emits: ['update:modelValue', 'search', 'reset', 'summarize', 'generate-report'],
     template: '<button class="go" @click="$emit(\'search\')">go</button>',
   },
   DocumentResultList: { template: '<div class="result-list-stub" />' },
   DocumentReader: { template: '<div class="reader-stub" />' },
   SummaryDrawer: { template: '<div class="summary-drawer-stub" />' },
   ClassificationReportDrawer: { template: '<div class="classification-drawer-stub" />' },
-  TopicTreePanel: { template: '<div class="topic-tree-stub" />' },
   DocumentViewerModal: { template: '<div class="viewer-modal-stub" />' },
 }
 
@@ -60,10 +57,8 @@ describe('SearchPage', () => {
     })
     apiMocks.getStats.mockResolvedValue({ data: {} })
     apiMocks.getCategories.mockResolvedValue({ data: { categories: [] } })
-    apiMocks.getTopicTree.mockResolvedValue({ data: { topics: [], total_documents: 0 } })
     apiMocks.summarizeResults.mockResolvedValue({ data: null })
     apiMocks.generateClassificationTable.mockResolvedValue({ data: null })
-    apiMocks.buildTopicTree.mockResolvedValue({ data: { topics: [], total_documents: 0 } })
     apiMocks.getDocumentReader.mockResolvedValue({ data: null })
     workspaceSearchStream.mockClear()
   })
@@ -75,7 +70,11 @@ describe('SearchPage', () => {
   it('uses streaming workspace search for smart requests without retrieval_version', async () => {
     const wrapper = await mountSearchPage()
 
-    wrapper.vm.filters.mode = 'smart'
+    wrapper.vm.filters = {
+      ...wrapper.vm.filters,
+      mode: 'smart',
+    }
+    await flushPromises()
     await wrapper.find('.go').trigger('click')
     await flushPromises()
 
@@ -89,7 +88,11 @@ describe('SearchPage', () => {
   it('uses sync workspace search for non-smart requests without retrieval_version', async () => {
     const wrapper = await mountSearchPage()
 
-    wrapper.vm.filters.mode = 'hybrid'
+    wrapper.vm.filters = {
+      ...wrapper.vm.filters,
+      mode: 'hybrid',
+    }
+    await flushPromises()
     await wrapper.find('.go').trigger('click')
     await flushPromises()
 
@@ -120,5 +123,12 @@ describe('SearchPage', () => {
         domain: '人力资源',
       },
     ])
+  })
+
+  it('loads search chrome without requesting the legacy topic tree', async () => {
+    await mountSearchPage()
+
+    expect(apiMocks.getStats).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getCategories).toHaveBeenCalledTimes(1)
   })
 })

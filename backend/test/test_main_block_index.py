@@ -1,4 +1,5 @@
 import importlib.util
+import asyncio
 import os
 import sys
 import types
@@ -18,12 +19,11 @@ def _load_module_from_path(module_name: str, module_path: Path):
     return module
 
 
-def _load_main_module(fake_indexing_service_cls):
+def _load_main_module(fake_document_audit_service_cls):
     config_module = types.ModuleType("config")
     config_module.API_PREFIX = "/api/v1"
     config_module.DATA_DIR = Path("/tmp/docagent-backend/data")
     config_module.DOC_DIR = Path("/tmp/docagent-backend/doc")
-    config_module.CHROMA_DB_PATH = Path("/tmp/docagent-backend/chromadb")
     config_module.FILE_TYPE_DIRS = ["pdf"]
     config_module.DOUBAO_API_KEY = ""
     config_module.DOUBAO_DEFAULT_LLM_MODEL = "doubao-mini"
@@ -48,36 +48,9 @@ def _load_main_module(fake_indexing_service_cls):
 
     app_module = types.ModuleType("app")
     app_core_module = types.ModuleType("app.core")
-    app_infra_module = types.ModuleType("app.infra")
-    app_infra_repositories_module = types.ModuleType("app.infra.repositories")
     app_services_module = types.ModuleType("app.services")
-
-    embedding_provider_module = types.ModuleType("app.infra.embedding_provider")
-    embedding_provider_module.detect_and_lock_embedding_dim = lambda: None
-
-    class _FakeDocumentRepository:
-        def __init__(self, data_dir=None):
-            self.data_dir = data_dir
-
-        def list_all(self):
-            return []
-
-        def get(self, document_id):
-            return {"id": document_id}
-
-        def update(self, document_id, updated_info):
-            return True
-
-    document_repository_module = types.ModuleType("app.infra.repositories.document_repository")
-    document_repository_module.DocumentRepository = _FakeDocumentRepository
-
-    vector_store_module = types.ModuleType("app.infra.vector_store")
-    vector_store_module.init_chroma_client = lambda: (object(), object())
-    vector_store_module._chroma_client = object()
-    vector_store_module._chroma_block_collection = object()
-
-    indexing_service_module = types.ModuleType("app.services.indexing_service")
-    indexing_service_module.IndexingService = fake_indexing_service_cls
+    document_audit_service_module = types.ModuleType("app.services.document_audit_service")
+    document_audit_service_module.DocumentAuditService = fake_document_audit_service_cls
 
     core_logger_module = types.ModuleType("app.core.logger")
     core_logger_module.logger = mock.Mock()
@@ -95,14 +68,9 @@ def _load_main_module(fake_indexing_service_cls):
             "api": api_module,
             "app": app_module,
             "app.core": app_core_module,
-            "app.infra": app_infra_module,
-            "app.infra.repositories": app_infra_repositories_module,
             "app.services": app_services_module,
             "app.core.logger": core_logger_module,
-            "app.infra.embedding_provider": embedding_provider_module,
-            "app.infra.repositories.document_repository": document_repository_module,
-            "app.infra.vector_store": vector_store_module,
-            "app.services.indexing_service": indexing_service_module,
+            "app.services.document_audit_service": document_audit_service_module,
         },
         clear=False,
     ):
@@ -114,6 +82,7 @@ class _FakeFastAPIApp:
         self.args = args
         self.kwargs = kwargs
         self.middlewares = []
+        self.state = types.SimpleNamespace()
 
     def add_exception_handler(self, *args, **kwargs):
         return None
@@ -138,57 +107,69 @@ class _FakeFastAPIApp:
         return decorator
 
 
-def test_startup_block_check_only_reports_candidates_by_default(monkeypatch):
-    calls = []
+def test_refresh_document_audit_state_registers_local_only_before_audit():
+    class FakeDocumentAuditService:
+        def register_local_only_documents(self):
+            return 2
 
-    class FakeIndexingService:
-        def audit_block_index(self):
+        async def audit(self):
             return {
-                "documents": [
-                    {"document_id": "doc-1", "filename": "budget.pdf", "rebuild_reasons": ["missing_blocks"]},
-                ],
-                "rebuild_candidates": ["doc-1"],
-                "orphan_block_ids": [],
+                "sqlite_documents": 12,
+                "local_files": 31,
+                "lightrag": {"status": "healthy"},
+                "local_embedding": {"status": "healthy"},
             }
 
-        def index_document(self, document_id: str, force: bool = False):
-            calls.append((document_id, force))
-            return {"document_id": document_id, "block_index_status": "ready"}
+    module = _load_main_module(FakeDocumentAuditService)
 
-    monkeypatch.delenv("AUTO_REBUILD_BLOCK_INDEX_ON_STARTUP", raising=False)
-    module = _load_main_module(FakeIndexingService)
+    payload = asyncio.run(module.refresh_document_audit_state(register_local_only=True))
 
-    payload = module.check_and_rebuild_block_indexes()
-
-    assert payload["rebuild_candidates"] == ["doc-1"]
-    assert calls == []
+    assert payload["registered_local_only_documents"] == 2
+    assert payload["sqlite_documents"] == 12
+    assert payload["lightrag"]["status"] == "healthy"
 
 
-def test_startup_block_check_can_auto_rebuild_candidates(monkeypatch):
-    calls = []
+def test_health_check_uses_runtime_audit_statuses():
+    class FakeDocumentAuditService:
+        def register_local_only_documents(self):
+            return 0
 
-    class FakeIndexingService:
-        def audit_block_index(self):
+        async def audit(self):
             return {
-                "documents": [
-                    {"document_id": "doc-1", "filename": "budget.pdf", "rebuild_reasons": ["missing_blocks"]},
-                    {"document_id": "doc-2", "filename": "contract.docx", "rebuild_reasons": ["status_failed"]},
-                ],
-                "rebuild_candidates": ["doc-1", "doc-2"],
-                "orphan_block_ids": [],
+                "sqlite_documents": 5,
+                "local_files": 7,
+                "lightrag": {"status": "healthy"},
+                "local_embedding": {"status": "healthy"},
             }
 
-        def index_document(self, document_id: str, force: bool = False):
-            calls.append((document_id, force))
-            return {"document_id": document_id, "block_index_status": "ready"}
+    module = _load_main_module(FakeDocumentAuditService)
 
-    monkeypatch.setenv("AUTO_REBUILD_BLOCK_INDEX_ON_STARTUP", "true")
-    module = _load_main_module(FakeIndexingService)
+    payload = asyncio.run(module.health_check())
 
-    payload = module.check_and_rebuild_block_indexes()
+    assert payload["status"] == "healthy"
+    assert payload["checks"] == {"lightrag": "healthy", "local_embedding": "healthy"}
+    assert payload["document_audit"]["local_files"] == 7
 
-    assert payload["rebuild_candidates"] == ["doc-1", "doc-2"]
-    assert calls == [("doc-1", True), ("doc-2", True)]
+
+def test_health_check_is_unhealthy_when_local_embedding_is_unhealthy():
+    class FakeDocumentAuditService:
+        def register_local_only_documents(self):
+            return 0
+
+        async def audit(self):
+            return {
+                "sqlite_documents": 5,
+                "local_files": 7,
+                "lightrag": {"status": "healthy"},
+                "local_embedding": {"status": "unhealthy", "detail": "8011 connection refused"},
+            }
+
+    module = _load_main_module(FakeDocumentAuditService)
+
+    payload = asyncio.run(module.health_check())
+
+    assert payload["status"] == "unhealthy"
+    assert payload["checks"] == {"lightrag": "healthy", "local_embedding": "unhealthy"}
 
 
 def test_default_wildcard_cors_disables_credentials(monkeypatch):

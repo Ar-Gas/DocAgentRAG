@@ -17,8 +17,13 @@ from app.domain.taxonomy.internet_enterprise_taxonomy import (
 class TaxonomyClassifier:
     """
     固定 taxonomy 分类器，替代 TopicTreeService 作为 classification_result 的唯一来源。
-    分三步：候选召回 → 受约束 LLM 选择 → 置信度判断
+    分三步：模板候选召回 → 受约束 LLM 选择 → 固定模板兜底
     """
+
+    _WEAK_RECALL_THRESHOLD = 0.5
+    _FORCED_CONFIDENCE_FLOOR = 0.2
+    _FORCED_CONFIDENCE_CAP = 0.49
+    _DEFAULT_TEMPLATE_LABEL_ID = "admin.notice"
 
     def __init__(self, llm_gateway: LLMGateway | None = None):
         self.llm_gateway = llm_gateway or LLMGateway()
@@ -49,21 +54,18 @@ class TaxonomyClassifier:
             file_type or os.path.splitext(normalized_filename)[1]
         )
 
+        all_labels = get_all_labels()
         recalled = self._recall_candidates(
             normalized_content,
             normalized_filename,
             normalized_file_type,
-            top_k=8,
+            top_k=len(all_labels),
         )
-        candidate_ids = [label["id"] for label, _score in recalled[:5]]
-
-        if not recalled or recalled[0][1] < 0.5:
-            return self._build_result(
-                self._fallback_label(),
-                score=0.0,
-                source="fallback",
-                candidate_ids=candidate_ids,
-            )
+        template_candidates = self._build_template_candidates(recalled, all_labels)
+        candidate_ids = [label["id"] for label, _score in template_candidates[:5]]
+        has_strong_enough_recall = (
+            bool(recalled) and recalled[0][1] >= self._WEAK_RECALL_THRESHOLD
+        )
 
         if self._should_use_keyword_result(recalled):
             keyword_label, keyword_score = recalled[0]
@@ -74,11 +76,7 @@ class TaxonomyClassifier:
                 candidate_ids=candidate_ids,
             )
 
-        selected_label_id, llm_confidence = await self._llm_select(
-            normalized_content,
-            [label for label, _score in recalled[:5]],
-        )
-        if not selected_label_id:
+        if not template_candidates:
             return self._build_result(
                 self._fallback_label(),
                 score=0.0,
@@ -86,29 +84,31 @@ class TaxonomyClassifier:
                 candidate_ids=candidate_ids,
             )
 
+        selected_label_id, llm_confidence = await self._llm_select(
+            normalized_content,
+            [label for label, _score in template_candidates],
+        )
+        if not selected_label_id:
+            return self._build_forced_keyword_result(template_candidates, candidate_ids)
+
         selected_label = get_label_by_id(selected_label_id)
         if not selected_label:
-            return self._build_result(
-                self._fallback_label(),
-                score=0.0,
-                source="fallback",
-                candidate_ids=candidate_ids,
-            )
+            return self._build_forced_keyword_result(template_candidates, candidate_ids)
 
         keyword_score = next(
             (
                 score
-                for label, score in recalled
+                for label, score in template_candidates
                 if label.get("id") == selected_label_id
             ),
             0.0,
         )
         final_score = max(llm_confidence, self._score_to_confidence(keyword_score))
-        if final_score < 0.5:
+        if not has_strong_enough_recall or final_score < self._WEAK_RECALL_THRESHOLD:
             return self._build_result(
-                self._fallback_label(),
-                score=0.0,
-                source="fallback",
+                selected_label,
+                score=self._forced_confidence(final_score),
+                source="llm_forced",
                 candidate_ids=candidate_ids,
             )
 
@@ -163,6 +163,61 @@ class TaxonomyClassifier:
         recalled.sort(key=lambda item: (-item[1], item[0].get("id", "")))
         return recalled[:top_k]
 
+    def _build_template_candidates(
+        self,
+        recalled: list[tuple[dict, float]],
+        all_labels: list[dict],
+    ) -> list[tuple[dict, float]]:
+        score_map = {
+            str(label.get("id") or ""): float(score)
+            for label, score in recalled
+            if label.get("id")
+        }
+        order_map = {
+            str(label.get("id") or ""): index
+            for index, label in enumerate(all_labels)
+            if label.get("id")
+        }
+        candidates = [
+            (label, score_map.get(str(label.get("id") or ""), 0.0))
+            for label in all_labels
+            if label.get("id")
+        ]
+
+        candidates.sort(key=lambda item: self._template_candidate_sort_key(item, order_map))
+        return candidates
+
+    def _template_candidate_sort_key(
+        self,
+        item: tuple[dict, float],
+        order_map: dict[str, int],
+    ) -> tuple[float, int, int]:
+        label, score = item
+        label_id = str(label.get("id") or "")
+        default_rank = 0 if score <= 0 and label_id == self._DEFAULT_TEMPLATE_LABEL_ID else 1
+        return (-float(score), default_rank, order_map.get(label_id, 9999))
+
+    def _build_forced_keyword_result(
+        self,
+        template_candidates: list[tuple[dict, float]],
+        candidate_ids: list[str],
+    ) -> dict:
+        if not template_candidates:
+            return self._build_result(
+                self._fallback_label(),
+                score=0.0,
+                source="fallback",
+                candidate_ids=candidate_ids,
+            )
+
+        selected_label, keyword_score = template_candidates[0]
+        return self._build_result(
+            selected_label,
+            score=self._forced_confidence(self._score_to_confidence(keyword_score)),
+            source="keyword_forced",
+            candidate_ids=candidate_ids,
+        )
+
     async def _llm_select(
         self,
         content: str,
@@ -184,14 +239,17 @@ class TaxonomyClassifier:
         if not candidates:
             return None, 0.0
 
-        labels_text = "\n".join(f"- {item['label']}" for item in candidates)
+        labels_text = "\n".join(
+            f"- {item['id']} | {' > '.join(item.get('path') or [])} | {item['label']}"
+            for item in candidates
+        )
         prompt = (
             "你是一个企业办公文档分类助手。\n"
             "请根据以下文档内容，从候选分类标签中选出最合适的一个。\n"
-            "只能返回候选列表中的标签名称，不得新造标签，不得返回其他内容。\n\n"
+            "只能返回候选列表中的分类ID或标签名称，不得新造标签，不得返回其他内容。\n\n"
             f"候选标签：\n{labels_text}\n"
             f"文档内容（前2000字）：{str(content or '')[:2000]}\n\n"
-            "直接返回标签名称："
+            "直接返回分类ID或标签名称："
         )
 
         try:
@@ -213,7 +271,7 @@ class TaxonomyClassifier:
         selected_label = None
         exact_match = True
         for item in candidates:
-            if item.get("label") == selected_name:
+            if item.get("id") == selected_name or item.get("label") == selected_name:
                 selected_label = item
                 break
 
@@ -221,7 +279,13 @@ class TaxonomyClassifier:
             exact_match = False
             for item in candidates:
                 label = str(item.get("label") or "")
-                if label and (label in selected_name or selected_name in label):
+                label_id = str(item.get("id") or "")
+                path = " > ".join(item.get("path") or [])
+                if (
+                    (label and (label in selected_name or selected_name in label))
+                    or (label_id and label_id in selected_name)
+                    or (path and (path in selected_name or selected_name in path))
+                ):
                     selected_label = item
                     break
 
@@ -274,6 +338,14 @@ class TaxonomyClassifier:
     @staticmethod
     def _score_to_confidence(score: float) -> float:
         return max(0.0, min(round(float(score) / 4.0, 4), 1.0))
+
+    def _forced_confidence(self, score: float) -> float:
+        if score <= 0:
+            return self._FORCED_CONFIDENCE_FLOOR
+        return min(
+            self._FORCED_CONFIDENCE_CAP,
+            max(self._FORCED_CONFIDENCE_FLOOR, round(float(score), 4)),
+        )
 
     def _should_use_keyword_result(self, recalled: list[tuple[dict, float]]) -> bool:
         if not recalled:

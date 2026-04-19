@@ -7,12 +7,10 @@
       :loading="searchLoading"
       :can-summarize="workspace.documents.length > 0"
       :can-generate-report="workspace.documents.length > 0"
-      :rebuilding-topics="rebuildingTopics"
       @search="executeSearch"
       @reset="resetWorkspace"
       @summarize="openSummaryDrawer"
       @generate-report="openClassificationDrawer"
-      @rebuild-topics="rebuildTopicTree"
     />
 
     <div class="workspace-grid">
@@ -35,7 +33,7 @@
         />
       </div>
 
-      <!-- 右列：检索概览 + 语义主题树 -->
+      <!-- 右列：检索概览 -->
       <div class="sidebar-stack">
         <section class="shell-panel insight-card">
           <p class="section-label">检索概览</p>
@@ -55,16 +53,6 @@
               : '先检索文档，点击列表中的文档卡片展开证据。' }}
           </p>
         </section>
-
-        <TopicTreePanel
-          :tree="topicTree"
-          :loading="topicLoading"
-          :rebuilding="rebuildingTopics"
-          :selected-document-id="selectedDocumentId"
-          :show-rebuild="true"
-          @select-document="selectDocument"
-          @rebuild="rebuildTopicTree"
-        />
       </div>
     </div>
 
@@ -106,7 +94,6 @@ import DocumentResultList from '@/components/DocumentResultList.vue'
 import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 import SearchToolbar from '@/components/SearchToolbar.vue'
 import SummaryDrawer from '@/components/SummaryDrawer.vue'
-import TopicTreePanel from '@/components/TopicTreePanel.vue'
 import { api, workspaceSearchStream } from '@/api'
 
 const createDefaultFilters = () => ({
@@ -135,7 +122,6 @@ const emptyWorkspace = () => ({
 const filters = ref(createDefaultFilters())
 const stats = ref({})
 const categories = ref([])
-const topicTree = ref({ topics: [], total_documents: 0 })
 const workspace = ref(emptyWorkspace())
 const selectedDocumentId = ref('')
 const readerPayload = ref(null)
@@ -146,8 +132,6 @@ const isReranking = ref(false)
 const readerLoading = ref(false)
 const summaryLoading = ref(false)
 const classificationLoading = ref(false)
-const topicLoading = ref(false)
-const rebuildingTopics = ref(false)
 const summaryVisible = ref(false)
 const classificationVisible = ref(false)
 
@@ -196,19 +180,12 @@ const normalizeCategoriesResponse = (payload) => {
 }
 
 const loadWorkspaceChrome = async () => {
-  topicLoading.value = true
-  try {
-    const [statsRes, categoriesRes, topicRes] = await Promise.all([
-      api.getStats(),
-      api.getCategories(),
-      api.getTopicTree()
-    ])
-    stats.value = statsRes.data || {}
-    categories.value = normalizeCategoriesResponse(categoriesRes)
-    topicTree.value = topicRes.data || { topics: [], total_documents: 0 }
-  } finally {
-    topicLoading.value = false
-  }
+  const [statsRes, categoriesRes] = await Promise.all([
+    api.getStats(),
+    api.getCategories()
+  ])
+  stats.value = statsRes.data || {}
+  categories.value = normalizeCategoriesResponse(categoriesRes)
 }
 
 const loadDocumentReader = async (documentId, anchorBlockId = null) => {
@@ -307,16 +284,6 @@ const openClassificationDrawer = async () => {
     classificationReport.value = response.data || null
   } finally {
     classificationLoading.value = false
-  }
-}
-
-const rebuildTopicTree = async () => {
-  rebuildingTopics.value = true
-  try {
-    const response = await api.buildTopicTree(true)
-    topicTree.value = response.data || { topics: [], total_documents: 0 }
-  } finally {
-    rebuildingTopics.value = false
   }
 }
 

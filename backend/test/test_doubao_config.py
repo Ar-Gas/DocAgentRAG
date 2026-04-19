@@ -92,6 +92,24 @@ def _make_fake_retrieval_dependencies(llm_available: bool):
         def list(self, document_id):
             return []
 
+    class _FakeEntityRepository:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class _FakeQueryAnalyzer:
+        async def analyze(self, query):
+            return types.SimpleNamespace(
+                intent="general",
+                expanded_queries=[],
+                entity_filters=[],
+                time_filter=None,
+                doc_type_hint=None,
+            )
+
+    class _FakeGraphRetrieval:
+        async def search_by_entity(self, entity, top_k=5):
+            return []
+
     document_repository_module = types.ModuleType("app.infra.repositories.document_repository")
     document_repository_module.DocumentRepository = _FakeDocumentRepository
 
@@ -101,6 +119,18 @@ def _make_fake_retrieval_dependencies(llm_available: bool):
     segment_repository_module = types.ModuleType("app.infra.repositories.document_segment_repository")
     segment_repository_module.DocumentSegmentRepository = _FakeDocumentSegmentRepository
 
+    entity_repository_module = types.ModuleType("app.infra.repositories.entity_repository")
+    entity_repository_module.EntityRepository = _FakeEntityRepository
+
+    query_analyzer_module = types.ModuleType("app.domain.retrieval.query_analyzer")
+    query_analyzer_module.QueryAnalyzer = _FakeQueryAnalyzer
+
+    fusion_module = types.ModuleType("app.domain.retrieval.fusion")
+    fusion_module.reciprocal_rank_fusion = lambda *args, **kwargs: []
+
+    graph_retrieval_module = types.ModuleType("app.domain.retrieval.graph_retrieval")
+    graph_retrieval_module.GraphRetrieval = _FakeGraphRetrieval
+
     return {
         "app": app_module,
         "app.core": app_core_module,
@@ -108,11 +138,17 @@ def _make_fake_retrieval_dependencies(llm_available: bool):
         "app.services": app_services_module,
         "app.infra": app_infra_module,
         "app.infra.repositories": app_infra_repositories_module,
+        "app.domain": types.ModuleType("app.domain"),
+        "app.domain.retrieval": types.ModuleType("app.domain.retrieval"),
         "app.services.errors": app_errors_module,
         "app.infra.file_utils": file_utils_module,
         "app.infra.repositories.document_repository": document_repository_module,
         "app.infra.repositories.document_content_repository": content_repository_module,
         "app.infra.repositories.document_segment_repository": segment_repository_module,
+        "app.infra.repositories.entity_repository": entity_repository_module,
+        "app.domain.retrieval.query_analyzer": query_analyzer_module,
+        "app.domain.retrieval.fusion": fusion_module,
+        "app.domain.retrieval.graph_retrieval": graph_retrieval_module,
         "utils.search_cache": cache_module,
         "utils.retriever": retriever_module,
         "utils.smart_retrieval": smart_module,
@@ -254,6 +290,21 @@ class DoubaoConfigTests(unittest.TestCase):
         module = self._load_config("llm_true", fake_secrets_module=fake_secrets)
         self.assertTrue(module.LLM_AVAILABLE)
 
+    def test_config_defaults_bge_model_to_local_bge_m3_path(self):
+        os.environ.pop("BGE_MODEL", None)
+
+        module = self._load_config("default_bge_model")
+
+        expected = module.BASE_DIR / "models" / "BAAI" / "bge-m3"
+        self.assertEqual(module.BGE_MODEL, str(expected))
+
+    def test_config_respects_bge_model_env_override(self):
+        os.environ["BGE_MODEL"] = "/opt/models/BAAI/bge-m3"
+
+        module = self._load_config("env_bge_model")
+
+        self.assertEqual(module.BGE_MODEL, "/opt/models/BAAI/bge-m3")
+
     def test_llm_gateway_config_falls_back_to_config_module_when_env_absent_or_empty(self):
         os.environ.pop("DOUBAO_API_KEY", None)
         os.environ["DOUBAO_LLM_API_URL"] = ""
@@ -368,6 +419,17 @@ class DoubaoConfigTests(unittest.TestCase):
         document_vector_index_service_module = types.ModuleType("app.services.document_vector_index_service")
         document_vector_index_service_module.DocumentVectorIndexService = _FakeDocumentVectorIndexService
 
+        document_audit_service_module = types.ModuleType("app.services.document_audit_service")
+
+        class _FakeDocumentAuditService:
+            async def audit(self):
+                return {"lightrag": {"status": "healthy"}}
+
+            def register_local_only_documents(self):
+                return 0
+
+        document_audit_service_module.DocumentAuditService = _FakeDocumentAuditService
+
         core_logger_module = types.ModuleType("app.core.logger")
         core_logger_module.logger = mock.Mock()
         core_logger_module.setup_logging = lambda *args, **kwargs: None
@@ -393,6 +455,7 @@ class DoubaoConfigTests(unittest.TestCase):
                 "app.infra.vector_store": vector_store_module,
                 "app.services.indexing_service": indexing_service_module,
                 "app.services.document_vector_index_service": document_vector_index_service_module,
+                "app.services.document_audit_service": document_audit_service_module,
             },
             clear=False,
         ):

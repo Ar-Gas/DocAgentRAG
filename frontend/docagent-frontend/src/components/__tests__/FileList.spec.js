@@ -7,7 +7,8 @@ import FileList from '@/components/FileList.vue'
 vi.mock('@/api', () => ({
   api: {
     reclassifyDocument: vi.fn(),
-    deleteDocument: vi.fn()
+    deleteDocument: vi.fn(),
+    retryDocumentIngest: vi.fn()
   }
 }))
 
@@ -60,12 +61,26 @@ describe('FileList', () => {
     ).toBe('发票审批')
   })
 
-  it('returns source badge labels for llm, keyword, and fallback states', () => {
+  it('returns source badge labels for classification states', () => {
     const wrapper = mountFileList()
 
     expect(wrapper.vm.getClassificationSourceMeta('llm')).toEqual({ label: 'AI', tone: 'ai' })
+    expect(wrapper.vm.getClassificationSourceMeta('llm_forced')).toEqual({ label: 'AI', tone: 'ai' })
     expect(wrapper.vm.getClassificationSourceMeta('keyword')).toEqual({ label: '关键词', tone: 'keyword' })
+    expect(wrapper.vm.getClassificationSourceMeta('keyword_forced')).toEqual({ label: '模板分类', tone: 'keyword' })
     expect(wrapper.vm.getClassificationSourceMeta('fallback')).toEqual({ label: '待确认', tone: 'fallback' })
+    expect(wrapper.vm.getClassificationSourceMeta('pending_sync')).toEqual({ label: '待同步', tone: 'pending' })
     expect(wrapper.vm.getClassificationText({})).toBe('未分类')
+  })
+
+  it('maps ingest statuses to visible tag metadata', () => {
+    const wrapper = mountFileList()
+
+    expect(wrapper.vm.getIngestStatusMeta('queued')).toEqual({ label: '待导入', tone: 'info' })
+    expect(wrapper.vm.getIngestStatusMeta('processing')).toEqual({ label: '导入中', tone: 'warning' })
+    expect(wrapper.vm.getIngestStatusMeta('ready')).toEqual({ label: '已入库', tone: 'success' })
+    expect(wrapper.vm.getIngestStatusMeta('failed')).toEqual({ label: '失败', tone: 'danger' })
+    expect(wrapper.vm.getIngestStatusMeta('local_only')).toEqual({ label: '待导入', tone: 'info' })
+    expect(wrapper.vm.getIngestStatusMeta('')).toEqual({ label: '未知', tone: 'info' })
   })
 })

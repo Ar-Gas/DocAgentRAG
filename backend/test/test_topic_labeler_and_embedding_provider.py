@@ -108,3 +108,33 @@ def test_doubao_multimodal_embed_uses_short_timeout(monkeypatch):
 
     assert payload == [0.1, 0.2, 0.3]
     assert post_mock.call_args.kwargs["timeout"] <= 5
+
+
+def test_embed_text_prefers_local_bge_model(monkeypatch):
+    embedding_provider_module._bge_ef = None
+    embedding_provider_module._embed_consecutive_failures = 0
+    created = {}
+
+    class FakeEmbeddingFunction:
+        def __call__(self, texts):
+            return [[0.4, 0.5, 0.6] for _ in texts]
+
+    def fake_sentence_transformer(model_name):
+        created["model_name"] = model_name
+        return FakeEmbeddingFunction()
+
+    doubao_mock = Mock(return_value=[9.9, 9.8, 9.7])
+    monkeypatch.setattr(
+        embedding_provider_module.embedding_functions,
+        "SentenceTransformerEmbeddingFunction",
+        fake_sentence_transformer,
+    )
+    monkeypatch.setattr(embedding_provider_module, "doubao_multimodal_embed", doubao_mock)
+    monkeypatch.setattr(embedding_provider_module, "DOUBAO_API_KEY", "doubao-key")
+    monkeypatch.setenv("BGE_MODEL", "/tmp/models/BAAI/bge-m3")
+
+    payload = embedding_provider_module.embed_text("年度审计")
+
+    assert payload == [0.4, 0.5, 0.6]
+    assert created["model_name"] == "/tmp/models/BAAI/bge-m3"
+    doubao_mock.assert_not_called()

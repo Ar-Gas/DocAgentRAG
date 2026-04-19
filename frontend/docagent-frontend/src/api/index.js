@@ -50,6 +50,9 @@ export const api = {
   deleteDocument: (documentId) => {
     return request.delete(`/documents/${documentId}`)
   },
+  retryDocumentIngest: (documentId) => {
+    return request.post(`/documents/${documentId}/retry-ingest`)
+  },
   rechunkDocument: (documentId, useRefiner = true) => {
     return request.post(`/documents/${documentId}/rechunk`, { use_refiner: useRefiner })
   },
@@ -74,6 +77,9 @@ export const api = {
   },
   buildTopicTree: (forceRebuild = false) => {
     return request.post('/classification/topic-tree/build', { force_rebuild: forceRebuild })
+  },
+  getGraphLabels: () => {
+    return request.get('/topics/labels')
   },
   getGraph: (params = {}) => {
     return request.get('/topics/graph', { params })

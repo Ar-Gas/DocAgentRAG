@@ -38,9 +38,18 @@ def _build_document_response(doc_info: dict) -> dict:
         "full_content_length": payload.get("full_content_length", 0),
         "created_at_iso": payload.get("created_at_iso"),
         "classification_result": payload.get("classification_result"),
+        "classification_id": payload.get("classification_id"),
+        "classification_path": payload.get("classification_path"),
+        "classification_score": payload.get("classification_score"),
+        "classification_source": payload.get("classification_source"),
         "file_available": payload.get("file_available", False),
         "extraction_status": payload.get("extraction_status"),
         "parser_name": payload.get("parser_name"),
+        "ingest_status": payload.get("ingest_status"),
+        "ingest_error": payload.get("ingest_error"),
+        "lightrag_track_id": payload.get("lightrag_track_id"),
+        "lightrag_doc_id": payload.get("lightrag_doc_id"),
+        "last_status_sync_at": payload.get("last_status_sync_at"),
     }
 
 @router.post("/upload", summary="上传文档")
@@ -137,6 +146,15 @@ async def delete_document_api(document_id: str):
     try:
         result = document_service.delete_document(document_id)
         return success(data=result, message="文档删除成功")
+    except AppServiceError as exc:
+        raise BusinessException(code=exc.code, detail=exc.detail)
+
+
+@router.post("/{document_id}/retry-ingest", summary="重试导入 LightRAG")
+async def retry_document_ingest(document_id: str):
+    try:
+        result = document_service.retry_ingest(document_id)
+        return success(data=_build_document_response(result), message="文档已重新提交导入队列")
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
 
