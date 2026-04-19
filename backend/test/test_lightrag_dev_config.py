@@ -32,6 +32,10 @@ def test_build_lightrag_env_uses_local_embedding_endpoint_and_doubao_llm():
     assert env["EMBEDDING_TIMEOUT"] == "120"
     assert env["EMBEDDING_BATCH_NUM"] == "2"
     assert env["EMBEDDING_FUNC_MAX_ASYNC"] == "2"
+    assert env["LARGE_DOC_THRESHOLD_CHUNKS"] == "80"
+    assert env["LARGE_DOC_CHUNK_SIZE"] == "2400"
+    assert env["LARGE_DOC_CHUNK_OVERLAP_SIZE"] == "150"
+    assert env["LARGE_DOC_CHUNK_MAX_ASYNC"] == "1"
 
 
 def test_render_lightrag_env_writes_shell_friendly_lines():
