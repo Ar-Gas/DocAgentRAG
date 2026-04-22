@@ -16,7 +16,10 @@ class FakeLightRAGClient:
         self.error = error
         self.uploads = []
         self.reprocess_failed_calls = 0
+        self.health_calls = 0
+        self.health_payload = {"status": "healthy", "pipeline_busy": False}
         self.track_status_payload = {"track_id": "track-1", "documents": [], "total_count": 0, "status_summary": {}}
+        self.track_status_by_id = {}
 
     async def upload_file(self, file_path: str, filename: str):
         self.uploads.append({"file_path": file_path, "filename": filename})
@@ -25,11 +28,15 @@ class FakeLightRAGClient:
         return self.payload
 
     async def get_track_status(self, track_id: str):
-        return self.track_status_payload
+        return self.track_status_by_id.get(track_id, self.track_status_payload)
 
     async def reprocess_failed_documents(self):
         self.reprocess_failed_calls += 1
         return {"status": "reprocessing_started", "message": "reprocessing started", "track_id": ""}
+
+    async def health(self):
+        self.health_calls += 1
+        return self.health_payload
 
 
 class FakeLocalEmbeddingRuntime:
@@ -103,6 +110,139 @@ def test_process_pending_ingest_stores_lightrag_track_id(tmp_path):
     assert client.uploads == [{"file_path": doc["filepath"], "filename": "budget.pdf"}]
 
 
+def test_process_local_index_persists_content_and_reader_blocks(tmp_path):
+    service = _service(tmp_path)
+    doc = service.upload("budget.txt", BytesIO("预算审批\n\n合同金额 100 万".encode("utf-8")))
+
+    result = service.process_local_index(doc["id"])
+    refreshed = service.get_document(doc["id"])
+    content_record = service._content_repository().get(doc["id"])
+    reader_payload = service.get_reader_payload(doc["id"], query="预算")
+
+    assert result["local_index_status"] == "ready"
+    assert refreshed["local_index_status"] == "ready"
+    assert refreshed["extraction_status"] == "ready"
+    assert refreshed["full_content_length"] > 0
+    assert content_record["full_content"] == "预算审批\n\n合同金额 100 万"
+    assert reader_payload["blocks"]
+    assert reader_payload["total_matches"] == 1
+
+
+def test_list_documents_normalizes_legacy_status_fields_from_persisted_content(tmp_path):
+    service = _service(tmp_path)
+    repo = service._document_repository()
+    legacy_file = tmp_path / "doc" / "legacy.txt"
+    legacy_file.parent.mkdir(parents=True, exist_ok=True)
+    legacy_file.write_text("可浏览正文", encoding="utf-8")
+    repo.upsert(
+        {
+            "id": "legacy-1",
+            "filename": "legacy.txt",
+            "filepath": str(legacy_file),
+            "file_type": ".txt",
+            "ingest_status": None,
+            "local_index_status": None,
+            "preview_content": "",
+        }
+    )
+    service._content_repository().save(
+        "legacy-1",
+        full_content="可浏览正文",
+        preview_content="可浏览正文",
+        extraction_status="ready",
+        parser_name="txt",
+    )
+
+    page = service.list_documents(page=1, page_size=10)
+    item = page["items"][0]
+
+    assert item["ingest_status"] == "local_only"
+    assert item["local_index_status"] == "ready"
+    assert item["preview_content"] == "可浏览正文"
+
+
+def test_sync_pending_remote_status_preserves_original_sync_time_for_stale_detection(tmp_path):
+    client = FakeLightRAGClient()
+    client.track_status_by_id["track-old"] = {
+        "track_id": "track-old",
+        "documents": [
+            {
+                "id": "remote-doc-1",
+                "status": "pending",
+                "error_msg": "",
+            }
+        ],
+    }
+    service = _service(tmp_path, client=client)
+    doc = service.upload("budget.pdf", BytesIO(b"%PDF-1.4"))
+    original_sync_time = "2026-04-20T00:00:00"
+    service._update_ingest_status(
+        doc["id"],
+        ingest_status="queued",
+        ingest_error=None,
+        lightrag_track_id="track-old",
+        lightrag_doc_id="remote-doc-1",
+        last_status_sync_at=original_sync_time,
+    )
+
+    synced = service.get_document(doc["id"])
+
+    assert synced["ingest_status"] == "queued"
+    assert synced["last_status_sync_at"] == original_sync_time
+
+
+def test_sync_processing_remote_status_preserves_processing_start_time_for_stale_detection(tmp_path):
+    client = FakeLightRAGClient()
+    client.track_status_by_id["track-processing"] = {
+        "track_id": "track-processing",
+        "documents": [
+            {
+                "id": "remote-doc-1",
+                "status": "processing",
+                "error_msg": "",
+                "metadata": {"processing_start_time": 1776692925},
+            }
+        ],
+    }
+    service = _service(tmp_path, client=client)
+    doc = service.upload("budget.pdf", BytesIO(b"%PDF-1.4"))
+    original_sync_time = "2026-04-20T00:00:00"
+    service._update_ingest_status(
+        doc["id"],
+        ingest_status="processing",
+        ingest_error=None,
+        lightrag_track_id="track-processing",
+        lightrag_doc_id="remote-doc-1",
+        last_status_sync_at=original_sync_time,
+    )
+
+    synced = service.get_document(doc["id"])
+
+    assert synced["ingest_status"] == "processing"
+    assert synced["last_status_sync_at"] == original_sync_time
+
+
+def test_process_local_index_records_failure_without_breaking_lightrag_ingest(tmp_path):
+    client = FakeLightRAGClient({"status": "success", "track_id": "track-42", "message": "accepted"})
+    service = _service(tmp_path, client=client)
+    doc = service.upload("budget.pdf", BytesIO(b"%PDF-1.4"))
+
+    class BrokenExtractionService:
+        def extract(self, filepath):
+            raise RuntimeError("parser exploded")
+
+    service.extraction_service = BrokenExtractionService()
+
+    index_result = service.process_local_index(doc["id"])
+    ingest_result = asyncio.run(service.process_pending_ingest(doc["id"]))
+
+    assert index_result["local_index_status"] == "failed"
+    assert "parser exploded" in index_result["local_index_error"]
+    assert ingest_result["ingest_status"] == "processing"
+    assert ingest_result["lightrag_track_id"] == "track-42"
+    assert client.uploads == [{"file_path": doc["filepath"], "filename": "budget.pdf"}]
+
+
 def test_process_pending_ingest_fails_fast_when_local_embedding_unavailable(tmp_path):
     client = FakeLightRAGClient({"status": "success", "track_id": "track-42", "message": "accepted"})
     embedding_runtime = FakeLocalEmbeddingRuntime(error=RuntimeError("local embedding server unavailable"))
@@ -139,11 +279,26 @@ def test_process_pending_ingest_reprocesses_duplicate_failed_lightrag_document(t
     client = FakeLightRAGClient(
         {"status": "duplicated", "track_id": "old-track", "message": "File already exists"}
     )
-    client.track_status_payload = {
+    client.track_status_by_id["old-track"] = {
         "track_id": "old-track",
         "documents": [
             {
-                "id": "old-remote-doc",
+                "id": "dup-remote-doc",
+                "status": "failed",
+                "error_msg": "Content already exists. Original doc_id: original-doc-1",
+                "metadata": {
+                    "is_duplicate": True,
+                    "original_doc_id": "original-doc-1",
+                    "original_track_id": "original-track-1",
+                },
+            }
+        ],
+    }
+    client.track_status_by_id["original-track-1"] = {
+        "track_id": "original-track-1",
+        "documents": [
+            {
+                "id": "original-doc-1",
                 "status": "failed",
                 "error_msg": "old embedding failure",
             }
@@ -156,10 +311,12 @@ def test_process_pending_ingest_reprocesses_duplicate_failed_lightrag_document(t
     stored = service._document_repository().get(doc["id"])
 
     assert result["ingest_status"] == "processing"
-    assert result["lightrag_track_id"] == "old-track"
+    assert result["lightrag_track_id"] == "original-track-1"
+    assert result["lightrag_doc_id"] == "original-doc-1"
     assert result["ingest_error"] is None
     assert stored["ingest_status"] == "processing"
-    assert stored["lightrag_track_id"] == "old-track"
+    assert stored["lightrag_track_id"] == "original-track-1"
+    assert stored["lightrag_doc_id"] == "original-doc-1"
     assert client.reprocess_failed_calls == 1
 
 
@@ -232,6 +389,44 @@ def test_process_pending_ingest_accepts_local_only_documents(tmp_path):
     assert client.uploads == [{"file_path": str(local_file), "filename": "legacy.pdf"}]
 
 
+def test_upload_marks_lightrag_unsupported_types_as_local_only(tmp_path):
+    client = FakeLightRAGClient({"status": "success", "track_id": "image-track"})
+    service = _service(tmp_path, client=client)
+
+    doc = service.upload("diagram.png", BytesIO(b"\x89PNG\r\n\x1a\n"))
+
+    assert doc["ingest_status"] == "local_only"
+    assert doc["lightrag_track_id"] is None
+    assert client.uploads == []
+
+
+def test_process_pending_ingest_skips_lightrag_unsupported_local_only_documents(tmp_path):
+    client = FakeLightRAGClient({"status": "success", "track_id": "image-track"})
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+
+    image_path = tmp_path / "doc" / "image" / "diagram.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    repo.upsert(
+        {
+            "id": "image-1",
+            "filename": "diagram.png",
+            "filepath": str(image_path),
+            "file_type": ".png",
+            "ingest_status": "local_only",
+            "local_index_status": "ready",
+        }
+    )
+
+    result = asyncio.run(service.process_pending_ingest("image-1"))
+
+    assert result["ingest_status"] == "local_only"
+    assert result.get("ingest_error") is None
+    assert result.get("lightrag_track_id") is None
+    assert client.uploads == []
+
+
 def test_get_document_syncs_processing_ingest_status_from_lightrag_track_status(tmp_path):
     client = FakeLightRAGClient({"status": "success", "track_id": "track-42", "message": "accepted"})
     client.track_status_payload = {
@@ -260,6 +455,132 @@ def test_get_document_syncs_processing_ingest_status_from_lightrag_track_status(
     assert synced["ingest_error"] is None
     assert refreshed["ingest_status"] == "ready"
     assert refreshed["lightrag_doc_id"] == "doc-remote-1"
+
+
+def test_get_document_syncs_remote_pending_ingest_status_to_queued(tmp_path):
+    client = FakeLightRAGClient({"status": "success", "track_id": "track-42", "message": "accepted"})
+    client.track_status_payload = {
+        "track_id": "track-42",
+        "documents": [
+            {
+                "id": "doc-remote-1",
+                "status": "pending",
+                "track_id": "track-42",
+                "error_msg": None,
+                "file_path": "budget.pdf",
+            }
+        ],
+        "total_count": 1,
+        "status_summary": {"pending": 1},
+    }
+    service = _service(tmp_path, client=client)
+    doc = service.upload("budget.pdf", BytesIO(b"%PDF-1.4"))
+    asyncio.run(service.process_pending_ingest(doc["id"]))
+
+    synced = service.get_document(doc["id"])
+    refreshed = service._document_repository().get(doc["id"])
+
+    assert synced["ingest_status"] == "queued"
+    assert synced["lightrag_doc_id"] == "doc-remote-1"
+    assert synced["ingest_error"] is None
+    assert refreshed["ingest_status"] == "queued"
+
+
+def test_get_document_syncs_duplicate_failed_ingest_to_original_pending_track(tmp_path):
+    client = FakeLightRAGClient()
+    client.track_status_by_id["dup-track-1"] = {
+        "track_id": "dup-track-1",
+        "documents": [
+            {
+                "id": "dup-remote-doc",
+                "status": "failed",
+                "track_id": "dup-track-1",
+                "error_msg": "Content already exists. Original doc_id: original-doc-1",
+                "metadata": {
+                    "is_duplicate": True,
+                    "original_doc_id": "original-doc-1",
+                    "original_track_id": "original-track-1",
+                },
+            }
+        ],
+        "total_count": 1,
+        "status_summary": {"failed": 1},
+    }
+    client.track_status_by_id["original-track-1"] = {
+        "track_id": "original-track-1",
+        "documents": [
+            {
+                "id": "original-doc-1",
+                "status": "pending",
+                "track_id": "original-track-1",
+                "error_msg": None,
+                "file_path": "budget.pdf",
+            }
+        ],
+        "total_count": 1,
+        "status_summary": {"pending": 1},
+    }
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+    file_path = tmp_path / "doc" / "pdf" / "budget.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"%PDF-1.4")
+    repo.upsert(
+        {
+            "id": "doc-1",
+            "filename": "budget.pdf",
+            "filepath": str(file_path),
+            "file_type": ".pdf",
+            "ingest_status": "failed",
+            "ingest_error": "Content already exists. Original doc_id: original-doc-1",
+            "lightrag_track_id": "dup-track-1",
+            "lightrag_doc_id": "dup-remote-doc",
+        }
+    )
+
+    synced = service.get_document("doc-1")
+    refreshed = repo.get("doc-1")
+
+    assert synced["ingest_status"] == "queued"
+    assert synced["ingest_error"] is None
+    assert synced["lightrag_track_id"] == "original-track-1"
+    assert synced["lightrag_doc_id"] == "original-doc-1"
+    assert refreshed["ingest_status"] == "queued"
+    assert refreshed["lightrag_track_id"] == "original-track-1"
+    assert refreshed["lightrag_doc_id"] == "original-doc-1"
+
+
+def test_get_document_normalizes_unsupported_lightrag_failures_to_local_only(tmp_path):
+    client = FakeLightRAGClient()
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+    file_path = tmp_path / "doc" / "image" / "diagram.webp"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"RIFF")
+    repo.upsert(
+        {
+            "id": "doc-1",
+            "filename": "diagram.webp",
+            "filepath": str(file_path),
+            "file_type": ".webp",
+            "ingest_status": "failed",
+            "ingest_error": "LightRAG returned 400: Unsupported file type. Supported types: ('.pdf')",
+            "lightrag_track_id": "stale-track",
+            "lightrag_doc_id": "stale-doc",
+            "local_index_status": "ready",
+        }
+    )
+
+    synced = service.get_document("doc-1")
+    refreshed = repo.get("doc-1")
+
+    assert synced["ingest_status"] == "local_only"
+    assert synced["ingest_error"] is None
+    assert synced["lightrag_track_id"] is None
+    assert synced["lightrag_doc_id"] is None
+    assert refreshed["ingest_status"] == "local_only"
+    assert refreshed["lightrag_track_id"] is None
+    assert refreshed["lightrag_doc_id"] is None
 
 
 def test_get_document_syncs_failed_ingest_status_to_ready_when_remote_processed(tmp_path):
@@ -347,6 +668,150 @@ def test_get_document_syncs_failed_ingest_error_when_remote_failed_with_new_deta
     assert refreshed["ingest_error"] == "LLM func: Worker execution timeout after 360s"
 
 
+def test_get_document_downgrades_whitespace_extraction_failure_to_local_only_when_local_content_ready(tmp_path):
+    client = FakeLightRAGClient()
+    client.track_status_payload = {
+        "track_id": "track-42",
+        "documents": [
+            {
+                "id": "error-remote-1",
+                "status": "failed",
+                "track_id": "track-42",
+                "error_msg": "File content contains only whitespace characters",
+                "file_path": "scanned.pdf",
+            }
+        ],
+        "total_count": 1,
+        "status_summary": {"failed": 1},
+    }
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+    file_path = tmp_path / "doc" / "pdf" / "scanned.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"%PDF-1.4")
+    repo.upsert(
+        {
+            "id": "doc-1",
+            "filename": "scanned.pdf",
+            "filepath": str(file_path),
+            "file_type": ".pdf",
+            "ingest_status": "failed",
+            "ingest_error": "File content contains only whitespace characters",
+            "lightrag_track_id": "track-42",
+            "lightrag_doc_id": "error-remote-1",
+            "local_index_status": "ready",
+            "extraction_status": "ready",
+        }
+    )
+    service._content_repository().save(
+        "doc-1",
+        full_content="扫描文档正文",
+        preview_content="扫描文档正文",
+        extraction_status="ready",
+        parser_name="pdf",
+    )
+
+    synced = service.get_document("doc-1")
+    refreshed = repo.get("doc-1")
+
+    assert synced["ingest_status"] == "local_only"
+    assert synced["ingest_error"] == "File content contains only whitespace characters"
+    assert synced["lightrag_track_id"] == "track-42"
+    assert synced["lightrag_doc_id"] == "error-remote-1"
+    assert refreshed["ingest_status"] == "local_only"
+    assert refreshed["ingest_error"] == "File content contains only whitespace characters"
+
+
+def test_get_document_requests_reprocess_for_stale_remote_pending_when_pipeline_idle(tmp_path):
+    client = FakeLightRAGClient()
+    client.track_status_payload = {
+        "track_id": "track-42",
+        "documents": [
+            {
+                "id": "doc-remote-1",
+                "status": "pending",
+                "track_id": "track-42",
+                "error_msg": None,
+                "metadata": {"processing_start_time": 1710000000},
+                "file_path": "budget.pdf",
+            }
+        ],
+        "total_count": 1,
+        "status_summary": {"pending": 1},
+    }
+    client.health_payload = {"status": "healthy", "pipeline_busy": False}
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+    file_path = tmp_path / "doc" / "pdf" / "budget.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"%PDF-1.4")
+    repo.upsert(
+        {
+            "id": "doc-1",
+            "filename": "budget.pdf",
+            "filepath": str(file_path),
+            "file_type": ".pdf",
+            "ingest_status": "queued",
+            "ingest_error": None,
+            "lightrag_track_id": "track-42",
+            "last_status_sync_at": "2026-04-19T00:00:00",
+        }
+    )
+
+    synced = service.get_document("doc-1")
+    refreshed = repo.get("doc-1")
+
+    assert synced["ingest_status"] == "queued"
+    assert refreshed["ingest_status"] == "queued"
+    assert client.health_calls == 1
+    assert client.reprocess_failed_calls == 1
+
+
+def test_get_document_does_not_reprocess_pending_when_pipeline_busy(tmp_path):
+    client = FakeLightRAGClient()
+    client.track_status_payload = {
+        "track_id": "track-42",
+        "documents": [
+            {
+                "id": "doc-remote-1",
+                "status": "pending",
+                "track_id": "track-42",
+                "error_msg": None,
+                "metadata": {"processing_start_time": 1710000000},
+                "file_path": "budget.pdf",
+            }
+        ],
+        "total_count": 1,
+        "status_summary": {"pending": 1},
+    }
+    client.health_payload = {"status": "healthy", "pipeline_busy": True}
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+    file_path = tmp_path / "doc" / "pdf" / "budget.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"%PDF-1.4")
+    repo.upsert(
+        {
+            "id": "doc-1",
+            "filename": "budget.pdf",
+            "filepath": str(file_path),
+            "file_type": ".pdf",
+            "ingest_status": "queued",
+            "ingest_error": None,
+            "lightrag_track_id": "track-42",
+            "last_status_sync_at": "2026-04-19T00:00:00",
+        }
+    )
+
+    synced = service.get_document("doc-1")
+    refreshed = repo.get("doc-1")
+
+    assert synced["ingest_status"] == "queued"
+    assert refreshed["ingest_status"] == "queued"
+    assert client.health_calls == 1
+    assert client.reprocess_failed_calls == 0
+
+
 def test_run_local_only_batch_import_throttles_concurrency_and_updates_status(tmp_path):
     class SlowLightRAGClient:
         def __init__(self):
@@ -416,3 +881,58 @@ def test_run_local_only_batch_import_throttles_concurrency_and_updates_status(tm
     assert refreshed_docs["local-0"]["ingest_status"] == "processing"
     assert refreshed_docs["local-1"]["ingest_status"] == "processing"
     assert refreshed_docs["local-2"]["ingest_status"] == "processing"
+
+
+def test_recover_stale_lightrag_queue_triggers_when_pipeline_idle(tmp_path):
+    client = FakeLightRAGClient()
+    client.health_payload = {"status": "healthy", "pipeline_busy": False}
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+    file_path = tmp_path / "doc" / "pdf" / "budget.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"%PDF-1.4")
+    repo.upsert(
+        {
+            "id": "doc-1",
+            "filename": "budget.pdf",
+            "filepath": str(file_path),
+            "file_type": ".pdf",
+            "ingest_status": "queued",
+            "lightrag_track_id": "track-42",
+        }
+    )
+
+    payload = service.recover_stale_lightrag_queue()
+
+    assert payload["status"] == "triggered"
+    assert payload["triggered"] is True
+    assert payload["pending_documents"] == 1
+    assert client.reprocess_failed_calls == 1
+
+
+def test_recover_stale_lightrag_queue_skips_when_pipeline_busy(tmp_path):
+    client = FakeLightRAGClient()
+    client.health_payload = {"status": "healthy", "pipeline_busy": True}
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+    file_path = tmp_path / "doc" / "pdf" / "budget.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"%PDF-1.4")
+    repo.upsert(
+        {
+            "id": "doc-1",
+            "filename": "budget.pdf",
+            "filepath": str(file_path),
+            "file_type": ".pdf",
+            "ingest_status": "queued",
+            "lightrag_track_id": "track-42",
+        }
+    )
+
+    payload = service.recover_stale_lightrag_queue()
+
+    assert payload["status"] == "skipped"
+    assert payload["triggered"] is False
+    assert payload["pending_documents"] == 1
+    assert payload["pipeline_busy"] is True
+    assert client.reprocess_failed_calls == 0

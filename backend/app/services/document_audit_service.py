@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,13 @@ class DocumentAuditService:
             for item in documents
             if isinstance(item, dict) and item.get("filepath")
         }
+        tracked_content_hashes = {
+            content_hash
+            for item in documents
+            if isinstance(item, dict)
+            for content_hash in [self._compute_file_hash(item.get("filepath", ""))]
+            if content_hash
+        }
         local_files = self._list_local_files()
         legacy_json_documents = self._list_legacy_json_documents()
         missing_file_documents = [
@@ -49,7 +57,16 @@ class DocumentAuditService:
             for item in documents
             if isinstance(item, dict) and (item.get("ingest_status") or "").lower() in {"queued", "processing"}
         ]
-        untracked_local_files = sorted(path for path in local_files if path not in document_paths)
+        untracked_local_files = []
+        ignored_duplicate_local_files = []
+        for path in local_files:
+            if path in document_paths:
+                continue
+            file_hash = self._compute_file_hash(path)
+            if file_hash and file_hash in tracked_content_hashes:
+                ignored_duplicate_local_files.append(path)
+                continue
+            untracked_local_files.append(path)
 
         try:
             lightrag = await self.lightrag_client.health()
@@ -67,7 +84,8 @@ class DocumentAuditService:
             "legacy_json_documents": len(legacy_json_documents),
             "pending_ingest_documents": len(pending_ingest_documents),
             "missing_file_documents": len(missing_file_documents),
-            "untracked_local_files": untracked_local_files,
+            "untracked_local_files": sorted(untracked_local_files),
+            "ignored_duplicate_local_files": sorted(ignored_duplicate_local_files),
             "lightrag": lightrag,
             "local_embedding": local_embedding,
         }
@@ -79,12 +97,22 @@ class DocumentAuditService:
             for item in documents
             if isinstance(item, dict) and item.get("filepath")
         }
+        tracked_content_hashes = {
+            content_hash
+            for item in documents
+            if isinstance(item, dict)
+            for content_hash in [self._compute_file_hash(item.get("filepath", ""))]
+            if content_hash
+        }
         self._remove_duplicate_local_only_documents(documents)
 
         created = 0
         for file_path in self._iter_business_files():
             resolved = str(file_path.resolve())
             if resolved in tracked_paths:
+                continue
+            file_hash = self._compute_file_hash(resolved)
+            if file_hash and file_hash in tracked_content_hashes:
                 continue
 
             mtime = file_path.stat().st_mtime
@@ -108,14 +136,15 @@ class DocumentAuditService:
             }
             if self.document_repository.upsert(payload):
                 tracked_paths.add(resolved)
+                if file_hash:
+                    tracked_content_hashes.add(file_hash)
                 created += 1
         return created
 
     def _remove_duplicate_local_only_documents(self, documents: List[Dict]) -> None:
+        content_hash_owners: dict[str, str] = {}
         for item in documents:
             if not isinstance(item, dict):
-                continue
-            if str(item.get("ingest_status") or "").lower() != "local_only":
                 continue
             document_id = str(item.get("id") or "").strip()
             filepath = str(item.get("filepath") or "").strip()
@@ -125,8 +154,25 @@ class DocumentAuditService:
                 resolved = str(Path(filepath).resolve())
             except Exception:
                 continue
-            if self._is_lightrag_shadow_file(Path(resolved)):
+            ingest_status = str(item.get("ingest_status") or "").lower()
+            if ingest_status == "local_only" and self._is_lightrag_shadow_file(Path(resolved)):
                 self.document_repository.delete(document_id)
+                continue
+
+            file_hash = self._compute_file_hash(resolved)
+            if not file_hash:
+                continue
+
+            if ingest_status != "local_only":
+                content_hash_owners.setdefault(file_hash, document_id)
+                continue
+
+            owner_id = content_hash_owners.get(file_hash)
+            if owner_id and owner_id != document_id:
+                self.document_repository.delete(document_id)
+                continue
+
+            content_hash_owners.setdefault(file_hash, document_id)
 
     def _list_local_files(self) -> List[str]:
         results: List[str] = []
@@ -168,6 +214,22 @@ class DocumentAuditService:
             return Path(value).exists()
         except Exception:
             return False
+
+    @staticmethod
+    def _compute_file_hash(value: str) -> str:
+        if not value:
+            return ""
+        try:
+            path = Path(value)
+            if not path.exists() or not path.is_file():
+                return ""
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except Exception:
+            return ""
 
     def _should_ignore_local_file(self, path: Path) -> bool:
         normalized = str(path.resolve())

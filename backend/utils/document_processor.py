@@ -354,6 +354,8 @@ def process_pdf(filepath):
         # 核心：检测到扫描版时，自动调用MinerU
         if not content or len('\n'.join(content)) < 100:
             logger.warning(f"PDF文本提取量极少，判定为扫描版，切换至MinerU OCR：{filepath}")
+            if os.getenv("DOCAGENT_ENABLE_LOCAL_OCR", "false").strip().lower() != "true":
+                return "扫描版PDF需要OCR，本地快速索引已跳过；请使用 LightRAG/MinerU 入库或设置 DOCAGENT_ENABLE_LOCAL_OCR=true 后重试。"
             success, ocr_content = process_scanned_pdf_with_mineru(filepath)
             if success:
                 return ocr_content

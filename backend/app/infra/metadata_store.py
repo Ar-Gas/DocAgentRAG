@@ -11,6 +11,8 @@ from app.core.logger import logger
 from app.core.database import connect_sqlite
 from config import DATA_DIR
 
+INGEST_FIELD_UNSET = object()
+
 
 class DocumentMetadataStore:
     """SQLite-backed metadata store."""
@@ -43,15 +45,23 @@ class DocumentMetadataStore:
                         file_type TEXT,
                         classification_result TEXT,
                         classification_id TEXT,
+                        classification_leaf_id TEXT,
                         classification_path TEXT,
+                        classification_domain TEXT,
                         classification_score REAL,
+                        classification_confidence REAL,
                         classification_source TEXT,
                         classification_candidates TEXT,
+                        classification_review_status TEXT,
+                        classification_issue_code TEXT,
+                        taxonomy_version TEXT DEFAULT 'taxonomy_v1',
                         ingest_status TEXT,
                         ingest_error TEXT,
                         lightrag_track_id TEXT,
                         lightrag_doc_id TEXT,
                         last_status_sync_at TEXT,
+                        local_index_status TEXT,
+                        local_index_error TEXT,
                         created_at REAL,
                         created_at_iso TEXT,
                         updated_at TEXT,
@@ -129,6 +139,25 @@ class DocumentMetadataStore:
                 )
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_classification_tables_updated_at ON classification_tables(updated_at)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS document_processing_stages (
+                        document_id TEXT NOT NULL,
+                        stage_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        error_code TEXT,
+                        error_message TEXT,
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        payload TEXT NOT NULL,
+                        started_at TEXT,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (document_id, stage_name)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_document_processing_stages_status ON document_processing_stages(stage_name, status)"
                 )
 
                 # ====== PHASE 1 新增：RAG 相关表 ======
@@ -217,15 +246,23 @@ class DocumentMetadataStore:
                     "ALTER TABLE documents ADD COLUMN error_message TEXT",
                     "ALTER TABLE documents ADD COLUMN retry_count INTEGER DEFAULT 0",
                     "ALTER TABLE documents ADD COLUMN classification_id TEXT",
+                    "ALTER TABLE documents ADD COLUMN classification_leaf_id TEXT",
                     "ALTER TABLE documents ADD COLUMN classification_path TEXT",
+                    "ALTER TABLE documents ADD COLUMN classification_domain TEXT",
                     "ALTER TABLE documents ADD COLUMN classification_score REAL",
+                    "ALTER TABLE documents ADD COLUMN classification_confidence REAL",
                     "ALTER TABLE documents ADD COLUMN classification_source TEXT",
                     "ALTER TABLE documents ADD COLUMN classification_candidates TEXT",
+                    "ALTER TABLE documents ADD COLUMN classification_review_status TEXT",
+                    "ALTER TABLE documents ADD COLUMN classification_issue_code TEXT",
+                    "ALTER TABLE documents ADD COLUMN taxonomy_version TEXT DEFAULT 'taxonomy_v1'",
                     "ALTER TABLE documents ADD COLUMN ingest_status TEXT",
                     "ALTER TABLE documents ADD COLUMN ingest_error TEXT",
                     "ALTER TABLE documents ADD COLUMN lightrag_track_id TEXT",
                     "ALTER TABLE documents ADD COLUMN lightrag_doc_id TEXT",
                     "ALTER TABLE documents ADD COLUMN last_status_sync_at TEXT",
+                    "ALTER TABLE documents ADD COLUMN local_index_status TEXT",
+                    "ALTER TABLE documents ADD COLUMN local_index_error TEXT",
                 ]:
                     try:
                         connection.execute(_col_sql)
@@ -237,6 +274,12 @@ class DocumentMetadataStore:
 
     def _serialize_doc(self, doc_info: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(doc_info)
+        classification_path = payload.get("classification_path")
+        if isinstance(classification_path, (list, dict)):
+            classification_path = json.dumps(classification_path, ensure_ascii=False)
+        classification_candidates = payload.get("classification_candidates")
+        if isinstance(classification_candidates, (list, dict)):
+            classification_candidates = json.dumps(classification_candidates, ensure_ascii=False)
         return {
             "id": payload["id"],
             "filename": payload.get("filename", ""),
@@ -244,15 +287,23 @@ class DocumentMetadataStore:
             "file_type": payload.get("file_type", ""),
             "classification_result": payload.get("classification_result"),
             "classification_id": payload.get("classification_id"),
-            "classification_path": payload.get("classification_path"),
+            "classification_leaf_id": payload.get("classification_leaf_id"),
+            "classification_path": classification_path,
+            "classification_domain": payload.get("classification_domain"),
             "classification_score": payload.get("classification_score"),
+            "classification_confidence": float(payload.get("classification_confidence") or 0.0),
             "classification_source": payload.get("classification_source"),
-            "classification_candidates": payload.get("classification_candidates"),
+            "classification_candidates": classification_candidates,
+            "classification_review_status": payload.get("classification_review_status"),
+            "classification_issue_code": payload.get("classification_issue_code"),
+            "taxonomy_version": payload.get("taxonomy_version") or "taxonomy_v1",
             "ingest_status": payload.get("ingest_status"),
             "ingest_error": payload.get("ingest_error"),
             "lightrag_track_id": payload.get("lightrag_track_id"),
             "lightrag_doc_id": payload.get("lightrag_doc_id"),
             "last_status_sync_at": payload.get("last_status_sync_at"),
+            "local_index_status": payload.get("local_index_status"),
+            "local_index_error": payload.get("local_index_error"),
             "created_at": payload.get("created_at"),
             "created_at_iso": payload.get("created_at_iso"),
             "updated_at": payload.get("updated_at"),
@@ -269,26 +320,36 @@ class DocumentMetadataStore:
                 """
                 INSERT INTO documents (
                     id, filename, filepath, file_type, classification_result,
-                    classification_id, classification_path, classification_score, classification_source,
-                    classification_candidates, ingest_status, ingest_error, lightrag_track_id,
-                    lightrag_doc_id, last_status_sync_at,
+                    classification_id, classification_leaf_id, classification_path, classification_domain,
+                    classification_score, classification_confidence, classification_source,
+                    classification_candidates, classification_review_status, classification_issue_code, taxonomy_version,
+                    ingest_status, ingest_error, lightrag_track_id,
+                    lightrag_doc_id, last_status_sync_at, local_index_status, local_index_error,
                     created_at, created_at_iso, updated_at, payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     filename = excluded.filename,
                     filepath = excluded.filepath,
                     file_type = excluded.file_type,
                     classification_result = excluded.classification_result,
                     classification_id = excluded.classification_id,
+                    classification_leaf_id = excluded.classification_leaf_id,
                     classification_path = excluded.classification_path,
+                    classification_domain = excluded.classification_domain,
                     classification_score = excluded.classification_score,
+                    classification_confidence = excluded.classification_confidence,
                     classification_source = excluded.classification_source,
                     classification_candidates = excluded.classification_candidates,
+                    classification_review_status = excluded.classification_review_status,
+                    classification_issue_code = excluded.classification_issue_code,
+                    taxonomy_version = excluded.taxonomy_version,
                     ingest_status = excluded.ingest_status,
                     ingest_error = excluded.ingest_error,
                     lightrag_track_id = excluded.lightrag_track_id,
                     lightrag_doc_id = excluded.lightrag_doc_id,
                     last_status_sync_at = excluded.last_status_sync_at,
+                    local_index_status = excluded.local_index_status,
+                    local_index_error = excluded.local_index_error,
                     created_at = excluded.created_at,
                     created_at_iso = excluded.created_at_iso,
                     updated_at = excluded.updated_at,
@@ -301,15 +362,23 @@ class DocumentMetadataStore:
                     payload["file_type"],
                     payload["classification_result"],
                     payload["classification_id"],
+                    payload["classification_leaf_id"],
                     payload["classification_path"],
+                    payload["classification_domain"],
                     payload["classification_score"],
+                    payload["classification_confidence"],
                     payload["classification_source"],
                     payload["classification_candidates"],
+                    payload["classification_review_status"],
+                    payload["classification_issue_code"],
+                    payload["taxonomy_version"],
                     payload["ingest_status"],
                     payload["ingest_error"],
                     payload["lightrag_track_id"],
                     payload["lightrag_doc_id"],
                     payload["last_status_sync_at"],
+                    payload["local_index_status"],
+                    payload["local_index_error"],
                     payload["created_at"],
                     payload["created_at_iso"],
                     payload["updated_at"],
@@ -421,8 +490,8 @@ class DocumentMetadataStore:
         *,
         ingest_status: str,
         ingest_error: Optional[str] = None,
-        lightrag_track_id: Optional[str] = None,
-        lightrag_doc_id: Optional[str] = None,
+        lightrag_track_id: Optional[str] | object = INGEST_FIELD_UNSET,
+        lightrag_doc_id: Optional[str] | object = INGEST_FIELD_UNSET,
         last_status_sync_at: Optional[str] = None,
     ) -> bool:
         current = self.get_document(document_id)
@@ -435,15 +504,98 @@ class DocumentMetadataStore:
             "ingest_error": ingest_error,
             "updated_at": now,
         }
-        if lightrag_track_id is not None:
+        if lightrag_track_id is not INGEST_FIELD_UNSET:
             updates["lightrag_track_id"] = lightrag_track_id
-        if lightrag_doc_id is not None:
+        if lightrag_doc_id is not INGEST_FIELD_UNSET:
             updates["lightrag_doc_id"] = lightrag_doc_id
         if last_status_sync_at is not None:
             updates["last_status_sync_at"] = last_status_sync_at
 
         current.update(updates)
         return self.upsert_document(current)
+
+    def upsert_document_stage(
+        self,
+        document_id: str,
+        stage_name: str,
+        *,
+        status: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        retry_count: int = 0,
+        payload: dict | None = None,
+        started_at: str | None = None,
+    ) -> bool:
+        if not document_id or not stage_name:
+            return False
+
+        now = datetime.now().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO document_processing_stages (
+                    document_id, stage_name, status, error_code, error_message,
+                    retry_count, payload, started_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(document_id, stage_name) DO UPDATE SET
+                    status = excluded.status,
+                    error_code = excluded.error_code,
+                    error_message = excluded.error_message,
+                    retry_count = excluded.retry_count,
+                    payload = excluded.payload,
+                    started_at = COALESCE(document_processing_stages.started_at, excluded.started_at),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    document_id,
+                    stage_name,
+                    status,
+                    error_code,
+                    error_message,
+                    int(retry_count),
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    started_at or now,
+                    now,
+                ),
+            )
+            connection.commit()
+        return True
+
+    def list_document_stages(self, document_id: str) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    document_id,
+                    stage_name,
+                    status,
+                    error_code,
+                    error_message,
+                    retry_count,
+                    payload,
+                    started_at,
+                    updated_at
+                FROM document_processing_stages
+                WHERE document_id = ?
+                ORDER BY stage_name
+                """,
+                (document_id,),
+            ).fetchall()
+
+        return [
+            {
+                "document_id": row["document_id"],
+                "stage_name": row["stage_name"],
+                "status": row["status"],
+                "error_code": row["error_code"],
+                "error_message": row["error_message"],
+                "retry_count": int(row["retry_count"] or 0),
+                "payload": json.loads(row["payload"] or "{}"),
+                "started_at": row["started_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
 
     def save_artifact(self, name: str, payload: Dict[str, Any]) -> bool:
         now = datetime.now().isoformat()

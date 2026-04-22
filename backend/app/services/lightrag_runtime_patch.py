@@ -145,10 +145,15 @@ def build_extract_entities_config(
 ) -> dict[str, Any]:
     updated = dict(global_config or {})
     if isinstance(chunk_profile, dict) and chunk_profile.get("enabled"):
-        updated["llm_model_max_async"] = _safe_positive_int(
+        profile_max_async = _safe_positive_int(
             str(chunk_profile.get("chunk_max_async")),
             int(updated.get("llm_model_max_async", 4) or 4),
         )
+        global_max_async = _safe_positive_int(
+            str(updated.get("llm_model_max_async")),
+            profile_max_async,
+        )
+        updated["llm_model_max_async"] = min(global_max_async, profile_max_async)
     return updated
 
 

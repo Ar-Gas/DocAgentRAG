@@ -13,7 +13,7 @@
         </div>
         <div class="metric-divider"></div>
         <div class="metric-item">
-          <span>已向量化</span>
+          <span>本地可检索</span>
           <strong>{{ stats.vector_indexed_documents || 0 }}</strong>
         </div>
       </div>

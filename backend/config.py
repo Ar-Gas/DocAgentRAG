@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 from typing import Set, Dict
 
@@ -25,8 +26,21 @@ def _get_secret_or_env(name: str, default: str) -> str:
 
 
 MODEL_DIR = Path(_get_secret_or_env("MODEL_DIR", str(BASE_DIR / "models")))
-BGE_MODEL = _get_secret_or_env("BGE_MODEL", str(MODEL_DIR / "BAAI" / "bge-m3"))
+
+
+def _infer_embedding_dim(model_path: str, default: int = 384) -> int:
+    config_path = Path(model_path) / "config.json"
+    try:
+        config_payload = json.loads(config_path.read_text(encoding="utf-8"))
+        hidden_size = int(config_payload.get("hidden_size") or 0)
+        return hidden_size or default
+    except Exception:
+        return default
+
+
+BGE_MODEL = _get_secret_or_env("BGE_MODEL", str(MODEL_DIR / "all-MiniLM-L6-v2"))
 LOCAL_EMBEDDING_MODEL_NAME = Path(BGE_MODEL).name or "bge-m3"
+LOCAL_EMBEDDING_DIM = int(_get_secret_or_env("LOCAL_EMBEDDING_DIM", str(_infer_embedding_dim(BGE_MODEL))))
 LOCAL_EMBEDDING_HOST = _get_secret_or_env("LOCAL_EMBEDDING_HOST", "127.0.0.1")
 LOCAL_EMBEDDING_PORT = int(_get_secret_or_env("LOCAL_EMBEDDING_PORT", "8011"))
 LOCAL_EMBEDDING_BASE_URL = _get_secret_or_env(
@@ -62,6 +76,16 @@ LIGHTRAG_BASE_URL = _get_secret_or_env("LIGHTRAG_BASE_URL", "http://127.0.0.1:96
 LIGHTRAG_API_KEY = _get_secret_or_env("LIGHTRAG_API_KEY", "")
 LIGHTRAG_TIMEOUT_SECONDS = float(_get_secret_or_env("LIGHTRAG_TIMEOUT_SECONDS", "30"))
 LIGHTRAG_ENABLED = _get_secret_or_env("LIGHTRAG_ENABLED", "true").strip().lower() == "true"
+LIGHTRAG_AUTO_START = (
+    _get_secret_or_env("LIGHTRAG_AUTO_START", "true").strip().lower() == "true"
+)
+LIGHTRAG_HEALTH_TIMEOUT_SECONDS = float(
+    _get_secret_or_env("LIGHTRAG_HEALTH_TIMEOUT_SECONDS", "2")
+)
+LIGHTRAG_STARTUP_TIMEOUT_SECONDS = float(
+    _get_secret_or_env("LIGHTRAG_STARTUP_TIMEOUT_SECONDS", "60")
+)
+LIGHTRAG_ENV_PATH = _get_secret_or_env("LIGHTRAG_ENV_PATH", str(BASE_DIR / "lightrag.env"))
 
 # LLM Gateway 配置（自动从环境变量读取）
 SEMANTIC_CACHE_ENABLED = os.getenv("SEMANTIC_CACHE_ENABLED", "true").lower() == "true"

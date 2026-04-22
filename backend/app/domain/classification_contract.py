@@ -59,6 +59,18 @@ NOISE_PATTERNS = (
     r"^[-\s\d第页]+$",
 )
 
+FORMAL_LABEL_EXACT_ALLOWLIST = {
+    "办公文档",
+    "技术文档",
+    "图书资料",
+    "研究分析",
+    "需求文档",
+    "通用办公材料",
+    "通用技术文档",
+    "综合书籍",
+    "综合研究材料",
+}
+
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
@@ -122,6 +134,8 @@ def _is_contract_compliant_label(label: str) -> bool:
         return True
     if not (MIN_LABEL_LENGTH <= len(label) <= MAX_LABEL_LENGTH):
         return False
+    if label in FORMAL_LABEL_EXACT_ALLOWLIST:
+        return True
     if label in GENERIC_LABELS:
         return False
     if any(fragment in label for fragment in GENERIC_FRAGMENTS):

@@ -25,7 +25,7 @@
           <el-icon><DataBoard /></el-icon>
         </div>
         <div>
-          <p class="metric-label">向量分片</p>
+          <p class="metric-label">本地分片</p>
           <strong class="metric-value">{{ stats.total_chunks || 0 }}</strong>
         </div>
       </article>
@@ -141,7 +141,8 @@ import DocumentViewerModal from '@/components/DocumentViewerModal.vue'
 import { api } from '@/api'
 
 const recentDocs = ref([])
-const stats = ref({})
+const createEmptyStats = () => ({ total_chunks: 0, file_types: {} })
+const stats = ref(createEmptyStats())
 const viewerVisible = ref(false)
 const viewerDoc = ref(null)
 
@@ -161,11 +162,29 @@ const formatDate = (iso) => {
   return iso.replace('T', ' ').slice(0, 16)
 }
 
-onMounted(async () => {
-  const [docsRes, statsRes] = await Promise.all([api.getDocumentList(1, 20), api.getStats()])
-  recentDocs.value = docsRes.data?.items || []
-  totalDocuments.value = docsRes.data?.total || recentDocs.value.length
-  stats.value = statsRes.data || {}
+const loadRecentDocs = async () => {
+  try {
+    const docsRes = await api.getDocumentList(1, 20)
+    recentDocs.value = docsRes.data?.items || []
+    totalDocuments.value = docsRes.data?.total || recentDocs.value.length
+  } catch (_) {
+    recentDocs.value = []
+    totalDocuments.value = 0
+  }
+}
+
+const loadStats = async () => {
+  try {
+    const statsRes = await api.getStats()
+    stats.value = statsRes.data || createEmptyStats()
+  } catch (_) {
+    stats.value = createEmptyStats()
+  }
+}
+
+onMounted(() => {
+  loadRecentDocs()
+  loadStats()
 })
 </script>
 

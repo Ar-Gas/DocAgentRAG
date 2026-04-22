@@ -73,6 +73,7 @@ def test_document_audit_reports_metadata_files_and_runtime_health(tmp_path: Path
     assert payload["pending_ingest_documents"] == 1
     assert payload["missing_file_documents"] == 1
     assert payload["untracked_local_files"] == [str(untracked_file.resolve())]
+    assert payload["ignored_duplicate_local_files"] == []
     assert payload["lightrag"]["status"] == "healthy"
     assert payload["local_embedding"]["status"] == "healthy"
 
@@ -161,6 +162,45 @@ def test_register_local_only_documents_imports_untracked_business_files_but_skip
     assert docs[0]["filepath"] == str(business_file.resolve())
 
 
+def test_document_audit_ignores_duplicate_content_files_from_untracked_list(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    doc_dir = tmp_path / "doc"
+    classified_dir = tmp_path / "classified_docs"
+    (doc_dir / "pdf").mkdir(parents=True)
+    classified_dir.mkdir()
+    data_dir.mkdir()
+
+    tracked_file = doc_dir / "pdf" / "tracked.pdf"
+    tracked_file.write_bytes(b"%PDF-1.4 duplicate")
+    duplicate_file = classified_dir / "duplicate.pdf"
+    duplicate_file.write_bytes(b"%PDF-1.4 duplicate")
+
+    repo = DocumentRepository(db_path=tmp_path / "docagent.db", data_dir=data_dir)
+    repo.upsert(
+        {
+            "id": "doc-1",
+            "filename": "tracked.pdf",
+            "filepath": str(tracked_file.resolve()),
+            "file_type": ".pdf",
+            "ingest_status": "failed",
+        }
+    )
+
+    service = DocumentAuditService(
+        document_repository=repo,
+        data_dir=data_dir,
+        doc_dir=doc_dir,
+        classified_dir=classified_dir,
+        lightrag_client=FakeLightRAGClient(),
+        local_embedding_runtime=FakeLocalEmbeddingRuntime(),
+    )
+
+    payload = asyncio.run(service.audit())
+
+    assert payload["untracked_local_files"] == []
+    assert payload["ignored_duplicate_local_files"] == [str(duplicate_file.resolve())]
+
+
 def test_register_local_only_documents_skips_lightrag_enqueued_shadow_files(tmp_path: Path):
     data_dir = tmp_path / "data"
     doc_dir = tmp_path / "doc"
@@ -212,6 +252,97 @@ def test_register_local_only_documents_removes_existing_duplicate_local_only_rec
             "id": "local-only-1",
             "filename": "remote-doc.pdf",
             "filepath": str(mirrored_file.resolve()),
+            "file_type": ".pdf",
+            "ingest_status": "local_only",
+        }
+    )
+
+    service = DocumentAuditService(
+        document_repository=repo,
+        data_dir=data_dir,
+        doc_dir=doc_dir,
+        classified_dir=tmp_path / "classified_docs",
+        lightrag_client=FakeLightRAGClient(),
+        local_embedding_runtime=FakeLocalEmbeddingRuntime(),
+    )
+
+    created = service.register_local_only_documents()
+    docs = {item["id"]: item for item in repo.list_all()}
+
+    assert created == 0
+    assert "tracked-1" in docs
+    assert "local-only-1" not in docs
+
+
+def test_register_local_only_documents_skips_files_with_duplicate_content_hash(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    doc_dir = tmp_path / "doc"
+    (doc_dir / "pdf").mkdir(parents=True)
+    data_dir.mkdir()
+
+    existing_file = doc_dir / "pdf" / "existing.pdf"
+    existing_file.write_bytes(b"%PDF-1.4 duplicate")
+    duplicate_file = doc_dir / "duplicate.pdf"
+    duplicate_file.write_bytes(b"%PDF-1.4 duplicate")
+
+    repo = DocumentRepository(db_path=tmp_path / "docagent.db", data_dir=data_dir)
+    repo.upsert(
+        {
+            "id": "tracked-1",
+            "filename": "existing.pdf",
+            "filepath": str(existing_file.resolve()),
+            "file_type": ".pdf",
+            "ingest_status": "failed",
+            "lightrag_track_id": "track-1",
+            "lightrag_doc_id": "doc-1",
+        }
+    )
+
+    service = DocumentAuditService(
+        document_repository=repo,
+        data_dir=data_dir,
+        doc_dir=doc_dir,
+        classified_dir=tmp_path / "classified_docs",
+        lightrag_client=FakeLightRAGClient(),
+        local_embedding_runtime=FakeLocalEmbeddingRuntime(),
+    )
+
+    created = service.register_local_only_documents()
+    docs = repo.list_all()
+
+    assert created == 0
+    assert len(docs) == 1
+    assert docs[0]["filepath"] == str(existing_file.resolve())
+
+
+def test_register_local_only_documents_removes_existing_local_only_duplicate_by_content_hash(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    doc_dir = tmp_path / "doc"
+    (doc_dir / "pdf").mkdir(parents=True)
+    data_dir.mkdir()
+
+    existing_file = doc_dir / "pdf" / "existing.pdf"
+    existing_file.write_bytes(b"%PDF-1.4 duplicate")
+    duplicate_file = doc_dir / "duplicate.pdf"
+    duplicate_file.write_bytes(b"%PDF-1.4 duplicate")
+
+    repo = DocumentRepository(db_path=tmp_path / "docagent.db", data_dir=data_dir)
+    repo.upsert(
+        {
+            "id": "tracked-1",
+            "filename": "existing.pdf",
+            "filepath": str(existing_file.resolve()),
+            "file_type": ".pdf",
+            "ingest_status": "failed",
+            "lightrag_track_id": "track-1",
+            "lightrag_doc_id": "doc-1",
+        }
+    )
+    repo.upsert(
+        {
+            "id": "local-only-1",
+            "filename": "duplicate.pdf",
+            "filepath": str(duplicate_file.resolve()),
             "file_type": ".pdf",
             "ingest_status": "local_only",
         }

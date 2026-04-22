@@ -5,15 +5,26 @@
         <p class="section-label">Topic Graph</p>
         <h2 class="hero-title">查看文档中的主题连接与关系脉络</h2>
         <p class="hero-copy">
-          图谱视图把实体节点和文档关系聚合到一起，便于快速观察主题密度和主要连接。
+          图谱视图直接读取 LightRAG 知识图谱，便于快速观察实体关系、主题密度和主要连接。
         </p>
       </div>
       <div class="hero-actions">
+        <select v-model="selectedLabel" class="label-select" @change="loadGraph">
+          <option value="">选择 LightRAG 图谱标签</option>
+          <option
+            v-for="label in graphLabels"
+            :key="label"
+            :value="label"
+          >
+            {{ label }}
+          </option>
+        </select>
         <input
           v-model.trim="docFilter"
           type="text"
           class="filter-input"
-          placeholder="按文档 ID 过滤，例如 doc-1"
+          placeholder="文档过滤暂未开放，当前统一展示 LightRAG 图谱"
+          disabled
           @keyup.enter="loadGraph"
         />
         <button type="button" class="refresh-btn" @click="loadGraph">
@@ -43,9 +54,9 @@
 
         <p v-if="error" class="error-copy">{{ error }}</p>
         <div v-else-if="showArchitectureHint" class="graph-hint">
-          <strong>当前知识图谱仍依赖本地 KG 索引。</strong>
+          <strong>当前 LightRAG 图谱暂无可展示数据。</strong>
           <p>
-            现有文档虽然已进入文档系统或 LightRAG，但尚未同步到本地图谱三元组表，所以这里暂时没有可展示的关系数据。
+            请先在 LightRAG 中完成文档入库与实体关系抽取，然后再返回这里查看统一图谱。
           </p>
         </div>
         <p v-else-if="loading" class="detail-copy">图谱加载中...</p>
@@ -78,6 +89,8 @@ import { api } from '@/api'
 const nodes = ref([])
 const edges = ref([])
 const selectedNodeId = ref('')
+const graphLabels = ref([])
+const selectedLabel = ref('')
 const docFilter = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -112,12 +125,24 @@ const describeEdge = (edge) => (
   `${findNodeLabel(edge.from)} ${edge.label} ${findNodeLabel(edge.to)}`
 )
 
+const loadGraphLabels = async () => {
+  const response = await api.getGraphLabels()
+  graphLabels.value = response.data?.items || []
+  if (!selectedLabel.value && graphLabels.value.length) {
+    selectedLabel.value = graphLabels.value[0]
+  }
+}
+
 const loadGraph = async () => {
   loading.value = true
   error.value = ''
 
   try {
-    const params = docFilter.value ? { doc_ids: [docFilter.value] } : {}
+    if (!graphLabels.value.length) {
+      await loadGraphLabels()
+    }
+
+    const params = selectedLabel.value ? { label: selectedLabel.value } : {}
     const response = await api.getGraph(params)
     nodes.value = response.data?.nodes || []
     edges.value = response.data?.edges || []
@@ -176,6 +201,7 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
+.label-select,
 .filter-input {
   min-width: 280px;
   border: 1px solid var(--line);
@@ -188,6 +214,12 @@ onMounted(() => {
     border-color: var(--blue-600);
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
   }
+}
+
+.filter-input:disabled {
+  background: #f8fafc;
+  color: var(--ink-light);
+  cursor: not-allowed;
 }
 
 .refresh-btn {

@@ -17,6 +17,9 @@ class ClassificationResponse(BaseModel):
     topic_label: Optional[str] = None
     topic_path: List[str] = Field(default_factory=list)
     classification_source: str = "topic_tree"
+    classification_leaf_id: Optional[str] = None
+    classification_domain: Optional[str] = None
+    taxonomy_version: str = "taxonomy_v1"
     old_classification: Optional[str] = None
     new_classification: Optional[str] = None
 
@@ -62,3 +65,11 @@ class ClassificationTableGenerateRequest(BaseModel):
 
 class ClassificationTableListRequest(BaseModel):
     limit: int = 50
+
+
+class BatchReclassifyRequest(BaseModel):
+    document_ids: List[str] = Field(default_factory=list)
+    issue_codes: List[str] = Field(default_factory=list)
+    taxonomy_versions: List[str] = Field(default_factory=list)
+    file_types: List[str] = Field(default_factory=list)
+    limit: int = 100

@@ -31,8 +31,16 @@
 
       <el-table-column label="入库状态" width="120">
         <template #default="{ row }">
-          <el-tag size="small" :type="getIngestStatusMeta(row.ingest_status).tone">
-            {{ getIngestStatusMeta(row.ingest_status).label }}
+          <el-tag size="small" :type="getIngestStatusMeta(row.ingest_status, row).tone">
+            {{ getIngestStatusMeta(row.ingest_status, row).label }}
+          </el-tag>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="本地索引" width="120">
+        <template #default="{ row }">
+          <el-tag size="small" :type="getLocalIndexStatusMeta(row.local_index_status, row).tone">
+            {{ getLocalIndexStatusMeta(row.local_index_status, row).label }}
           </el-tag>
         </template>
       </el-table-column>
@@ -48,8 +56,21 @@
             >
               {{ getClassificationSourceMeta(row.classification_source).label }}
             </span>
+            <span
+              v-if="getClassificationIssueMeta(row.classification_issue_code)"
+              class="classification-source-badge"
+              :class="`classification-source-badge--${getClassificationIssueMeta(row.classification_issue_code).tone}`"
+            >
+              {{ getClassificationIssueMeta(row.classification_issue_code).label }}
+            </span>
           </div>
-          <p v-if="row.ingest_error" class="ingest-error">{{ row.ingest_error }}</p>
+          <p
+            v-for="detail in getClassificationErrorDetails(row)"
+            :key="detail"
+            class="ingest-error"
+          >
+            {{ detail }}
+          </p>
         </template>
       </el-table-column>
 
@@ -120,6 +141,15 @@ const parseClassificationPath = (value) => {
 const getClassificationText = (row) => {
   const path = parseClassificationPath(row.classification_path)
   if (path.length) return path.join(' > ')
+  if (row.taxonomy_version === 'taxonomy_v3' && row.classification_result) {
+    return row.classification_result
+  }
+  if (row.classification_issue_code === 'pending_local_content') {
+    return '待本地索引'
+  }
+  if (row.classification_issue_code === 'no_match') {
+    return '未分类'
+  }
   return row.classification_result || '未分类'
 }
 
@@ -127,15 +157,28 @@ const getClassificationSourceMeta = (source) => {
   const dictionary = {
     llm: { label: 'AI', tone: 'ai' },
     llm_forced: { label: 'AI', tone: 'ai' },
+    llm_hierarchical: { label: 'AI', tone: 'ai' },
     keyword: { label: '关键词', tone: 'keyword' },
     keyword_forced: { label: '模板分类', tone: 'keyword' },
-    fallback: { label: '待确认', tone: 'fallback' },
-    pending_sync: { label: '待同步', tone: 'pending' }
+    pending_local_content: { label: '待本地索引', tone: 'pending' }
   }
   return dictionary[source] || null
 }
 
-const getIngestStatusMeta = (status) => {
+const getClassificationIssueMeta = (issueCode) => {
+  const dictionary = {
+    no_match: { label: '待复核', tone: 'fallback' },
+    pending_local_content: { label: '待本地索引', tone: 'pending' }
+  }
+  return dictionary[issueCode] || null
+}
+
+const getClassificationErrorDetails = (row) => {
+  return []
+}
+
+const getIngestStatusMeta = (status, row = {}) => {
+  const isLightragUnsupported = !['.pdf', '.docx', '.pptx', '.xlsx', '.txt'].includes((row.file_type || '').toLowerCase())
   const dictionary = {
     queued: { label: '待导入', tone: 'info' },
     local_only: { label: '待导入', tone: 'info' },
@@ -143,7 +186,30 @@ const getIngestStatusMeta = (status) => {
     ready: { label: '已入库', tone: 'success' },
     failed: { label: '失败', tone: 'danger' }
   }
-  return dictionary[status] || { label: '未知', tone: 'info' }
+  if (['queued', 'processing', 'local_only'].includes(status) && row.local_index_status === 'ready') {
+    return { label: '本地可用', tone: 'info' }
+  }
+  if (status === 'local_only' && row.local_index_status === 'ready' && isLightragUnsupported) {
+    return { label: '本地可用', tone: 'info' }
+  }
+  if (status === 'local_only' && row.local_index_status === 'ready' && row.ingest_error) {
+    return { label: '本地可用', tone: 'info' }
+  }
+  if (dictionary[status]) return dictionary[status]
+  if (row.file_available === true) return { label: '本地可用', tone: 'info' }
+  return { label: '未知', tone: 'info' }
+}
+
+const getLocalIndexStatusMeta = (status, row = {}) => {
+  const dictionary = {
+    queued: { label: '待索引', tone: 'info' },
+    processing: { label: '索引中', tone: 'warning' },
+    ready: { label: '可浏览', tone: 'success' },
+    failed: { label: '失败', tone: 'danger' }
+  }
+  if (dictionary[status]) return dictionary[status]
+  if ((row.preview_content || '').trim()) return { label: '可浏览', tone: 'success' }
+  return { label: '未知', tone: 'info' }
 }
 
 const handleReclassify = async (row) => {

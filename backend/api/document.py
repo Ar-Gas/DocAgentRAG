@@ -39,9 +39,14 @@ def _build_document_response(doc_info: dict) -> dict:
         "created_at_iso": payload.get("created_at_iso"),
         "classification_result": payload.get("classification_result"),
         "classification_id": payload.get("classification_id"),
+        "classification_leaf_id": payload.get("classification_leaf_id"),
         "classification_path": payload.get("classification_path"),
+        "classification_domain": payload.get("classification_domain"),
         "classification_score": payload.get("classification_score"),
+        "classification_confidence": payload.get("classification_confidence"),
         "classification_source": payload.get("classification_source"),
+        "classification_issue_code": payload.get("classification_issue_code"),
+        "taxonomy_version": payload.get("taxonomy_version"),
         "file_available": payload.get("file_available", False),
         "extraction_status": payload.get("extraction_status"),
         "parser_name": payload.get("parser_name"),
@@ -50,6 +55,9 @@ def _build_document_response(doc_info: dict) -> dict:
         "lightrag_track_id": payload.get("lightrag_track_id"),
         "lightrag_doc_id": payload.get("lightrag_doc_id"),
         "last_status_sync_at": payload.get("last_status_sync_at"),
+        "local_index_status": payload.get("local_index_status"),
+        "local_index_error": payload.get("local_index_error"),
+        "classification_review_status": payload.get("classification_review_status"),
     }
 
 @router.post("/upload", summary="上传文档")

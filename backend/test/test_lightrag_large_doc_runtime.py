@@ -12,7 +12,7 @@ def test_build_large_doc_profile_returns_profile_for_large_content(monkeypatch):
     monkeypatch.setenv("LARGE_DOC_THRESHOLD_CHUNKS", "80")
     monkeypatch.setenv("LARGE_DOC_CHUNK_SIZE", "2400")
     monkeypatch.setenv("LARGE_DOC_CHUNK_OVERLAP_SIZE", "150")
-    monkeypatch.setenv("LARGE_DOC_CHUNK_MAX_ASYNC", "1")
+    monkeypatch.setenv("LARGE_DOC_CHUNK_MAX_ASYNC", "2")
 
     profile = runtime_patch.build_large_doc_profile(
         content_length=1200 * 80,
@@ -24,7 +24,7 @@ def test_build_large_doc_profile_returns_profile_for_large_content(monkeypatch):
         "estimated_chunks": 80,
         "chunk_token_size": 2400,
         "chunk_overlap_token_size": 150,
-        "chunk_max_async": 1,
+        "chunk_max_async": 2,
     }
 
 
@@ -139,7 +139,26 @@ def test_wrap_chunking_func_auto_detects_large_doc_and_injects_profile(monkeypat
     assert result[0]["large_doc_profile"]["chunk_token_size"] == 2400
 
 
-def test_build_extract_entities_config_applies_local_override():
+def test_build_extract_entities_config_keeps_lower_global_limit_for_low_memory_runtime():
+    global_config = {
+        "llm_model_max_async": 1,
+        "other": "value",
+    }
+
+    updated = runtime_patch.build_extract_entities_config(
+        global_config,
+        {
+            "enabled": True,
+            "chunk_max_async": 2,
+        },
+    )
+
+    assert updated["llm_model_max_async"] == 1
+    assert updated["other"] == "value"
+    assert global_config["llm_model_max_async"] == 1
+
+
+def test_build_extract_entities_config_applies_lower_profile_limit_for_low_memory_runtime():
     global_config = {
         "llm_model_max_async": 2,
         "other": "value",
@@ -155,7 +174,6 @@ def test_build_extract_entities_config_applies_local_override():
 
     assert updated["llm_model_max_async"] == 1
     assert updated["other"] == "value"
-    assert global_config["llm_model_max_async"] == 2
 
 
 def test_enrich_metadata_with_large_doc_profile_adds_profile_for_new_doc(monkeypatch):

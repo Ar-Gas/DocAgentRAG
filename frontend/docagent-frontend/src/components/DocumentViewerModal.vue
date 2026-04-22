@@ -17,10 +17,10 @@
       </div>
     </template>
 
-    <div v-if="fileUnavailable" class="text-fallback-viewer">
+    <div v-if="viewerMode === 'text'" class="text-fallback-viewer">
       <div class="text-fallback-banner">
         <p class="fallback-title">已切换到提取文本预览</p>
-        <p class="fallback-copy">原文件不存在或路径已失效，下面展示系统保留的提取文本分片。</p>
+        <p class="fallback-copy">{{ textFallbackCopy }}</p>
       </div>
 
       <DocumentReader v-if="readerPayload || readerLoading" :reader="readerPayload" :loading="readerLoading" />
@@ -30,7 +30,7 @@
       </div>
     </div>
 
-    <div v-else-if="isSupportedOfficePreview" class="office-viewer">
+    <div v-else-if="viewerMode === 'office'" class="office-viewer">
       <div v-if="officeLoading" class="office-loading-overlay">
         <el-skeleton animated :rows="8" />
       </div>
@@ -130,6 +130,17 @@ const isXlsx = computed(() => normalizedFileType.value === '.xlsx')
 const isSupportedOfficePreview = computed(() => isPdf.value || isDocx.value || isXlsx.value)
 const displayFileType = computed(() => normalizedFileType.value || props.fileType || '未知')
 const title = computed(() => props.filename || '文档预览')
+const viewerMode = computed(() => {
+  if (!props.visible) return 'empty'
+  if (fileUnavailable.value) return 'text'
+  if (isSupportedOfficePreview.value) return 'office'
+  return 'text'
+})
+const textFallbackCopy = computed(() => (
+  fileUnavailable.value
+    ? '原文件不存在或路径已失效，下面展示系统保留的提取文本分片。'
+    : '该格式不适合直接在线渲染，下面展示本地解析后的文本内容。'
+))
 
 const clearRenderTimeout = () => {
   if (renderTimeoutId !== null) {
@@ -210,12 +221,12 @@ const resetViewerState = () => {
     return
   }
 
-  if (fileUnavailable.value) {
+  if (viewerMode.value === 'text') {
     void loadExtractedTextPreview()
     return
   }
 
-  officeLoading.value = isSupportedOfficePreview.value
+  officeLoading.value = viewerMode.value === 'office'
   scheduleRenderTimeout()
 }
 

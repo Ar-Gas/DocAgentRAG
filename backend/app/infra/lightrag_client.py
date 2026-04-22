@@ -69,6 +69,9 @@ class LightRAGClient:
     async def reprocess_failed_documents(self) -> Dict[str, Any]:
         return await self._request("POST", "/documents/reprocess_failed")
 
+    async def get_pipeline_status(self) -> Dict[str, Any]:
+        return await self._request("GET", "/documents/pipeline_status")
+
     async def list_documents_paginated(self, page: int = 1, page_size: int = 100) -> Dict[str, Any]:
         return await self._request(
             "POST",

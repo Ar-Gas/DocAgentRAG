@@ -61,6 +61,69 @@ def list_classification_table_records(limit: int = 50):
     return _classification_table_repository().list(limit)
 
 
+def get_all_documents():
+    return _document_repository().list_all()
+
+
+class TopicTreeRefreshScheduler:
+    def __init__(self, service_factory=TopicTreeService):
+        self.service_factory = service_factory
+        self._lock = threading.Lock()
+        self._running = False
+        self._pending = False
+        self._last_source = None
+
+    def request_refresh(self, source: str) -> Dict:
+        normalized_source = str(source or "unknown")
+        with self._lock:
+            self._last_source = normalized_source
+            if self._running:
+                self._pending = True
+                return {
+                    "scheduled": False,
+                    "coalesced": True,
+                    "source": normalized_source,
+                }
+
+            self._running = True
+            self._pending = False
+
+        worker = threading.Thread(
+            target=self._run,
+            name="topic-tree-refresh",
+            daemon=True,
+        )
+        worker.start()
+        return {
+            "scheduled": True,
+            "coalesced": False,
+            "source": normalized_source,
+        }
+
+    def _run(self) -> None:
+        while True:
+            source = self._last_source
+            try:
+                self.service_factory().build_topic_tree(force_rebuild=True)
+            except Exception as exc:
+                from app.core.logger import logger
+
+                logger.opt(exception=exc).error(
+                    "async_topic_tree_update_failed source={}",
+                    source,
+                )
+
+            with self._lock:
+                if self._pending:
+                    self._pending = False
+                    continue
+                self._running = False
+                return
+
+
+_topic_tree_refresh_scheduler = TopicTreeRefreshScheduler()
+
+
 class ClassificationService:
     def __init__(self):
         self.topic_tree_service = TopicTreeService()
@@ -100,14 +163,16 @@ class ClassificationService:
 
         return False
 
-    def _build_pending_sync_result(self) -> Dict:
+    def _build_pending_local_content_result(self) -> Dict:
         return {
-            "classification_id": "system.pending_sync",
-            "classification_label": "待本地索引同步",
-            "classification_path": ["待同步", "待本地索引同步"],
+            "classification_id": None,
+            "classification_label": None,
+            "classification_path": [],
             "classification_score": 0.0,
-            "classification_source": "pending_sync",
+            "classification_source": "pending_local_content",
             "classification_candidates": [],
+            "classification_review_status": "none",
+            "classification_issue_code": "pending_local_content",
         }
 
     @classmethod
@@ -121,7 +186,7 @@ class ClassificationService:
             return False
         return cls._requires_local_sync(doc_info, content_record, semantic_summary="")
 
-    def classify(self, document_id: str) -> Dict:
+    def classify(self, document_id: str, *, schedule_topic_tree_update: bool = True) -> Dict:
         doc_info = get_document_info(document_id)
         if not doc_info:
             raise AppServiceError(1001, f"文档ID: {document_id}")
@@ -135,7 +200,7 @@ class ClassificationService:
             content = self._load_document_content(document_id, doc_info)
             semantic_summary = ""
             if self._should_short_circuit_pending_sync(doc_info, content_record, content):
-                result = self._build_pending_sync_result()
+                result = self._build_pending_local_content_result()
                 self._save_taxonomy_result(document_id, result)
                 return self._serialize_taxonomy_assignment(doc_info, result)
 
@@ -145,7 +210,7 @@ class ClassificationService:
                     content = semantic_summary
 
             if self._requires_local_sync(doc_info, content_record, semantic_summary):
-                result = self._build_pending_sync_result()
+                result = self._build_pending_local_content_result()
                 self._save_taxonomy_result(document_id, result)
                 return self._serialize_taxonomy_assignment(doc_info, result)
 
@@ -159,13 +224,14 @@ class ClassificationService:
                 )
             )
             self._save_taxonomy_result(document_id, result)
-            self._schedule_topic_tree_update(document_id)
+            if schedule_topic_tree_update and result.get("classification_label"):
+                self._schedule_topic_tree_update(document_id)
         except Exception as exc:
             raise AppServiceError(1005, f"文档 taxonomy 分类失败: {exc}")
 
         return self._serialize_taxonomy_assignment(doc_info, result)
 
-    def reclassify(self, document_id: str) -> Dict:
+    def reclassify(self, document_id: str, *, schedule_topic_tree_update: bool = True) -> Dict:
         doc_info = get_document_info(document_id)
         if not doc_info:
             raise AppServiceError(1001, f"文档ID: {document_id}")
@@ -183,7 +249,7 @@ class ClassificationService:
             content = self._load_document_content(document_id, doc_info)
             semantic_summary = ""
             if self._should_short_circuit_pending_sync(doc_info, content_record, content):
-                result = self._build_pending_sync_result()
+                result = self._build_pending_local_content_result()
                 self._save_taxonomy_result(document_id, result)
                 payload = self._serialize_taxonomy_assignment(doc_info, result)
                 payload["old_classification"] = old_classification
@@ -196,7 +262,7 @@ class ClassificationService:
                     content = semantic_summary
 
             if self._requires_local_sync(doc_info, content_record, semantic_summary):
-                result = self._build_pending_sync_result()
+                result = self._build_pending_local_content_result()
                 self._save_taxonomy_result(document_id, result)
                 payload = self._serialize_taxonomy_assignment(doc_info, result)
                 payload["old_classification"] = old_classification
@@ -213,7 +279,8 @@ class ClassificationService:
                 )
             )
             self._save_taxonomy_result(document_id, result)
-            self._schedule_topic_tree_update(document_id)
+            if schedule_topic_tree_update and result.get("classification_label"):
+                self._schedule_topic_tree_update(document_id)
         except Exception as exc:
             raise AppServiceError(1005, f"文档 taxonomy 分类失败: {exc}")
 
@@ -221,6 +288,82 @@ class ClassificationService:
         payload["old_classification"] = old_classification
         payload["new_classification"] = result.get("classification_label")
         return payload
+
+    def batch_reclassify(self, filters: Dict) -> Dict:
+        documents = list(get_all_documents())
+        selected = self._select_documents_for_reclassification(documents, filters)
+        items = []
+        success_count = 0
+        failed_count = 0
+
+        for doc in selected:
+            document_id = doc.get("id") or doc.get("document_id")
+            if not document_id:
+                continue
+            try:
+                old_snapshot = {
+                    "classification_result": doc.get("classification_result"),
+                    "classification_path": doc.get("classification_path"),
+                    "classification_issue_code": doc.get("classification_issue_code"),
+                    "taxonomy_version": doc.get("taxonomy_version"),
+                }
+                payload = self.reclassify(document_id, schedule_topic_tree_update=False)
+                success_count += 1
+                items.append(
+                    {
+                        "document_id": document_id,
+                        "status": "success",
+                        "old": old_snapshot,
+                        "new": payload,
+                    }
+                )
+            except Exception as exc:
+                failed_count += 1
+                items.append(
+                    {
+                        "document_id": document_id,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
+
+        return {
+            "total": len(selected),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "items": items,
+        }
+
+    @staticmethod
+    def _select_documents_for_reclassification(documents: List[Dict], filters: Dict) -> List[Dict]:
+        filters = filters or {}
+        explicit_ids = {str(item) for item in filters.get("document_ids") or [] if str(item).strip()}
+        issue_codes = {str(item) for item in filters.get("issue_codes") or [] if str(item).strip()}
+        taxonomy_versions = {str(item) for item in filters.get("taxonomy_versions") or [] if str(item).strip()}
+        file_types = {
+            str(item).lower()
+            for item in filters.get("file_types") or []
+            if str(item).strip()
+        }
+        limit = max(int(filters.get("limit") or 100), 0)
+
+        selected = []
+        for doc in documents:
+            if not isinstance(doc, dict):
+                continue
+            document_id = str(doc.get("id") or doc.get("document_id") or "")
+            if explicit_ids and document_id not in explicit_ids:
+                continue
+            if issue_codes and str(doc.get("classification_issue_code") or "") not in issue_codes:
+                continue
+            if taxonomy_versions and str(doc.get("taxonomy_version") or "") not in taxonomy_versions:
+                continue
+            if file_types and str(doc.get("file_type") or "").lower() not in file_types:
+                continue
+            selected.append(doc)
+            if limit and len(selected) >= limit:
+                break
+        return selected
 
     def clear(self, document_id: str) -> Dict:
         doc_info = get_document_info(document_id)
@@ -259,7 +402,131 @@ class ClassificationService:
         return self.topic_tree_service.get_category_overview()
 
     def get_documents_by_category(self, category: str) -> Dict:
-        return self.topic_tree_service.get_documents_by_topic(category)
+        normalized = str(category or "").strip()
+        if not normalized:
+            return {
+                "category": "",
+                "topic_id": None,
+                "topic_path": [],
+                "total": 0,
+                "documents": [],
+            }
+
+        documents = []
+        for doc in get_all_documents() or []:
+            if not isinstance(doc, dict):
+                continue
+            classification_id = str(doc.get("classification_id") or "").strip()
+            classification_result = str(doc.get("classification_result") or "").strip()
+            if normalized not in {classification_id, classification_result}:
+                continue
+
+            raw_path = doc.get("classification_path")
+            if isinstance(raw_path, str):
+                try:
+                    raw_path = json.loads(raw_path)
+                except json.JSONDecodeError:
+                    raw_path = []
+
+            documents.append(
+                {
+                    "id": doc.get("id"),
+                    "document_id": doc.get("id"),
+                    "filename": doc.get("filename", ""),
+                    "file_type": doc.get("file_type", ""),
+                    "classification_result": doc.get("classification_result"),
+                    "topic_path": list(raw_path or []),
+                    "created_at_iso": doc.get("created_at_iso"),
+                    "excerpt": doc.get("excerpt", "") or doc.get("preview_content", "") or "",
+                    "keywords": [],
+                }
+            )
+
+        documents.sort(
+            key=lambda item: (item.get("created_at_iso") or "", item.get("filename") or ""),
+            reverse=True,
+        )
+        category_label = documents[0]["classification_result"] if documents else normalized
+        category_path = documents[0]["topic_path"] if documents else []
+        return {
+            "category": category_label,
+            "topic_id": normalized,
+            "topic_path": category_path,
+            "total": len(documents),
+            "documents": documents,
+        }
+
+    def batch_classify_ready_documents(
+        self,
+        *,
+        limit: int = 100,
+        include_needs_review: bool = True,
+        force: bool = False,
+    ) -> Dict:
+        normalized_limit = max(int(limit or 0), 0)
+        candidates = []
+        for doc in get_all_documents() or []:
+            if not isinstance(doc, dict) or not doc.get("id"):
+                continue
+            local_index_status = str(doc.get("local_index_status") or "").lower()
+            if local_index_status != "ready":
+                continue
+            has_classification = bool(str(doc.get("classification_result") or "").strip())
+            issue_code = str(doc.get("classification_issue_code") or "").strip()
+            if force or not has_classification or (
+                include_needs_review and issue_code in {"no_match", "pending_local_content"}
+            ):
+                candidates.append(str(doc["id"]))
+            if normalized_limit > 0 and len(candidates) >= normalized_limit:
+                break
+
+        results = []
+        classified = 0
+        needs_review = 0
+        failed = 0
+        should_refresh_topic_tree = False
+        for document_id in candidates:
+            try:
+                result = (
+                    self.reclassify(document_id, schedule_topic_tree_update=False)
+                    if force
+                    else self.classify(document_id, schedule_topic_tree_update=False)
+                )
+                issue_code = result.get("classification_issue_code")
+                label = result.get("classification_label") or result.get("topic_label")
+                if label:
+                    classified += 1
+                    should_refresh_topic_tree = True
+                if issue_code:
+                    needs_review += 1
+                results.append(
+                    {
+                        "document_id": document_id,
+                        "classification_label": label,
+                        "classification_issue_code": issue_code,
+                        "classification_source": result.get("classification_source"),
+                    }
+                )
+            except Exception as exc:
+                failed += 1
+                results.append(
+                    {
+                        "document_id": document_id,
+                        "error": str(exc),
+                        "classification_issue_code": "failed",
+                    }
+                )
+
+        if should_refresh_topic_tree:
+            self._schedule_topic_tree_update("batch")
+
+        return {
+            "results": results,
+            "total": len(candidates),
+            "classified": classified,
+            "needs_review": needs_review,
+            "failed": failed,
+        }
 
     def create_folder(self, document_id: str) -> Dict:
         doc_info = get_document_info(document_id)
@@ -375,10 +642,18 @@ class ClassificationService:
             "topic_path": classification_path,
             "classification_source": result.get("classification_source", "taxonomy"),
             "classification_id": result.get("classification_id"),
+            "classification_leaf_id": result.get("classification_leaf_id") or result.get("classification_id"),
+            "classification_domain": result.get("classification_domain"),
             "classification_label": classification_label,
             "classification_path": classification_path,
             "classification_score": float(result.get("classification_score", 0.0) or 0.0),
+            "classification_confidence": float(
+                result.get("classification_confidence", result.get("classification_score", 0.0)) or 0.0
+            ),
             "classification_candidates": list(result.get("classification_candidates") or []),
+            "classification_review_status": result.get("classification_review_status", "none"),
+            "classification_issue_code": result.get("classification_issue_code"),
+            "taxonomy_version": result.get("taxonomy_version", "taxonomy_v1"),
         }
 
     @staticmethod
@@ -436,46 +711,34 @@ class ClassificationService:
         return result_holder.get("value")
 
     def _save_taxonomy_result(self, document_id: str, result: Dict) -> None:
+        classification_path = list(result.get("classification_path") or [])
+        classification_candidates = list(result.get("classification_candidates") or [])
         update_document_info(
             document_id,
             {
                 "classification_result": result.get("classification_label"),
                 "classification_id": result.get("classification_id"),
-                "classification_path": json.dumps(
-                    result.get("classification_path") or [],
-                    ensure_ascii=False,
-                ),
+                "classification_leaf_id": result.get("classification_leaf_id") or result.get("classification_id"),
+                "classification_path": json.dumps(classification_path, ensure_ascii=False),
+                "classification_domain": result.get("classification_domain"),
                 "classification_score": float(result.get("classification_score", 0.0) or 0.0),
-                "classification_source": result.get("classification_source"),
-                "classification_candidates": json.dumps(
-                    list(result.get("classification_candidates") or []),
-                    ensure_ascii=False,
+                "classification_confidence": float(
+                    result.get("classification_confidence", result.get("classification_score", 0.0)) or 0.0
                 ),
+                "classification_source": (
+                    result.get("classification_source")
+                    if result.get("classification_label")
+                    else None
+                ),
+                "classification_candidates": json.dumps(classification_candidates, ensure_ascii=False),
+                "classification_review_status": result.get("classification_review_status", "none"),
+                "classification_issue_code": result.get("classification_issue_code"),
+                "taxonomy_version": result.get("taxonomy_version", "taxonomy_v1"),
             },
         )
 
     def _schedule_topic_tree_update(self, document_id: str) -> None:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            thread = threading.Thread(
-                target=lambda: asyncio.run(self._async_update_topic_tree(document_id)),
-                daemon=True,
-            )
-            thread.start()
-            return
-        asyncio.create_task(self._async_update_topic_tree(document_id))
-
-    async def _async_update_topic_tree(self, document_id: str) -> None:
-        try:
-            await asyncio.to_thread(self.topic_tree_service.build_topic_tree, True)
-        except Exception as exc:
-            from app.core.logger import logger
-
-            logger.opt(exception=exc).error(
-                "async_topic_tree_update_failed document_id={}",
-                document_id,
-            )
+        _topic_tree_refresh_scheduler.request_refresh(document_id)
 
     async def classify_document(self, document_id: str) -> str:
         """

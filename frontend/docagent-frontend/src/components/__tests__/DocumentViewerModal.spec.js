@@ -156,7 +156,27 @@ describe('DocumentViewerModal', () => {
     expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
   })
 
-  it('shows unsupported state for pptx files instead of extracted text', () => {
+  it('loads extracted text preview for pptx files when office preview is unsupported', async () => {
+    apiMocks.getDocumentReader.mockResolvedValue({
+      data: {
+        document_id: 'doc-5',
+        filename: 'slides.pptx',
+        total_matches: 0,
+        best_anchor: { block_id: 'doc-5#0', match_index: 0 },
+        blocks: [
+          {
+            block_id: 'doc-5#0',
+            block_index: 0,
+            block_type: 'paragraph',
+            heading_path: [],
+            page_number: null,
+            text: 'PPT 已提取文本',
+            matches: [],
+          },
+        ],
+      },
+    })
+
     const wrapper = mount(DocumentViewerModal, {
       props: {
         visible: true,
@@ -169,11 +189,34 @@ describe('DocumentViewerModal', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('暂不支持在线预览')
-    expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已切换到提取文本预览')
+    expect(wrapper.text()).toContain('PPT 已提取文本')
+    expect(apiMocks.getDocumentReader).toHaveBeenCalledWith('doc-5', '', null)
   })
 
-  it('shows unsupported state for txt files instead of extracted text', () => {
+  it('loads extracted text preview for txt files when office preview is unsupported', async () => {
+    apiMocks.getDocumentReader.mockResolvedValue({
+      data: {
+        document_id: 'doc-6',
+        filename: 'notes.txt',
+        total_matches: 0,
+        best_anchor: { block_id: 'doc-6#0', match_index: 0 },
+        blocks: [
+          {
+            block_id: 'doc-6#0',
+            block_index: 0,
+            block_type: 'paragraph',
+            heading_path: [],
+            page_number: null,
+            text: 'TXT 已提取文本',
+            matches: [],
+          },
+        ],
+      },
+    })
+
     const wrapper = mount(DocumentViewerModal, {
       props: {
         visible: true,
@@ -186,8 +229,11 @@ describe('DocumentViewerModal', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('暂不支持在线预览')
-    expect(apiMocks.getDocumentReader).not.toHaveBeenCalled()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已切换到提取文本预览')
+    expect(wrapper.text()).toContain('TXT 已提取文本')
+    expect(apiMocks.getDocumentReader).toHaveBeenCalledWith('doc-6', '', null)
   })
 
   it('loads extracted text preview for missing docx files too', async () => {

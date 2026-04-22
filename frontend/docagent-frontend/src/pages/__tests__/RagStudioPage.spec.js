@@ -10,5 +10,6 @@ describe('RagStudioPage', () => {
     const frame = wrapper.get('iframe')
     expect(frame.attributes('src')).toBe('/api/v1/admin/lightrag/webui/')
     expect(wrapper.text()).toContain('RAG 工作台')
+    expect(wrapper.text()).not.toContain('API')
   })
 })

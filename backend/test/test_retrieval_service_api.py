@@ -588,29 +588,26 @@ def test_workspace_search_stream_hybrid_phase_uses_block_payload(monkeypatch):
     assert "event: reranked" not in stream_text
 
 
-def test_stats_include_document_and_index_counts(monkeypatch):
-    monkeypatch.setattr(
-        retrieval_service_module,
-        "get_document_stats",
-        lambda: {
-            "total_chunks": 7,
-            "vector_indexed_documents": 2,
-            "file_types": {".pdf": 5, ".docx": 2},
-        },
-    )
+def test_stats_include_document_and_index_counts_without_vector_store(monkeypatch):
+    if hasattr(retrieval_service_module, "get_document_stats"):
+        monkeypatch.setattr(
+            retrieval_service_module,
+            "get_document_stats",
+            lambda: (_ for _ in ()).throw(AssertionError("stats must not cold-start vector store")),
+        )
     monkeypatch.setattr(
         retrieval_service_module,
         "get_all_documents",
         lambda: [
-            {"id": "doc-1", "filename": "a.pdf"},
-            {"id": "doc-2", "filename": "b.docx"},
-            {"id": "doc-3", "filename": "c.txt"},
+            {"id": "doc-1", "filename": "a.pdf", "file_type": ".pdf", "local_index_status": "ready"},
+            {"id": "doc-2", "filename": "b.docx", "file_type": ".docx", "local_index_status": "ready"},
+            {"id": "doc-3", "filename": "c.txt", "file_type": ".txt", "local_index_status": "failed"},
         ],
     )
     monkeypatch.setattr(
         retrieval_service_module,
         "list_document_segments",
-        lambda document_id: [{"segment_id": f"{document_id}#0"}] if document_id != "doc-3" else [],
+        lambda document_id: [{"segment_id": f"{document_id}#0"}] if document_id == "doc-1" else [],
     )
 
     service = RetrievalService()
@@ -618,17 +615,12 @@ def test_stats_include_document_and_index_counts(monkeypatch):
 
     assert payload["total_documents"] == 3
     assert payload["vector_indexed_documents"] == 2
-    assert payload["segment_documents"] == 2
-    assert payload["total_chunks"] == 7
-    assert payload["file_types"] == {".pdf": 5, ".docx": 2}
+    assert payload["segment_documents"] == 1
+    assert payload["total_chunks"] == 1
+    assert payload["file_types"] == {".pdf": 1, ".docx": 1}
 
 
 def test_stats_returns_empty_defaults_when_dependencies_raise(monkeypatch):
-    monkeypatch.setattr(
-        retrieval_service_module,
-        "get_document_stats",
-        lambda: (_ for _ in ()).throw(RuntimeError("collection missing")),
-    )
     monkeypatch.setattr(
         retrieval_service_module,
         "get_all_documents",

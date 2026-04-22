@@ -142,38 +142,36 @@ def test_get_categories_falls_back_to_topic_tree_when_taxonomy_empty(monkeypatch
     service.topic_tree_service.get_category_overview.assert_called_once()
 
 
-def test_get_documents_by_category_uses_topic_tree_membership_not_document_field(monkeypatch):
-    service = ClassificationService()
-    service.topic_tree_service = Mock(
-        get_documents_by_topic=Mock(
-            return_value={
-                "category": "年度审计",
-                "topic_id": "topic-1-1",
-                "topic_path": ["财务治理", "年度审计"],
-                "total": 2,
-                "documents": [
-                    {
-                        "id": "doc-1",
-                        "filename": "audit-plan.pdf",
-                        "file_type": ".pdf",
-                        "classification_result": "年度审计",
-                    },
-                    {
-                        "id": "doc-2",
-                        "filename": "audit-report.pdf",
-                        "file_type": ".pdf",
-                        "classification_result": "年度审计",
-                    },
-                ],
-            }
-        )
+def test_get_documents_by_category_uses_persisted_taxonomy_fields(monkeypatch):
+    monkeypatch.setattr(
+        classification_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "audit-plan.pdf",
+                "file_type": ".pdf",
+                "classification_result": "年度审计",
+                "classification_id": "audit.annual",
+                "classification_path": json.dumps(["审计风控", "审计管理", "年度审计"], ensure_ascii=False),
+                "created_at_iso": "2026-04-01T10:00:00",
+            },
+            {
+                "id": "doc-2",
+                "filename": "unclassified.pdf",
+                "file_type": ".pdf",
+                "classification_result": None,
+                "classification_issue_code": "no_match",
+            },
+        ],
     )
+    service = ClassificationService()
 
-    payload = service.get_documents_by_category("年度审计")
+    payload = service.get_documents_by_category("audit.annual")
 
     assert payload["category"] == "年度审计"
-    assert payload["total"] == 2
-    assert [item["id"] for item in payload["documents"]] == ["doc-1", "doc-2"]
+    assert payload["total"] == 1
+    assert [item["id"] for item in payload["documents"]] == ["doc-1"]
     assert payload["documents"][0]["classification_result"] == "年度审计"
 
 
@@ -214,16 +212,10 @@ def test_classify_uses_taxonomy_classifier_and_schedules_topic_tree_update(monke
 
     monkeypatch.setattr(classification_service_module, "TaxonomyClassifier", FakeTaxonomyClassifier)
 
-    scheduled = []
-
-    def fake_create_task(coro):
-        scheduled.append(coro)
-        return Mock()
-
-    monkeypatch.setattr(classification_service_module.asyncio, "create_task", fake_create_task)
-
     service = ClassificationService()
     service.topic_tree_service = Mock(classify_document=Mock())
+    scheduled = []
+    service._schedule_topic_tree_update = lambda document_id: scheduled.append(document_id)
 
     async def async_case():
         return service.classify("doc-1")
@@ -244,8 +236,7 @@ def test_classify_uses_taxonomy_classifier_and_schedules_topic_tree_update(monke
     assert updates[0][1]["classification_score"] == 0.93
     assert updates[0][1]["classification_source"] == "llm"
     assert json.loads(updates[0][1]["classification_candidates"]) == ["hr.offer_approval", "hr.recruitment"]
-    assert len(scheduled) == 1
-    scheduled[0].close()
+    assert scheduled == ["doc-1"]
     service.topic_tree_service.classify_document.assert_not_called()
 
 
@@ -287,16 +278,10 @@ def test_reclassify_uses_taxonomy_classifier_and_returns_old_new_labels(monkeypa
 
     monkeypatch.setattr(classification_service_module, "TaxonomyClassifier", FakeTaxonomyClassifier)
 
-    scheduled = []
-
-    def fake_create_task(coro):
-        scheduled.append(coro)
-        return Mock()
-
-    monkeypatch.setattr(classification_service_module.asyncio, "create_task", fake_create_task)
-
     service = ClassificationService()
     service.topic_tree_service = Mock(classify_document=Mock())
+    scheduled = []
+    service._schedule_topic_tree_update = lambda document_id: scheduled.append(document_id)
 
     async def async_case():
         return service.reclassify("doc-1")
@@ -314,12 +299,11 @@ def test_reclassify_uses_taxonomy_classifier_and_returns_old_new_labels(monkeypa
     assert updates[0][1]["classification_score"] == 0.88
     assert updates[0][1]["classification_source"] == "keyword"
     assert json.loads(updates[0][1]["classification_candidates"]) == ["hr.offer_approval", "hr.recruitment"]
-    assert len(scheduled) == 1
-    scheduled[0].close()
+    assert scheduled == ["doc-1"]
     service.topic_tree_service.classify_document.assert_not_called()
 
 
-def test_classify_marks_lightrag_only_documents_as_pending_sync_instead_of_unclassified(monkeypatch):
+def test_classify_marks_lightrag_only_documents_as_operational_pending_without_taxonomy(monkeypatch):
     monkeypatch.setattr(
         classification_service_module,
         "get_document_info",
@@ -360,16 +344,18 @@ def test_classify_marks_lightrag_only_documents_as_pending_sync_instead_of_uncla
     payload = service.classify("doc-lr-only")
 
     assert payload["document_id"] == "doc-lr-only"
-    assert payload["categories"] == ["待同步", "待本地索引同步"]
-    assert payload["topic_label"] == "待本地索引同步"
-    assert payload["classification_source"] == "pending_sync"
+    assert payload["categories"] == []
+    assert payload["topic_label"] is None
+    assert payload["classification_source"] == "pending_local_content"
     assert payload["confidence"] == 0.0
-    assert updates[0][1]["classification_result"] == "待本地索引同步"
-    assert updates[0][1]["classification_source"] == "pending_sync"
-    assert json.loads(updates[0][1]["classification_path"]) == ["待同步", "待本地索引同步"]
+    assert payload["classification_issue_code"] == "pending_local_content"
+    assert updates[0][1]["classification_result"] is None
+    assert updates[0][1]["classification_source"] is None
+    assert json.loads(updates[0][1]["classification_path"]) == []
+    assert updates[0][1]["classification_issue_code"] == "pending_local_content"
 
 
-def test_reclassify_marks_local_only_documents_as_pending_sync_instead_of_unclassified(monkeypatch):
+def test_reclassify_marks_local_only_documents_as_operational_pending_without_taxonomy(monkeypatch):
     monkeypatch.setattr(
         classification_service_module,
         "get_document_info",
@@ -409,10 +395,12 @@ def test_reclassify_marks_local_only_documents_as_pending_sync_instead_of_unclas
     payload = service.reclassify("doc-local-only")
 
     assert payload["old_classification"] == "旧分类"
-    assert payload["new_classification"] == "待本地索引同步"
-    assert payload["classification_source"] == "pending_sync"
-    assert payload["categories"] == ["待同步", "待本地索引同步"]
-    assert updates[0][1]["classification_result"] == "待本地索引同步"
+    assert payload["new_classification"] is None
+    assert payload["classification_source"] == "pending_local_content"
+    assert payload["categories"] == []
+    assert payload["classification_issue_code"] == "pending_local_content"
+    assert updates[0][1]["classification_result"] is None
+    assert updates[0][1]["classification_source"] is None
 
 
 def test_reclassify_pending_lightrag_document_skips_semantic_summary_lookup(monkeypatch):
@@ -458,10 +446,11 @@ def test_reclassify_pending_lightrag_document_skips_semantic_summary_lookup(monk
 
     payload = service.reclassify("doc-pending")
 
-    assert payload["classification_source"] == "pending_sync"
-    assert payload["new_classification"] == "待本地索引同步"
+    assert payload["classification_source"] == "pending_local_content"
+    assert payload["new_classification"] is None
     assert semantic_calls == []
-    assert updates[0][1]["classification_source"] == "pending_sync"
+    assert updates[0][1]["classification_source"] is None
+    assert updates[0][1]["classification_issue_code"] == "pending_local_content"
 
 
 def test_classify_uses_lightrag_semantic_summary_when_local_content_missing(monkeypatch):
@@ -509,6 +498,7 @@ def test_classify_uses_lightrag_semantic_summary_when_local_content_missing(monk
     monkeypatch.setattr(classification_service_module, "TaxonomyClassifier", FakeTaxonomyClassifier)
 
     service = ClassificationService()
+    service._schedule_topic_tree_update = lambda document_id: None
 
     class FakeSemanticService:
         async def get_document_semantic_snapshot(self, doc_info, top_k=12):
@@ -530,6 +520,109 @@ def test_classify_uses_lightrag_semantic_summary_when_local_content_missing(monk
     assert payload["topic_id"] == "finance.budget_policy"
     assert payload["categories"] == ["财务管理", "预算管理", "预算制度"]
     assert updates[0][1]["classification_result"] == "预算制度"
+
+
+def test_batch_classify_ready_documents_selects_unclassified_ready_documents(monkeypatch):
+    docs = [
+        {
+            "id": "doc-1",
+            "filename": "ready.docx",
+            "local_index_status": "ready",
+            "classification_result": None,
+            "classification_issue_code": None,
+        },
+        {
+            "id": "doc-2",
+            "filename": "needs-review.docx",
+            "local_index_status": "ready",
+            "classification_result": None,
+            "classification_issue_code": "no_match",
+        },
+        {
+            "id": "doc-3",
+            "filename": "classified.docx",
+            "local_index_status": "ready",
+            "classification_result": "Offer审批",
+        },
+    ]
+    monkeypatch.setattr(classification_service_module, "get_all_documents", lambda: docs)
+
+    service = ClassificationService()
+    calls = []
+
+    def fake_classify(document_id, *, schedule_topic_tree_update=True):
+        calls.append((document_id, schedule_topic_tree_update))
+        if document_id == "doc-1":
+            return {
+                "document_id": document_id,
+                "classification_label": "Offer审批",
+                "classification_issue_code": None,
+            }
+        return {
+            "document_id": document_id,
+            "classification_label": None,
+            "classification_issue_code": "no_match",
+        }
+
+    service.classify = fake_classify
+    service._schedule_topic_tree_update = lambda document_id: None
+
+    payload = service.batch_classify_ready_documents(limit=10, include_needs_review=True, force=False)
+
+    assert calls == [("doc-1", False), ("doc-2", False)]
+    assert payload["total"] == 2
+    assert payload["classified"] == 1
+    assert payload["needs_review"] == 1
+
+
+def test_batch_classify_ready_documents_suppresses_per_document_topic_tree_updates(monkeypatch):
+    docs = [
+        {
+            "id": "doc-1",
+            "filename": "ready.docx",
+            "local_index_status": "ready",
+            "classification_result": None,
+            "classification_issue_code": None,
+        },
+        {
+            "id": "doc-2",
+            "filename": "review.docx",
+            "local_index_status": "ready",
+            "classification_result": None,
+            "classification_issue_code": "no_match",
+        },
+    ]
+    monkeypatch.setattr(classification_service_module, "get_all_documents", lambda: docs)
+
+    service = ClassificationService()
+    classify_calls = []
+    scheduled = []
+
+    def fake_classify(document_id, *, schedule_topic_tree_update=True):
+        classify_calls.append((document_id, schedule_topic_tree_update))
+        if document_id == "doc-1":
+            return {
+                "document_id": document_id,
+                "classification_label": "Offer审批",
+                "classification_issue_code": None,
+                "classification_source": "llm",
+            }
+        return {
+            "document_id": document_id,
+            "classification_label": None,
+            "classification_issue_code": "no_match",
+            "classification_source": None,
+        }
+
+    service.classify = fake_classify
+    service._schedule_topic_tree_update = lambda document_id: scheduled.append(document_id)
+
+    payload = service.batch_classify_ready_documents(limit=10, include_needs_review=True, force=False)
+
+    assert classify_calls == [("doc-1", False), ("doc-2", False)]
+    assert scheduled == ["batch"]
+    assert payload["classified"] == 1
+    assert payload["needs_review"] == 1
 
 
 def test_classify_document_payload_field_is_absent_uses_preview_content_and_full_content(monkeypatch):

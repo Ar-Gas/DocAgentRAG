@@ -14,7 +14,6 @@ from utils.search_cache import get_search_cache
 from utils.retriever import (
     batch_search_documents,
     get_document_by_id,
-    get_document_stats,
     get_ready_block_document_ids,
     get_query_parser,
     hybrid_search,
@@ -58,6 +57,20 @@ def _result_document_id(result: Dict[str, Any]) -> str:
         or result.get("id")
         or ""
     )
+
+
+def _normalized_file_type(value: Any) -> str:
+    file_type = str(value or "").strip().lower()
+    if not file_type:
+        return ""
+    return file_type if file_type.startswith(".") else f".{file_type}"
+
+
+def _is_local_index_ready(document: Dict[str, Any]) -> bool:
+    block_status = str(document.get("block_index_status") or "").strip().lower()
+    if block_status == "ready":
+        return True
+    return str(document.get("local_index_status") or "").strip().lower() == "ready"
 
 
 class RetrievalService:
@@ -254,26 +267,26 @@ class RetrievalService:
     def stats(self) -> Dict:
         self.logger.info("query_retrieval_stats")
         try:
-            stats = get_document_stats() or {}
-        except Exception as exc:
-            self.logger.opt(exception=exc).error("query_retrieval_vector_stats_failed")
-            stats = {}
-
-        try:
             all_docs = list(get_all_documents() or [])
         except Exception as exc:
             self.logger.opt(exception=exc).error("query_retrieval_document_stats_failed")
             all_docs = []
 
         segment_document_ids = set()
+        total_chunks = 0
+        local_indexed_document_ids = set()
+        file_types: Dict[str, int] = {}
         for doc in all_docs:
             if not isinstance(doc, dict):
                 continue
             document_id = doc.get("id")
             if not document_id:
                 continue
+
+            segments = []
             try:
-                if list_document_segments(document_id):
+                segments = list_document_segments(document_id)
+                if segments:
                     segment_document_ids.add(document_id)
             except Exception as exc:
                 self.logger.opt(exception=exc).error(
@@ -281,12 +294,28 @@ class RetrievalService:
                     document_id,
                 )
 
+            if _is_local_index_ready(doc):
+                local_indexed_document_ids.add(document_id)
+                file_type = _normalized_file_type(doc.get("file_type"))
+                if file_type:
+                    file_types[file_type] = file_types.get(file_type, 0) + 1
+
+                block_count = doc.get("block_count")
+                try:
+                    block_count_int = int(block_count)
+                except (TypeError, ValueError):
+                    block_count_int = 0
+                if block_count_int > 0:
+                    total_chunks += block_count_int
+                elif segments:
+                    total_chunks += len(segments)
+
         return {
             "total_documents": len(all_docs),
-            "vector_indexed_documents": stats.get("vector_indexed_documents", 0),
+            "vector_indexed_documents": len(local_indexed_document_ids),
             "segment_documents": len(segment_document_ids),
-            "total_chunks": stats.get("total_chunks", 0),
-            "file_types": stats.get("file_types", {}),
+            "total_chunks": total_chunks,
+            "file_types": file_types,
         }
 
     def expand_query(self, query: str, method: str) -> Dict:

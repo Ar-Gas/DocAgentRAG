@@ -17,10 +17,23 @@ from config import DATA_DIR
 DEFAULT_DB_PATH = DATA_DIR / "docagent.db"
 COLUMN_DEFINITIONS = {
     "classification_id": "TEXT DEFAULT NULL",
+    "classification_leaf_id": "TEXT DEFAULT NULL",
     "classification_path": "TEXT DEFAULT NULL",
+    "classification_domain": "TEXT DEFAULT NULL",
     "classification_score": "REAL DEFAULT 0.0",
+    "classification_confidence": "REAL DEFAULT 0.0",
     "classification_source": "TEXT DEFAULT NULL",
     "classification_candidates": "TEXT DEFAULT NULL",
+    "classification_review_status": "TEXT DEFAULT NULL",
+    "classification_issue_code": "TEXT DEFAULT NULL",
+    "taxonomy_version": "TEXT DEFAULT 'taxonomy_v1'",
+    "ingest_status": "TEXT DEFAULT NULL",
+    "ingest_error": "TEXT DEFAULT NULL",
+    "lightrag_track_id": "TEXT DEFAULT NULL",
+    "lightrag_doc_id": "TEXT DEFAULT NULL",
+    "last_status_sync_at": "TEXT DEFAULT NULL",
+    "local_index_status": "TEXT DEFAULT NULL",
+    "local_index_error": "TEXT DEFAULT NULL",
 }
 
 

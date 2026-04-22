@@ -1,5 +1,8 @@
 import os
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -138,3 +141,70 @@ def test_embed_text_prefers_local_bge_model(monkeypatch):
     assert payload == [0.4, 0.5, 0.6]
     assert created["model_name"] == "/tmp/models/BAAI/bge-m3"
     doubao_mock.assert_not_called()
+
+
+def test_bge_model_status_tracks_failed_initialization(monkeypatch):
+    embedding_provider_module._bge_ef = None
+    if hasattr(embedding_provider_module, "_bge_load_state"):
+        embedding_provider_module._bge_load_state = "unloaded"
+    if hasattr(embedding_provider_module, "_bge_load_error"):
+        embedding_provider_module._bge_load_error = None
+
+    def fake_sentence_transformer(model_name):
+        raise RuntimeError("Cannot copy out of meta tensor")
+
+    monkeypatch.setattr(
+        embedding_provider_module.embedding_functions,
+        "SentenceTransformerEmbeddingFunction",
+        fake_sentence_transformer,
+    )
+
+    try:
+        embedding_provider_module._get_bge_ef()
+    except RuntimeError:
+        pass
+
+    status = embedding_provider_module.get_bge_model_status()
+
+    assert status["state"] == "failed"
+    assert status["ready"] is False
+    assert "meta tensor" in status["detail"]
+
+
+def test_get_bge_ef_initializes_once_under_concurrent_first_requests(monkeypatch):
+    embedding_provider_module._bge_ef = None
+    if hasattr(embedding_provider_module, "_bge_load_state"):
+        embedding_provider_module._bge_load_state = "unloaded"
+    if hasattr(embedding_provider_module, "_bge_load_error"):
+        embedding_provider_module._bge_load_error = None
+    created = []
+    create_lock = threading.Lock()
+    start = threading.Barrier(8)
+
+    class FakeEmbeddingFunction:
+        def __call__(self, texts):
+            return [[0.1, 0.2, 0.3] for _ in texts]
+
+    def fake_sentence_transformer(model_name):
+        with create_lock:
+            created.append(model_name)
+        time.sleep(0.05)
+        return FakeEmbeddingFunction()
+
+    monkeypatch.setattr(
+        embedding_provider_module.embedding_functions,
+        "SentenceTransformerEmbeddingFunction",
+        fake_sentence_transformer,
+    )
+    monkeypatch.setenv("BGE_MODEL", "/tmp/models/BAAI/bge-m3")
+
+    def worker():
+        start.wait(timeout=2)
+        return embedding_provider_module._get_bge_ef()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: worker(), range(8)))
+
+    assert len(created) == 1
+    assert all(result is results[0] for result in results)
+    assert embedding_provider_module.get_bge_model_status()["state"] == "ready"

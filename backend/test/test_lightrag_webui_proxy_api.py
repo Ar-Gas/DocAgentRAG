@@ -70,6 +70,7 @@ def test_proxy_lightrag_webui_rewrites_root_html_and_hides_branding(monkeypatch)
     assert "/api/v1/admin/lightrag/webui/assets/index.js" in body
     assert "/api/v1/admin/lightrag/webui/assets/index.css" in body
     assert "LightRAG" not in body
+    assert "data-docagent-hide-api-tab" in body
 
 
 def test_proxy_lightrag_webui_nested_path_preserves_content_type(monkeypatch):
@@ -120,6 +121,7 @@ def test_proxy_lightrag_webui_js_rewrites_api_base_and_home_link(monkeypatch):
     assert 'dW="/api/v1/admin/lightrag/webui/"' in body
     assert "DocAgent Studio" in body
     assert "LightRAG" not in body
+    assert "api:!1" in body or '"api":!1' in body
 
 
 def test_proxy_lightrag_webui_js_rewrites_minified_assignment_form(monkeypatch):

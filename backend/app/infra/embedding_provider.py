@@ -1,5 +1,6 @@
 import base64
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -21,6 +22,10 @@ from config import (
 )
 
 _bge_ef = None
+_bge_load_lock = threading.Lock()
+_bge_load_state = "unloaded"
+_bge_load_error: str | None = None
+_bge_loaded_at: str | None = None
 _EMBEDDING_DIM_ARTIFACT = "embedding_dimension"
 _DOUBAO_REQUEST_TIMEOUT_SECONDS = 2.0
 
@@ -93,12 +98,47 @@ def _get_bge_model_name() -> str:
 
 
 def _get_bge_ef():
-    global _bge_ef
+    global _bge_ef, _bge_load_error, _bge_load_state, _bge_loaded_at
     if _bge_ef is None:
-        bge_model = _get_bge_model_name()
-        logger.info("加载 BGE 本地模型: {}", bge_model)
-        _bge_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=bge_model)
+        with _bge_load_lock:
+            if _bge_ef is None:
+                bge_model = _get_bge_model_name()
+                _bge_load_state = "loading"
+                _bge_load_error = None
+                logger.info("加载 BGE 本地模型: {}", bge_model)
+                try:
+                    _bge_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=bge_model)
+                except Exception as exc:
+                    _bge_load_state = "failed"
+                    _bge_load_error = str(exc)
+                    logger.opt(exception=exc).error("BGE 本地模型加载失败: {}", exc)
+                    raise
+                _bge_load_state = "ready"
+                _bge_loaded_at = datetime.now().isoformat()
     return _bge_ef
+
+
+def get_bge_model_status() -> dict:
+    model_name = get_local_embedding_model_name()
+    if _bge_ef is not None:
+        return {
+            "state": "ready",
+            "model": model_name,
+            "ready": True,
+            "loaded_at": _bge_loaded_at,
+        }
+    status = {
+        "state": _bge_load_state,
+        "model": model_name,
+        "ready": False,
+    }
+    if _bge_load_error:
+        status["detail"] = _bge_load_error
+    return status
+
+
+def warmup_bge_model() -> None:
+    _get_bge_ef()
 
 
 def embed_text(text: str) -> Optional[List[float]]:

@@ -9,6 +9,7 @@ from datetime import datetime
 from threading import Thread
 from typing import Any, Dict, List
 
+from app.domain.classification_contract import SPECIAL_ERROR_LABEL
 from app.infra.metadata_store import get_metadata_store
 from app.infra.repositories.document_content_repository import DocumentContentRepository
 from app.infra.repositories.document_repository import DocumentRepository
@@ -49,7 +50,7 @@ def update_document_info(document_id: str, updated_info: Dict[str, Any]) -> bool
 
 class TopicTreeService:
     artifact_name = "topic_tree"
-    schema_version = 3
+    schema_version = 4
     generation_method = "doc_embedding_cluster+fallback_label_contract"
 
     def __init__(self, max_topics: int = 10):
@@ -60,15 +61,16 @@ class TopicTreeService:
     def get_topic_tree(self) -> Dict[str, Any]:
         cached = self._load_valid_cached_artifact()
         if cached:
-            self._sync_document_topic_assignments(cached)
-            return cached
+            sanitized = self._sanitize_topic_tree_payload(cached)
+            self._sync_document_topic_assignments(sanitized)
+            return sanitized
         return self.build_topic_tree(force_rebuild=True)
 
     def build_topic_tree(self, force_rebuild: bool = False) -> Dict[str, Any]:
         if not force_rebuild:
             cached = self._load_valid_cached_artifact()
             if cached:
-                return cached
+                return self._sanitize_topic_tree_payload(cached)
 
         raw_documents = [doc for doc in get_all_documents() if doc.get("id")]
         documents = [
@@ -83,9 +85,12 @@ class TopicTreeService:
             return payload
 
         clusterable_documents, excluded_documents = self.clustering.build_document_vectors(documents)
-        topics = self._build_topics(clusterable_documents) if clusterable_documents else []
+        topics, semantic_error_documents = (
+            self._build_topics(clusterable_documents) if clusterable_documents else ([], [])
+        )
         document_lookup = {doc["id"]: doc for doc in raw_documents if doc.get("id")}
-        topics.extend(self._build_fallback_topics(excluded_documents, document_lookup))
+        fallback_documents = [*excluded_documents, *semantic_error_documents]
+        topics.extend(self._build_fallback_topics(fallback_documents, document_lookup))
 
         payload = self._build_payload(
             topics,
@@ -221,6 +226,15 @@ class TopicTreeService:
                 return False
         return True
 
+    def _sanitize_topic_tree_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        topics = self._sanitize_topic_nodes(payload.get("topics") or [])
+        return {
+            **payload,
+            "schema_version": self.schema_version,
+            "topic_count": len(topics),
+            "topics": topics,
+        }
+
     def _build_document_profile(self, doc: Dict[str, Any]) -> Dict[str, Any]:
         document_id = doc.get("id")
         if not document_id:
@@ -262,14 +276,24 @@ class TopicTreeService:
             "keywords": [],
         }
 
-    def _build_topics(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _build_topics(self, documents: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         parent_clusters = self.clustering.cluster_documents(documents, level=1)
         seen_ids = set()
         topics = []
+        semantic_error_documents: List[Dict[str, Any]] = []
 
         for parent_index, parent_cluster in enumerate(parent_clusters[: self.max_topics], start=1):
             children = []
             parent_label = self.labeler.label_parent_topic(parent_cluster["representatives"])
+            if self._is_error_label(parent_label.get("label")):
+                for document in parent_cluster["documents"]:
+                    document_id = document.get("document_id")
+                    if document_id and document_id not in seen_ids:
+                        seen_ids.add(document_id)
+                        semantic_error_documents.append(
+                            {**document, "exclude_reason": "semantic_error_label"}
+                        )
+                continue
 
             child_clusters = self.clustering.cluster_documents(parent_cluster["documents"], level=2)
             for child_index, child_cluster in enumerate(child_clusters, start=1):
@@ -287,6 +311,12 @@ class TopicTreeService:
                     parent_label["label"],
                     child_cluster["representatives"],
                 )
+                if self._is_error_label(child_label.get("label")):
+                    semantic_error_documents.extend(
+                        {**document, "exclude_reason": "semantic_error_label"}
+                        for document in leaf_documents
+                    )
+                    continue
                 children.append(
                     {
                         "topic_id": f"topic-{parent_index}-{child_index}",
@@ -312,7 +342,7 @@ class TopicTreeService:
                 }
             )
 
-        return topics
+        return topics, semantic_error_documents
 
     def _build_fallback_topics(
         self,
@@ -409,13 +439,17 @@ class TopicTreeService:
 
     @staticmethod
     def _route_excluded_document(document: Dict[str, Any]) -> tuple[str, str]:
-        if document.get("exclude_reason") == "unusable_content":
-            return "异常文档", "Error"
+        if document.get("exclude_reason") in {"unusable_content", "semantic_error_label"}:
+            return "异常文档", SPECIAL_ERROR_LABEL
 
         label = str(document.get("resolved_label") or "").strip()
-        if document.get("resolved_is_error") or label == "Error" or not label:
-            return "异常文档", "Error"
+        if document.get("resolved_is_error") or label == SPECIAL_ERROR_LABEL or not label:
+            return "异常文档", SPECIAL_ERROR_LABEL
         return "兜底分类", label
+
+    @staticmethod
+    def _is_error_label(label: Any) -> bool:
+        return str(label or "").strip() == SPECIAL_ERROR_LABEL
 
     @staticmethod
     def _run_coroutine(coroutine):
@@ -501,7 +535,8 @@ class TopicTreeService:
 
     def _build_assignment_lookup(self, payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         lookup: Dict[str, Dict[str, Any]] = {}
-        for node, path in self._iter_leaf_topics(payload.get("topics") or []):
+        topics = self._sanitize_topic_nodes(payload.get("topics") or [])
+        for node, path in self._iter_leaf_topics(topics):
             for doc in node.get("documents") or []:
                 document_id = doc.get("document_id")
                 if not document_id:
@@ -530,6 +565,78 @@ class TopicTreeService:
             rows.append((topic, current_path))
             rows.extend(self._iter_topic_nodes(topic.get("children") or [], current_path))
         return rows
+
+    def _sanitize_topic_nodes(self, topics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        regular_topics: List[Dict[str, Any]] = []
+        error_documents: List[Dict[str, Any]] = []
+
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+
+            parent_label = str(topic.get("label") or "").strip()
+            if self._is_error_label(parent_label):
+                error_documents.extend(self._collect_documents(topic))
+                continue
+
+            children = []
+            for child in topic.get("children") or []:
+                if not isinstance(child, dict):
+                    continue
+                child_label = str(child.get("label") or "").strip()
+                if parent_label != "异常文档" and self._is_error_label(child_label):
+                    error_documents.extend(self._collect_documents(child))
+                    continue
+                children.append({**child, "children": list(child.get("children") or [])})
+
+            regular_topics.append(
+                {
+                    **topic,
+                    "documents": list(topic.get("documents") or []),
+                    "children": children,
+                    "document_count": (
+                        int(topic.get("document_count") or len(topic.get("documents") or []))
+                        if not children
+                        else sum(
+                            int(child.get("document_count") or len(child.get("documents") or []))
+                            for child in children
+                        )
+                    ),
+                }
+            )
+
+        if error_documents:
+            regular_topics.append(self._build_error_fallback_topic(error_documents))
+        return regular_topics
+
+    @staticmethod
+    def _build_error_fallback_topic(documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+        unique_documents = []
+        seen_ids = set()
+        for document in documents:
+            document_id = document.get("document_id")
+            if not document_id or document_id in seen_ids:
+                continue
+            seen_ids.add(document_id)
+            unique_documents.append(document)
+
+        return {
+            "topic_id": "topic-fallback-error",
+            "label": "异常文档",
+            "keywords": [],
+            "document_count": len(unique_documents),
+            "documents": [],
+            "children": [
+                {
+                    "topic_id": "topic-fallback-error-1",
+                    "label": SPECIAL_ERROR_LABEL,
+                    "keywords": [],
+                    "document_count": len(unique_documents),
+                    "documents": unique_documents,
+                    "children": [],
+                }
+            ],
+        }
 
     def _iter_leaf_topics(
         self,

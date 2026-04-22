@@ -142,6 +142,39 @@ def test_reprocess_failed_posts_official_endpoint(monkeypatch):
     assert calls["request"]["url"] == "http://127.0.0.1:9621/documents/reprocess_failed"
 
 
+def test_pipeline_status_requests_official_endpoint(monkeypatch):
+    calls = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"busy":false}'
+
+        def json(self):
+            return {"busy": False, "latest_message": ""}
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def request(self, method, url, headers=None, json=None, files=None):
+            calls["request"] = {"method": method, "url": url, "headers": headers}
+            return FakeResponse()
+
+    import app.infra.lightrag_client as client_module
+
+    monkeypatch.setattr(client_module.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient())
+    client = client_module.LightRAGClient(base_url="http://127.0.0.1:9621", api_key="")
+
+    payload = asyncio.run(client.get_pipeline_status())
+
+    assert payload["busy"] is False
+    assert calls["request"]["method"] == "GET"
+    assert calls["request"]["url"] == "http://127.0.0.1:9621/documents/pipeline_status"
+
+
 def test_query_data_posts_expected_payload(monkeypatch):
     calls = {}
 

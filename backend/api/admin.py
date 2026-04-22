@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import httpx
 
 from app.core.logger import logger
+from app.services.classification_service import ClassificationService
 from app.services.document_audit_service import DocumentAuditService
 from app.services.document_service import DocumentService
 from app.services.local_embedding_runtime import LocalEmbeddingRuntime
@@ -15,6 +16,7 @@ router = APIRouter()
 obs_service = ObservabilityService()
 document_audit_service = DocumentAuditService()
 document_service = DocumentService()
+classification_service = ClassificationService()
 local_embedding_runtime = LocalEmbeddingRuntime()
 
 LIGHTRAG_WEBUI_PROXY_PREFIX = "/api/v1/admin/lightrag/webui"
@@ -26,6 +28,18 @@ class LocalOnlyBatchImportRequest(BaseModel):
     concurrency: int = 1
     interval_seconds: float = 0.5
     include_failed: bool = False
+
+
+class LocalIndexBackfillRequest(BaseModel):
+    limit: int = 100
+    include_failed: bool = False
+    build_block_index: bool = False
+
+
+class BatchClassificationRequest(BaseModel):
+    limit: int = 100
+    include_needs_review: bool = True
+    force: bool = False
 
 
 def _rewrite_lightrag_branding(raw_text: str) -> str:
@@ -53,15 +67,35 @@ def _sanitize_lightrag_webui_html(raw_html: str) -> str:
         'href="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="',
     )
     injection = """
-<style>
+<style data-docagent-hide-api-tab>
   a[href*="github.com"],
   a[href*="HKUDS"],
   a[href="#"],
   [class*="footer"],
-  [id*="footer"] {
+  [id*="footer"],
+  iframe.api-docs-iframe,
+  [class*="api-docs"],
+  [id*="api-docs"] {
     display: none !important;
   }
 </style>
+<script data-docagent-hide-api-tab>
+  (() => {
+    const hideApiEntry = () => {
+      const candidates = Array.from(document.querySelectorAll('a, button, [role="tab"], [data-state], [class]'));
+      for (const node of candidates) {
+        const text = (node.textContent || '').trim().toLowerCase();
+        const href = (node.getAttribute && (node.getAttribute('href') || node.getAttribute('to') || '')) || '';
+        if (text === 'api' || href.includes('api')) {
+          node.style.display = 'none';
+          node.setAttribute('aria-hidden', 'true');
+        }
+      }
+    };
+    hideApiEntry();
+    new MutationObserver(hideApiEntry).observe(document.documentElement, { childList: true, subtree: true });
+  })();
+</script>
 """.strip()
     if "</head>" in sanitized:
         sanitized = sanitized.replace("</head>", f"{injection}</head>", 1)
@@ -70,12 +104,28 @@ def _sanitize_lightrag_webui_html(raw_html: str) -> str:
 
 def _sanitize_lightrag_webui_javascript(raw_javascript: str) -> str:
     sanitized = _rewrite_lightrag_branding(raw_javascript)
-    return (
+    sanitized = (
         sanitized
         .replace('const Fh=""', f'const Fh="{LIGHTRAG_APP_PROXY_PREFIX}"')
         .replace('Fh="",', f'Fh="{LIGHTRAG_APP_PROXY_PREFIX}",')
         .replace('dW="/webui/"', f'dW="{LIGHTRAG_WEBUI_PROXY_PREFIX}/"')
     )
+    sanitized = sanitized.replace(
+        "visibleTabs:r",
+        "visibleTabs:{...r,api:!1}",
+    ).replace(
+        "visibleTabs:r,",
+        "visibleTabs:{...r,api:!1},",
+    )
+    if "api:!1" not in sanitized and (
+        "visibleTabs" in sanitized
+        or "apiSite" in sanitized
+        or "header.api" in sanitized
+        or LIGHTRAG_APP_PROXY_PREFIX in sanitized
+        or LIGHTRAG_WEBUI_PROXY_PREFIX in sanitized
+    ):
+        sanitized = f"{sanitized}\n;window.__DOCAGENT_HIDE_LIGHTRAG_API_TAB__={{api:!1}};"
+    return sanitized
 
 
 async def _proxy_lightrag_webui_request(
@@ -207,6 +257,71 @@ async def get_local_only_batch_import_status():
         return success(data=document_service.get_batch_import_status(), message="获取批量导入状态成功")
     except Exception as e:
         logger.error(f"获取 local_only 批量导入状态失败: {str(e)}")
+        raise BusinessException(500, detail=str(e))
+
+
+@router.post("/document-index/backfill", summary="批量补齐本地文档阅读索引")
+async def backfill_local_document_index(request: LocalIndexBackfillRequest):
+    try:
+        payload = document_service.backfill_local_index(
+            limit=request.limit,
+            include_failed=request.include_failed,
+            build_block_index=request.build_block_index,
+        )
+        return success(data=payload, message="本地文档阅读索引补齐完成")
+    except Exception as e:
+        logger.error(f"补齐本地文档阅读索引失败: {str(e)}")
+        raise BusinessException(500, detail=str(e))
+
+
+@router.post("/classification/backfill", summary="批量补齐可分类文档的 taxonomy 分类")
+async def batch_classify_ready_documents(request: BatchClassificationRequest):
+    try:
+        payload = classification_service.batch_classify_ready_documents(
+            limit=request.limit,
+            include_needs_review=request.include_needs_review,
+            force=request.force,
+        )
+        return success(data=payload, message="文档分类补齐完成")
+    except Exception as e:
+        logger.error(f"批量补齐文档分类失败: {str(e)}")
+        raise BusinessException(500, detail=str(e))
+
+
+@router.get("/runtime/health", summary="获取运行时健康状态")
+async def get_runtime_health():
+    try:
+        embedding = await local_embedding_runtime.health()
+        payload = {
+            "dependencies": {
+                "local_embedding": {
+                    "status": embedding.get("status"),
+                    "liveness": embedding.get(
+                        "liveness",
+                        "up" if embedding.get("status") != "unhealthy" else "down",
+                    ),
+                    "readiness": embedding.get(
+                        "readiness",
+                        "ready" if embedding.get("ready") else "unready",
+                    ),
+                    "detail": embedding.get("detail"),
+                }
+            },
+            **document_service.get_runtime_health(),
+        }
+        return success(data=payload, message="获取运行时健康成功")
+    except Exception as e:
+        logger.error(f"获取运行时健康失败: {str(e)}")
+        raise BusinessException(500, detail=str(e))
+
+
+@router.post("/runtime/documents/{document_id}/retry-rag", summary="重试文档 RAG 入库阶段")
+async def retry_rag_stage(document_id: str):
+    try:
+        payload = document_service.retry_rag_stage(document_id)
+        return success(data=payload, message="已重新加入 RAG 阶段队列")
+    except Exception as e:
+        logger.error(f"重试 RAG 阶段失败: {str(e)}")
         raise BusinessException(500, detail=str(e))
 
 

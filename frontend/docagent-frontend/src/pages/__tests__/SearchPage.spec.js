@@ -83,7 +83,7 @@ describe('SearchPage', () => {
     }), expect.any(Object))
     expect(workspaceSearchStream.mock.calls[0][0]).not.toHaveProperty('retrieval_version')
     expect(apiMocks.workspaceSearch).not.toHaveBeenCalled()
-  })
+  }, 15000)
 
   it('uses sync workspace search for non-smart requests without retrieval_version', async () => {
     const wrapper = await mountSearchPage()

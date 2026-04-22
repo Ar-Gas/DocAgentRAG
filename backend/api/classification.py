@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 from app.core.logger import logger
 from app.schemas.classification import (
+    BatchReclassifyRequest,
     ClassificationRequest,
     ClassificationResponse,
     CategoryListResponse,
@@ -38,6 +39,16 @@ async def classify_single_document(request: ClassificationRequest):
         )
         logger.info(f"文档分类完成: {request.document_id} -> {result.get('categories', [])}")
         return success(data=result, message="文档分类完成")
+    except AppServiceError as exc:
+        raise BusinessException(code=exc.code, detail=exc.detail)
+
+@router.post("/reclassify/batch", summary="批量重新分类文档")
+async def batch_reclassify_documents(request: BatchReclassifyRequest):
+    try:
+        result = await _run_blocking_classification(
+            lambda: classification_service.batch_reclassify(request.model_dump())
+        )
+        return success(data=result, message=f"批量重新分类完成，成功 {result['success_count']}/{result['total']}")
     except AppServiceError as exc:
         raise BusinessException(code=exc.code, detail=exc.detail)
 

@@ -14,6 +14,7 @@ from config import (
     DOUBAO_API_KEY,
     DOUBAO_DEFAULT_LLM_MODEL,
     DOUBAO_LLM_API_URL,
+    LOCAL_EMBEDDING_DIM,
     LOCAL_EMBEDDING_MODEL_NAME,
 )
 
@@ -40,6 +41,7 @@ def main() -> int:
         doubao_llm_model=DOUBAO_DEFAULT_LLM_MODEL,
         embedding_host=args.embedding_host,
         embedding_model=LOCAL_EMBEDDING_MODEL_NAME,
+        embedding_dim=LOCAL_EMBEDDING_DIM,
     )
 
     output_path = Path(args.output)

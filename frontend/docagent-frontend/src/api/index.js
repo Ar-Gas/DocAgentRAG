@@ -64,6 +64,9 @@ export const api = {
   reclassifyDocument: (documentId) => {
     return request.post(`/classification/reclassify/${documentId}`)
   },
+  batchReclassifyDocuments: (payload = {}) => {
+    return request.post('/classification/reclassify/batch', payload)
+  },
   getCategories: () => {
     return request.get('/classification/categories')
   },

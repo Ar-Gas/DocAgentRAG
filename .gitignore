@@ -42,3 +42,4 @@ backend/models/
 homework/
 .worktrees/
 .bashrc
+logs/

@@ -2,6 +2,11 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({
+  getGraphLabels: vi.fn().mockResolvedValue({
+    data: {
+      items: ['联邦学习', '隐私保护'],
+    },
+  }),
   getGraph: vi.fn().mockResolvedValue({
     data: {
       nodes: [
@@ -29,13 +34,20 @@ describe('GraphPage', () => {
 
     await flushPromises()
 
+    expect(api.getGraphLabels).toHaveBeenCalled()
     expect(api.getGraph).toHaveBeenCalled()
+    expect(api.getGraph).toHaveBeenCalledWith({ label: '联邦学习' })
     expect(wrapper.text()).toContain('联邦学习')
     expect(wrapper.text()).toContain('隐私保护')
     expect(wrapper.text()).toContain('提升')
   })
 
-  it('shows an architecture hint when the graph is empty', async () => {
+  it('shows a lightrag empty hint when the graph is empty', async () => {
+    api.getGraphLabels.mockResolvedValueOnce({
+      data: {
+        items: [],
+      },
+    })
     api.getGraph.mockResolvedValueOnce({
       data: {
         nodes: [],
@@ -53,7 +65,7 @@ describe('GraphPage', () => {
 
     await flushPromises()
 
-    expect(wrapper.text()).toContain('当前知识图谱仍依赖本地 KG 索引')
-    expect(wrapper.text()).toContain('尚未同步到本地图谱')
+    expect(wrapper.text()).toContain('当前 LightRAG 图谱暂无可展示数据')
+    expect(wrapper.text()).toContain('请先在 LightRAG 中完成文档入库与实体关系抽取')
   })
 })

@@ -181,6 +181,12 @@ class _FakeFastAPIApp:
 
         return decorator
 
+    def head(self, *args, **kwargs):
+        def decorator(fn):
+            return fn
+
+        return decorator
+
 
 class DoubaoConfigTests(unittest.TestCase):
     def setUp(self):
@@ -290,13 +296,15 @@ class DoubaoConfigTests(unittest.TestCase):
         module = self._load_config("llm_true", fake_secrets_module=fake_secrets)
         self.assertTrue(module.LLM_AVAILABLE)
 
-    def test_config_defaults_bge_model_to_local_bge_m3_path(self):
+    def test_config_defaults_embedding_model_to_small_local_model_for_low_memory_runtime(self):
         os.environ.pop("BGE_MODEL", None)
 
         module = self._load_config("default_bge_model")
 
-        expected = module.BASE_DIR / "models" / "BAAI" / "bge-m3"
+        expected = module.BASE_DIR / "models" / "all-MiniLM-L6-v2"
         self.assertEqual(module.BGE_MODEL, str(expected))
+        self.assertEqual(module.LOCAL_EMBEDDING_MODEL_NAME, "all-MiniLM-L6-v2")
+        self.assertEqual(module.LOCAL_EMBEDDING_DIM, 384)
 
     def test_config_respects_bge_model_env_override(self):
         os.environ["BGE_MODEL"] = "/opt/models/BAAI/bge-m3"
@@ -348,6 +356,7 @@ class DoubaoConfigTests(unittest.TestCase):
     def test_main_sync_helper_updates_llm_availability_and_logs(self):
         config_module = types.ModuleType("config")
         config_module.API_PREFIX = "/api/v1"
+        config_module.BASE_DIR = Path("/tmp/docagent-backend")
         config_module.DATA_DIR = Path("/tmp/docagent-data")
         config_module.DOC_DIR = Path("/tmp/docagent-doc")
         config_module.CHROMA_DB_PATH = Path("/tmp/docagent-chroma")
@@ -366,7 +375,11 @@ class DoubaoConfigTests(unittest.TestCase):
         exceptions_module = types.ModuleType("fastapi.exceptions")
         exceptions_module.RequestValidationError = Exception
         responses_module = types.ModuleType("fastapi.responses")
+        responses_module.FileResponse = object
         responses_module.RedirectResponse = object
+        responses_module.Response = object
+        staticfiles_module = types.ModuleType("fastapi.staticfiles")
+        staticfiles_module.StaticFiles = object
 
         api_module = types.ModuleType("api")
         api_module.router = object()
@@ -430,6 +443,50 @@ class DoubaoConfigTests(unittest.TestCase):
 
         document_audit_service_module.DocumentAuditService = _FakeDocumentAuditService
 
+        classification_service_module = types.ModuleType("app.services.classification_service")
+
+        class _FakeClassificationService:
+            def batch_classify_ready_documents(self, **kwargs):
+                return {"total": 0}
+
+        classification_service_module.ClassificationService = _FakeClassificationService
+
+        document_service_module = types.ModuleType("app.services.document_service")
+
+        class _FakeDocumentService:
+            def backfill_local_index(self, **kwargs):
+                return {"total": 0}
+
+            def recover_stale_lightrag_queue(self):
+                return {"status": "skipped"}
+
+            def start_local_only_batch_import(self, **kwargs):
+                return None
+
+            async def wait_for_batch_import(self):
+                return None
+
+            def get_batch_import_status(self):
+                return {"state": "completed"}
+
+        document_service_module.DocumentService = _FakeDocumentService
+
+        lightrag_runtime_module = types.ModuleType("app.services.lightrag_runtime")
+
+        class _FakeLightRAGRuntime:
+            async def ensure_ready(self):
+                return {"status": "healthy"}
+
+        lightrag_runtime_module.LightRAGRuntime = _FakeLightRAGRuntime
+
+        local_embedding_runtime_module = types.ModuleType("app.services.local_embedding_runtime")
+
+        class _FakeLocalEmbeddingRuntime:
+            async def ensure_ready(self):
+                return {"status": "healthy"}
+
+        local_embedding_runtime_module.LocalEmbeddingRuntime = _FakeLocalEmbeddingRuntime
+
         core_logger_module = types.ModuleType("app.core.logger")
         core_logger_module.logger = mock.Mock()
         core_logger_module.setup_logging = lambda *args, **kwargs: None
@@ -443,6 +500,7 @@ class DoubaoConfigTests(unittest.TestCase):
                 "fastapi.middleware.cors": cors_module,
                 "fastapi.exceptions": exceptions_module,
                 "fastapi.responses": responses_module,
+                "fastapi.staticfiles": staticfiles_module,
                 "api": api_module,
                 "app": app_module,
                 "app.core": app_core_module,
@@ -453,6 +511,10 @@ class DoubaoConfigTests(unittest.TestCase):
                 "app.infra.embedding_provider": embedding_provider_module,
                 "app.infra.repositories.document_repository": document_repository_module,
                 "app.infra.vector_store": vector_store_module,
+                "app.services.classification_service": classification_service_module,
+                "app.services.document_service": document_service_module,
+                "app.services.lightrag_runtime": lightrag_runtime_module,
+                "app.services.local_embedding_runtime": local_embedding_runtime_module,
                 "app.services.indexing_service": indexing_service_module,
                 "app.services.document_vector_index_service": document_vector_index_service_module,
                 "app.services.document_audit_service": document_audit_service_module,

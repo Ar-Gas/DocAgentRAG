@@ -138,16 +138,10 @@ def test_classify_returns_topic_tree_assignment_payload(monkeypatch):
 
     monkeypatch.setattr(classification_service_module, "TaxonomyClassifier", FakeTaxonomyClassifier)
 
-    scheduled = []
-
-    def fake_create_task(coro):
-        scheduled.append(coro)
-        return Mock()
-
-    monkeypatch.setattr(classification_service_module.asyncio, "create_task", fake_create_task)
-
     service = ClassificationService()
     service.topic_tree_service = Mock(classify_document=Mock())
+    scheduled = []
+    service._schedule_topic_tree_update = lambda document_id: scheduled.append(document_id)
 
     async def async_case():
         return service.classify("doc-1")
@@ -160,6 +154,5 @@ def test_classify_returns_topic_tree_assignment_payload(monkeypatch):
     assert result["classification_source"] == "llm"
     assert updates[0][1]["classification_result"] == "Offer审批"
     assert updates[0][1]["classification_id"] == "hr.offer_approval"
-    assert len(scheduled) == 1
-    scheduled[0].close()
+    assert scheduled == ["doc-1"]
     service.topic_tree_service.classify_document.assert_not_called()

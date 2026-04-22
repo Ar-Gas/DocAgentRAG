@@ -63,3 +63,45 @@ def test_get_local_only_batch_import_status_api_returns_service_status(monkeypat
     assert payload["data"]["state"] == "completed"
     assert payload["data"]["succeeded"] == 2
     mock_status.assert_called_once_with()
+
+
+def test_backfill_local_document_index_api_passes_flags(monkeypatch):
+    mock_backfill = Mock(return_value={"total": 3, "success_count": 3, "results": []})
+    monkeypatch.setattr(admin_api.document_service, "backfill_local_index", mock_backfill)
+
+    request = admin_api.LocalIndexBackfillRequest(
+        limit=3,
+        include_failed=True,
+        build_block_index=False,
+    )
+
+    payload = asyncio.run(admin_api.backfill_local_document_index(request))
+
+    assert payload["code"] == 200
+    assert payload["data"]["success_count"] == 3
+    mock_backfill.assert_called_once_with(
+        limit=3,
+        include_failed=True,
+        build_block_index=False,
+    )
+
+
+def test_batch_classification_api_passes_limits_and_review_flag(monkeypatch):
+    mock_classify = Mock(return_value={"total": 4, "classified": 2, "needs_review": 2, "results": []})
+    monkeypatch.setattr(admin_api.classification_service, "batch_classify_ready_documents", mock_classify)
+
+    request = admin_api.BatchClassificationRequest(
+        limit=4,
+        include_needs_review=True,
+        force=False,
+    )
+
+    payload = asyncio.run(admin_api.batch_classify_ready_documents(request))
+
+    assert payload["code"] == 200
+    assert payload["data"]["classified"] == 2
+    mock_classify.assert_called_once_with(
+        limit=4,
+        include_needs_review=True,
+        force=False,
+    )

@@ -180,12 +180,14 @@ const normalizeCategoriesResponse = (payload) => {
 }
 
 const loadWorkspaceChrome = async () => {
-  const [statsRes, categoriesRes] = await Promise.all([
+  const [statsRes, categoriesRes] = await Promise.allSettled([
     api.getStats(),
     api.getCategories()
   ])
-  stats.value = statsRes.data || {}
-  categories.value = normalizeCategoriesResponse(categoriesRes)
+  stats.value = statsRes.status === 'fulfilled' ? (statsRes.value.data || {}) : {}
+  categories.value = categoriesRes.status === 'fulfilled'
+    ? normalizeCategoriesResponse(categoriesRes.value)
+    : []
 }
 
 const loadDocumentReader = async (documentId, anchorBlockId = null) => {

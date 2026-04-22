@@ -140,14 +140,14 @@ def test_build_topic_tree_uses_cluster_and_llm_labels_not_classification_results
 
     tree = TopicTreeService().build_topic_tree(force_rebuild=True)
 
-    assert tree["schema_version"] == 3
+    assert tree["schema_version"] == 4
     assert tree["generation_method"] == "doc_embedding_cluster+fallback_label_contract"
     assert tree["total_documents"] == 3
     assert tree["clustered_documents"] == 3
     assert tree["excluded_documents"] == 0
     assert [topic["label"] for topic in tree["topics"]] == ["财务治理"]
     assert [child["label"] for child in tree["topics"][0]["children"]] == ["年度审计", "供应商比价"]
-    assert store.saved["topic_tree"]["schema_version"] == 3
+    assert store.saved["topic_tree"]["schema_version"] == 4
 
 
 def test_build_topic_tree_places_each_document_in_exactly_one_leaf(monkeypatch):
@@ -175,7 +175,7 @@ def test_get_topic_tree_ignores_legacy_cached_payload_and_rebuilds(monkeypatch):
 
     tree = TopicTreeService().get_topic_tree()
 
-    assert tree["schema_version"] == 3
+    assert tree["schema_version"] == 4
     assert tree["generation_method"] == "doc_embedding_cluster+fallback_label_contract"
     assert tree["topics"][0]["label"] == "财务治理"
 
