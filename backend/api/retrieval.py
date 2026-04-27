@@ -68,6 +68,7 @@ class WorkspaceSearchRequest(BaseModel):
     query: str = ""
     mode: str = "hybrid"
     retrieval_version: Optional[str] = None
+    document_ids: Optional[List[str]] = None
     limit: int = 10
     alpha: float = 0.5
     use_rerank: bool = False
@@ -213,6 +214,7 @@ async def workspace_search_api(request: WorkspaceSearchRequest):
             query=request.query,
             mode=request.mode,
             retrieval_version=request.retrieval_version,
+            document_ids=request.document_ids,
             limit=request.limit,
             alpha=request.alpha,
             use_rerank=request.use_rerank,

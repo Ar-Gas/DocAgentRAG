@@ -102,6 +102,33 @@ def test_workspace_search_groups_block_results_and_applies_filters(monkeypatch):
     assert payload["applied_filters"]["classification"] == "财务"
 
 
+def test_workspace_search_limits_ready_document_ids_to_requested_scope(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+    captured = {}
+
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_ready_block_document_ids",
+        lambda **kwargs: {"doc-1", "doc-2"},
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: captured.update(kwargs) or {"documents": [], "results": [], "meta": {"fallback_used": False}},
+    )
+    monkeypatch.setattr(retrieval_service_module, "get_all_documents", lambda: [])
+
+    RetrievalService().workspace_search(
+        query="金融史",
+        mode="hybrid",
+        retrieval_version="block",
+        document_ids=["doc-2"],
+        group_by_document=True,
+    )
+
+    assert captured["ready_document_ids"] == {"doc-2"}
+
+
 def test_workspace_search_fallback_accepts_classification_id_filter(monkeypatch):
     monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: set())
     monkeypatch.setattr(
@@ -141,6 +168,126 @@ def test_workspace_search_fallback_accepts_classification_id_filter(monkeypatch)
     assert payload["documents"][0]["document_id"] == "doc-1"
 
 
+def test_workspace_search_fallback_respects_document_id_scope(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: set())
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {"documents": [], "results": [], "meta": {"fallback_used": False}},
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "cryptography-7.pptx",
+                "filepath": "/docs/cryptography-7.pptx",
+                "file_type": ".pptx",
+                "classification_result": "计算机基础教材",
+                "created_at_iso": "2026-03-08T10:00:00",
+                "preview_content": "本章讨论对称密钥保密通信。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pptx",
+            },
+            {
+                "id": "doc-2",
+                "filename": "中国是部金融史.pdf",
+                "filepath": "/docs/china-finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "金融历史书籍",
+                "created_at_iso": "2026-03-09T10:00:00",
+                "preview_content": "金融是货币、信用与资金融通活动的总称。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            },
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="什么是金融",
+        mode="hybrid",
+        retrieval_version="block",
+        document_ids=["doc-2"],
+        group_by_document=True,
+    )
+
+    assert payload["retrieval_version_used"] == "metadata_fallback"
+    assert payload["total_documents"] == 1
+    assert payload["documents"][0]["document_id"] == "doc-2"
+    assert payload["results"][0]["document_id"] == "doc-2"
+    assert payload["results"][0]["content_snippet"] == "金融是货币、信用与资金融通活动的总称。"
+
+
+def test_workspace_search_fallback_prefers_domain_terms_over_question_stopwords(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: set())
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {"documents": [], "results": [], "meta": {"fallback_used": False}},
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "cryptography-7.pptx",
+                "filepath": "/docs/cryptography-7.pptx",
+                "file_type": ".pptx",
+                "classification_result": "计算机基础教材",
+                "created_at_iso": "2026-03-10T10:00:00",
+                "preview_content": "链路加密中每个结点都需要一套加密设备。端到端加密只需在系统的两个终端执行加密和解密操作。主密钥不经常使用并长期存在，临时生成会话密钥并分发给通信双方。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pptx",
+            },
+            {
+                "id": "doc-2",
+                "filename": "中国是部金融史.pdf",
+                "filepath": "/docs/china-finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "金融历史书籍",
+                "created_at_iso": "2026-03-09T10:00:00",
+                "preview_content": "中国是部金融史。小结：国家的金融精神。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            },
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="什么是金融",
+        mode="hybrid",
+        retrieval_version="block",
+        group_by_document=True,
+    )
+
+    assert payload["retrieval_version_used"] == "metadata_fallback"
+    assert payload["total_documents"] == 1
+    assert payload["documents"][0]["document_id"] == "doc-2"
+    assert payload["results"][0]["document_id"] == "doc-2"
+    assert "金融" in payload["results"][0]["content_snippet"]
+
+
+def test_extract_workspace_preview_snippet_prioritizes_domain_terms_over_stopwords():
+    preview_content = ("这是无关内容。" * 30) + "国家的金融精神在这里被集中讨论。"
+
+    snippet = RetrievalService()._extract_workspace_preview_snippet(
+        preview_content,
+        search_terms=["什么", "是", "金融", "什么是金融"],
+        fallback_text="",
+    )
+
+    assert "金融精神" in snippet
+    assert not snippet.startswith("这是无关内容。")
+
+
 def test_workspace_search_api_returns_service_payload(monkeypatch):
     mock_workspace_search = Mock(
         return_value={
@@ -167,6 +314,34 @@ def test_workspace_search_api_returns_service_payload(monkeypatch):
     assert body["code"] == 200
     assert body["data"]["total_documents"] == 1
     mock_workspace_search.assert_called_once()
+
+
+def test_workspace_search_api_forwards_document_ids(monkeypatch):
+    mock_workspace_search = Mock(
+        return_value={
+            "query": "金融",
+            "mode": "hybrid",
+            "total_results": 1,
+            "total_documents": 1,
+            "results": [{"document_id": "doc-2"}],
+            "documents": [{"document_id": "doc-2"}],
+            "applied_filters": {"document_ids": ["doc-2"]},
+        }
+    )
+    monkeypatch.setattr(retrieval_api.retrieval_service, "workspace_search", mock_workspace_search)
+
+    request_model = retrieval_api.WorkspaceSearchRequest(
+        query="金融",
+        mode="hybrid",
+        document_ids=["doc-2"],
+        group_by_document=True,
+    )
+
+    body = asyncio.run(retrieval_api.workspace_search_api(request_model))
+
+    assert body["code"] == 200
+    mock_workspace_search.assert_called_once()
+    assert mock_workspace_search.call_args.kwargs["document_ids"] == ["doc-2"]
 
 
 def test_workspace_search_block_mode_returns_documents_and_compatibility_results(monkeypatch):
@@ -296,6 +471,49 @@ def test_workspace_search_falls_back_to_preview_results_when_no_ready_docs(monke
     assert payload["meta"]["fallback_reason"] == "missing_block_index"
 
 
+def test_workspace_search_metadata_fallback_derives_file_availability_from_existing_path(monkeypatch, tmp_path):
+    search_cache_module.get_search_cache().invalidate_all()
+    existing_file = tmp_path / "finance-history.pdf"
+    existing_file.write_text("finance", encoding="utf-8")
+
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: set())
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {"documents": [], "results": [], "meta": {"fallback_used": False}},
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "finance-history.pdf",
+                "filepath": str(existing_file),
+                "file_type": ".pdf",
+                "classification_result": "书籍",
+                "created_at_iso": "2026-03-08T10:00:00",
+                "preview_content": "本书讨论中国金融史与金融演化。",
+                "file_available": None,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            }
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="金融",
+        mode="hybrid",
+        retrieval_version="block",
+        limit=10,
+        group_by_document=True,
+    )
+
+    assert payload["retrieval_version_used"] == "metadata_fallback"
+    assert payload["documents"][0]["file_available"] is True
+    assert payload["results"][0]["file_available"] is True
+
+
 def test_workspace_search_blends_metadata_matches_to_improve_document_ranking(monkeypatch):
     search_cache_module.get_search_cache().invalidate_all()
 
@@ -389,6 +607,416 @@ def test_workspace_search_blends_metadata_matches_to_improve_document_ranking(mo
     assert payload["results"][0]["document_id"] == "doc-title"
     assert payload["results"][0]["content_snippet"] == "本书从周朝到近现代梳理中国三千年金融演化。"
     assert payload["meta"]["fallback_used"] is False
+
+
+def test_workspace_search_metadata_blend_prefers_title_coverage_over_generic_high_frequency_terms(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: {"doc-body", "doc-title", "doc-generic"})
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {
+            "documents": [
+                {
+                    "document_id": "doc-body",
+                    "filename": "当代中国社会分层.pdf",
+                    "path": "/docs/social-strata.pdf",
+                    "file_type": ".pdf",
+                    "classification_result": "社会学",
+                    "created_at_iso": "2026-03-10T10:00:00",
+                    "preview_content": "讨论中国居民金融资产与社会分层。",
+                    "file_available": True,
+                    "score": 0.51,
+                    "hit_count": 1,
+                    "best_block_id": "doc-body:block-v1:2",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-body:block-v1:2",
+                            "block_index": 2,
+                            "block_type": "paragraph",
+                            "snippet": "讨论中国居民金融资产与社会分层。",
+                            "heading_path": [],
+                            "page_number": 5,
+                            "score": 0.51,
+                            "match_reason": "body match",
+                        }
+                    ],
+                }
+            ],
+            "results": [
+                {
+                    "document_id": "doc-body",
+                    "block_id": "doc-body:block-v1:2",
+                    "block_index": 2,
+                    "snippet": "讨论中国居民金融资产与社会分层。",
+                    "score": 0.51,
+                    "match_reason": "body match",
+                }
+            ],
+            "meta": {"fallback_used": False},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-body",
+                "filename": "当代中国社会分层.pdf",
+                "filepath": "/docs/social-strata.pdf",
+                "file_type": ".pdf",
+                "classification_result": "社会学",
+                "created_at_iso": "2026-03-10T10:00:00",
+                "preview_content": "讨论中国居民金融资产与社会分层。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            },
+            {
+                "id": "doc-title",
+                "filename": "中国是部金融史.pdf",
+                "filepath": "/docs/china-finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "经济",
+                "created_at_iso": "2026-03-09T10:00:00",
+                "preview_content": "本书从周朝到近现代梳理中国三千年金融演化。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            },
+            {
+                "id": "doc-generic",
+                "filename": "中国银行存款利率.xlsx",
+                "filepath": "/docs/china-bank-rate.xlsx",
+                "file_type": ".xlsx",
+                "classification_result": "金融数据",
+                "created_at_iso": "2026-03-11T10:00:00",
+                "preview_content": "中国银行金融数据。中国市场。中国利率。金融指标。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "xlsx",
+            },
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="中国金融史",
+        mode="hybrid",
+        retrieval_version="block",
+        limit=10,
+        group_by_document=True,
+    )
+
+    assert payload["retrieval_version_used"] == "block"
+    assert payload["documents"][0]["document_id"] == "doc-title"
+    assert payload["results"][0]["document_id"] == "doc-title"
+
+
+def test_workspace_search_keeps_block_excerpt_when_metadata_match_exists_for_same_document(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: {"doc-1"})
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {
+            "documents": [
+                {
+                    "document_id": "doc-1",
+                    "filename": "中国是部金融史.pdf",
+                    "path": "/docs/china-finance-history.pdf",
+                    "file_type": ".pdf",
+                    "classification_result": "经济",
+                    "created_at_iso": "2026-03-09T10:00:00",
+                    "preview_content": "目录：国家的金融精神。",
+                    "file_available": True,
+                    "score": 0.42,
+                    "hit_count": 1,
+                    "best_block_id": "doc-1:block-v1:4",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-1:block-v1:4",
+                            "block_index": 4,
+                            "block_type": "paragraph",
+                            "snippet": "当代金融学教学科研的根基是西方经济学。",
+                            "heading_path": [],
+                            "page_number": 6,
+                            "score": 0.42,
+                            "match_reason": "body match",
+                        }
+                    ],
+                }
+            ],
+            "results": [
+                {
+                    "document_id": "doc-1",
+                    "block_id": "doc-1:block-v1:4",
+                    "block_index": 4,
+                    "snippet": "当代金融学教学科研的根基是西方经济学。",
+                    "score": 0.42,
+                    "match_reason": "body match",
+                }
+            ],
+            "meta": {"fallback_used": False},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-1",
+                "filename": "中国是部金融史.pdf",
+                "filepath": "/docs/china-finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "经济",
+                "created_at_iso": "2026-03-09T10:00:00",
+                "preview_content": "目录：国家的金融精神。本书从周朝到近现代梳理中国三千年金融演化。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            }
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="什么是金融",
+        mode="hybrid",
+        retrieval_version="block",
+        limit=10,
+        group_by_document=True,
+    )
+
+    assert payload["retrieval_version_used"] == "block"
+    assert payload["documents"][0]["best_block_id"] == "doc-1:block-v1:4"
+    assert payload["documents"][0]["best_excerpt"] == "当代金融学教学科研的根基是西方经济学。"
+    assert payload["results"][0]["block_id"] == "doc-1:block-v1:4"
+
+
+def test_workspace_search_metadata_boosts_existing_block_result_for_title_match(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: {"doc-body", "doc-title"})
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {
+            "documents": [
+                {
+                    "document_id": "doc-body",
+                    "filename": "当代中国社会分层.pdf",
+                    "path": "/docs/social-strata.pdf",
+                    "file_type": ".pdf",
+                    "classification_result": "社会学",
+                    "created_at_iso": "2026-03-10T10:00:00",
+                    "preview_content": "讨论中国居民金融资产与社会分层。",
+                    "file_available": True,
+                    "score": 0.5,
+                    "hit_count": 1,
+                    "best_block_id": "doc-body:block-v1:2",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-body:block-v1:2",
+                            "block_index": 2,
+                            "block_type": "paragraph",
+                            "snippet": "讨论中国居民金融资产与社会分层。",
+                            "heading_path": [],
+                            "page_number": 5,
+                            "score": 0.5,
+                            "match_reason": "body match",
+                        }
+                    ],
+                },
+                {
+                    "document_id": "doc-title",
+                    "filename": "中国是部金融史.pdf",
+                    "path": "/docs/china-finance-history.pdf",
+                    "file_type": ".pdf",
+                    "classification_result": "经济",
+                    "created_at_iso": "2026-03-09T10:00:00",
+                    "preview_content": "本书从周朝到近现代梳理中国三千年金融演化。",
+                    "file_available": True,
+                    "score": 0.45,
+                    "hit_count": 1,
+                    "best_block_id": "doc-title:block-v1:4",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-title:block-v1:4",
+                            "block_index": 4,
+                            "block_type": "paragraph",
+                            "snippet": "当代金融学教学科研的根基是西方经济学。",
+                            "heading_path": [],
+                            "page_number": 6,
+                            "score": 0.45,
+                            "match_reason": "body match",
+                        }
+                    ],
+                },
+            ],
+            "results": [
+                {
+                    "document_id": "doc-body",
+                    "block_id": "doc-body:block-v1:2",
+                    "block_index": 2,
+                    "snippet": "讨论中国居民金融资产与社会分层。",
+                    "score": 0.5,
+                    "match_reason": "body match",
+                },
+                {
+                    "document_id": "doc-title",
+                    "block_id": "doc-title:block-v1:4",
+                    "block_index": 4,
+                    "snippet": "当代金融学教学科研的根基是西方经济学。",
+                    "score": 0.45,
+                    "match_reason": "body match",
+                },
+            ],
+            "meta": {"fallback_used": False},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-body",
+                "filename": "当代中国社会分层.pdf",
+                "filepath": "/docs/social-strata.pdf",
+                "file_type": ".pdf",
+                "classification_result": "社会学",
+                "created_at_iso": "2026-03-10T10:00:00",
+                "preview_content": "讨论中国居民金融资产与社会分层。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            },
+            {
+                "id": "doc-title",
+                "filename": "中国是部金融史.pdf",
+                "filepath": "/docs/china-finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "经济",
+                "created_at_iso": "2026-03-09T10:00:00",
+                "preview_content": "本书从周朝到近现代梳理中国三千年金融演化。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            },
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="中国金融史",
+        mode="hybrid",
+        retrieval_version="block",
+        limit=10,
+        group_by_document=True,
+    )
+
+    assert payload["retrieval_version_used"] == "block"
+    assert payload["documents"][0]["document_id"] == "doc-title"
+    assert payload["documents"][0]["best_block_id"] == "doc-title:block-v1:4"
+    assert payload["results"][0]["document_id"] == "doc-title"
+    assert payload["results"][0]["block_id"] == "doc-title:block-v1:4"
+
+
+def test_workspace_search_grouped_results_prefer_meaningful_evidence_over_cip(monkeypatch):
+    search_cache_module.get_search_cache().invalidate_all()
+
+    monkeypatch.setattr(retrieval_service_module, "get_ready_block_document_ids", lambda **kwargs: {"doc-title"})
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "search_block_documents",
+        lambda **kwargs: {
+            "documents": [
+                {
+                    "document_id": "doc-title",
+                    "filename": "中国是部金融史.pdf",
+                    "path": "/docs/china-finance-history.pdf",
+                    "file_type": ".pdf",
+                    "classification_result": "经济",
+                    "created_at_iso": "2026-03-09T10:00:00",
+                    "preview_content": "本书从周朝到近现代梳理中国三千年金融演化。",
+                    "file_available": True,
+                    "score": 0.81,
+                    "hit_count": 2,
+                    "best_block_id": "doc-title:block-v1:3",
+                    "evidence_blocks": [
+                        {
+                            "block_id": "doc-title:block-v1:3",
+                            "block_index": 3,
+                            "block_type": "paragraph",
+                            "snippet": "图书在版编目（CIP）数据 中国是部金融史 ISBN 978-7-5502-1252-7",
+                            "heading_path": [],
+                            "page_number": 2,
+                            "score": 0.81,
+                            "match_reason": "body match",
+                        },
+                        {
+                            "block_id": "doc-title:block-v1:4",
+                            "block_index": 4,
+                            "block_type": "paragraph",
+                            "snippet": "当代金融学教学科研的根基是西方经济学。",
+                            "heading_path": [],
+                            "page_number": 3,
+                            "score": 0.4,
+                            "match_reason": "body match",
+                        },
+                    ],
+                }
+            ],
+            "results": [
+                {
+                    "document_id": "doc-title",
+                    "block_id": "doc-title:block-v1:3",
+                    "block_index": 3,
+                    "snippet": "图书在版编目（CIP）数据 中国是部金融史 ISBN 978-7-5502-1252-7",
+                    "score": 0.81,
+                    "match_reason": "body match",
+                },
+                {
+                    "document_id": "doc-title",
+                    "block_id": "doc-title:block-v1:4",
+                    "block_index": 4,
+                    "snippet": "当代金融学教学科研的根基是西方经济学。",
+                    "score": 0.4,
+                    "match_reason": "body match",
+                },
+            ],
+            "meta": {"fallback_used": False},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_service_module,
+        "get_all_documents",
+        lambda: [
+            {
+                "id": "doc-title",
+                "filename": "中国是部金融史.pdf",
+                "filepath": "/docs/china-finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "经济",
+                "created_at_iso": "2026-03-09T10:00:00",
+                "preview_content": "本书从周朝到近现代梳理中国三千年金融演化。",
+                "file_available": True,
+                "extraction_status": "ready",
+                "parser_name": "pdf",
+            }
+        ],
+    )
+
+    payload = RetrievalService().workspace_search(
+        query="中国金融史",
+        mode="hybrid",
+        retrieval_version="block",
+        limit=10,
+        group_by_document=True,
+    )
+
+    assert payload["documents"][0]["best_block_id"] == "doc-title:block-v1:4"
+    assert payload["documents"][0]["best_excerpt"] == "当代金融学教学科研的根基是西方经济学。"
+    assert payload["results"][0]["block_id"] == "doc-title:block-v1:4"
 
 
 async def _read_streaming_response(response):
