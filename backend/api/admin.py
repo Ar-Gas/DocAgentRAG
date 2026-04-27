@@ -1,5 +1,10 @@
 """Admin API - 系统管理端点"""
+import json
+import os
+from urllib.parse import parse_qsl, urlencode
+
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
 
@@ -21,6 +26,24 @@ local_embedding_runtime = LocalEmbeddingRuntime()
 
 LIGHTRAG_WEBUI_PROXY_PREFIX = "/api/v1/admin/lightrag/webui"
 LIGHTRAG_APP_PROXY_PREFIX = "/api/v1/admin/lightrag/app"
+LIGHTRAG_GRAPH_PROXY_MAX_MAX_NODES = max(
+    int(
+        os.getenv(
+            "LIGHTRAG_GRAPH_PROXY_MAX_MAX_NODES",
+            os.getenv("LIGHTRAG_GRAPH_PROXY_MIN_MAX_NODES", "5000"),
+        )
+        or "5000"
+    ),
+    1,
+)
+LIGHTRAG_STREAM_PROXY_TIMEOUT = httpx.Timeout(
+    connect=30.0,
+    read=None,
+    write=300.0,
+    pool=300.0,
+)
+LIGHTRAG_LAZY_GRAPH_QUERY_LABEL = ""
+LIGHTRAG_LAZY_GRAPH_DEFAULT_MAX_NODES = 300
 
 
 class LocalOnlyBatchImportRequest(BaseModel):
@@ -51,6 +74,42 @@ def _rewrite_lightrag_branding(raw_text: str) -> str:
     )
 
 
+def _build_lightrag_lazy_graph_bootstrap_script() -> str:
+    return f"""
+<script data-docagent-lazy-graph-bootstrap>
+  (() => {{
+    const storageKey = "settings-storage";
+    const defaultQueryLabel = {json.dumps(LIGHTRAG_LAZY_GRAPH_QUERY_LABEL)};
+    const defaultMaxNodes = {LIGHTRAG_LAZY_GRAPH_DEFAULT_MAX_NODES};
+    try {{
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) return;
+      const payload = JSON.parse(raw);
+      if (!payload || typeof payload !== "object") return;
+      const rawState = payload.state;
+      const state = typeof rawState === "string" ? JSON.parse(rawState) : rawState;
+      if (!state || typeof state !== "object") return;
+
+      const currentQueryLabel = typeof state.queryLabel === "string" ? state.queryLabel : "";
+      if (!currentQueryLabel || currentQueryLabel === "*") {{
+        state.queryLabel = defaultQueryLabel;
+      }}
+
+      const currentMaxNodes = Number(state.graphMaxNodes);
+      if (!Number.isFinite(currentMaxNodes) || currentMaxNodes > defaultMaxNodes) {{
+        state.graphMaxNodes = defaultMaxNodes;
+      }}
+
+      payload.state = typeof rawState === "string" ? JSON.stringify(state) : state;
+      window.localStorage.setItem(storageKey, JSON.stringify(payload));
+    }} catch (_error) {{
+      // Fail open to avoid breaking startup.
+    }}
+  }})();
+</script>
+""".strip()
+
+
 def _sanitize_lightrag_webui_html(raw_html: str) -> str:
     sanitized = _rewrite_lightrag_branding(raw_html)
     sanitized = sanitized.replace(
@@ -66,6 +125,7 @@ def _sanitize_lightrag_webui_html(raw_html: str) -> str:
         'href="favicon.png"',
         'href="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="',
     )
+    lazy_graph_bootstrap_injection = _build_lightrag_lazy_graph_bootstrap_script()
     injection = """
 <style data-docagent-hide-api-tab>
   a[href*="github.com"],
@@ -98,7 +158,11 @@ def _sanitize_lightrag_webui_html(raw_html: str) -> str:
 </script>
 """.strip()
     if "</head>" in sanitized:
-        sanitized = sanitized.replace("</head>", f"{injection}</head>", 1)
+        sanitized = sanitized.replace(
+            "</head>",
+            f"{lazy_graph_bootstrap_injection}\n{injection}</head>",
+            1,
+        )
     return sanitized
 
 
@@ -125,18 +189,14 @@ def _sanitize_lightrag_webui_javascript(raw_javascript: str) -> str:
         or LIGHTRAG_WEBUI_PROXY_PREFIX in sanitized
     ):
         sanitized = f"{sanitized}\n;window.__DOCAGENT_HIDE_LIGHTRAG_API_TAB__={{api:!1}};"
+    sanitized = sanitized.replace(
+        'R?.is_truncated&&Kt.info(e("graphPanel.dataIsTruncated","Graph data is truncated to Max Nodes"))',
+        'R?.is_truncated&&console.info("DocAgent graph truncated")',
+    )
     return sanitized
 
 
-async def _proxy_lightrag_webui_request(
-    *,
-    base_path: str = "webui",
-    path: str = "",
-    query: str = "",
-    method: str = "GET",
-    body: bytes = b"",
-    content_type: str | None = None,
-):
+def _build_lightrag_upstream_url(*, base_path: str = "webui", path: str = "", query: str = "") -> str:
     root_base_url = LIGHTRAG_BASE_URL.rstrip("/")
     normalized_base_path = base_path.strip("/")
     normalized_path = path.lstrip("/")
@@ -154,7 +214,19 @@ async def _proxy_lightrag_webui_request(
         )
     if query:
         upstream_url = f"{upstream_url}?{query}"
+    return upstream_url
 
+
+async def _proxy_lightrag_webui_request(
+    *,
+    base_path: str = "webui",
+    path: str = "",
+    query: str = "",
+    method: str = "GET",
+    body: bytes = b"",
+    content_type: str | None = None,
+):
+    upstream_url = _build_lightrag_upstream_url(base_path=base_path, path=path, query=query)
     headers = {}
     if content_type:
         headers["content-type"] = content_type
@@ -168,12 +240,88 @@ async def _proxy_lightrag_webui_request(
         )
 
 
+async def _proxy_lightrag_stream_request(
+    *,
+    path: str = "",
+    query: str = "",
+    method: str = "GET",
+    body: bytes = b"",
+    content_type: str | None = None,
+):
+    upstream_url = _build_lightrag_upstream_url(base_path="", path=path, query=query)
+    headers = {}
+    if content_type:
+        headers["content-type"] = content_type
+
+    client = httpx.AsyncClient(timeout=LIGHTRAG_STREAM_PROXY_TIMEOUT)
+    request = client.build_request(
+        method=method,
+        url=upstream_url,
+        headers=headers,
+        content=body or None,
+    )
+    upstream = await client.send(request, stream=True)
+
+    async def _stream_bytes():
+        try:
+            async for chunk in upstream.aiter_raw():
+                if chunk:
+                    yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    media_type = upstream.headers.get("content-type", "application/octet-stream")
+    passthrough_headers = {}
+    for header_name in ("cache-control", "x-accel-buffering", "content-disposition"):
+        if upstream.headers.get(header_name):
+            passthrough_headers[header_name] = upstream.headers[header_name]
+
+    return StreamingResponse(
+        _stream_bytes(),
+        status_code=upstream.status_code,
+        media_type=media_type.split(";", 1)[0],
+        headers=passthrough_headers,
+    )
+
+
 def _requires_local_embedding_preflight(path: str, method: str) -> bool:
     normalized_path = (path or "").strip("/")
     normalized_method = (method or "GET").upper()
     if normalized_method != "POST":
         return False
     return normalized_path in {"documents/upload", "documents/reprocess_failed"}
+
+
+def _is_streaming_lightrag_path(path: str, method: str) -> bool:
+    normalized_path = (path or "").strip("/")
+    normalized_method = (method or "GET").upper()
+    return normalized_method == "POST" and normalized_path == "query/stream"
+
+
+def _normalize_lightrag_app_query(path: str, query: str) -> str:
+    normalized_path = (path or "").strip("/")
+    if normalized_path != "graphs":
+        return query
+
+    items = parse_qsl(query, keep_blank_values=True)
+    payload = {key: value for key, value in items}
+    raw_max_nodes = str(payload.get("max_nodes", "")).strip()
+    if not raw_max_nodes:
+        return query
+
+    try:
+        max_nodes = int(raw_max_nodes)
+    except ValueError:
+        return query
+
+    # Respect the UI's requested graph size and only apply a hard ceiling to
+    # prevent accidental oversized graph fetches from hanging the workbench.
+    if max_nodes > LIGHTRAG_GRAPH_PROXY_MAX_MAX_NODES:
+        payload["max_nodes"] = str(LIGHTRAG_GRAPH_PROXY_MAX_MAX_NODES)
+        return urlencode(payload)
+
+    return urlencode(payload)
 
 
 @router.get("/stats", summary="获取系统统计")
@@ -384,17 +532,26 @@ async def proxy_lightrag_app_root(request: Request):
 @router.api_route("/lightrag/app/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_lightrag_app_path(path: str, request: Request):
     try:
-        query = request.url.query
+        normalized_path = (path or "").strip("/")
+        query = _normalize_lightrag_app_query(normalized_path, request.url.query)
         method = request.method
         body = b""
         if method.upper() not in {"GET", "HEAD"}:
             body = await request.body()
-        if _requires_local_embedding_preflight(path, method):
+        if _requires_local_embedding_preflight(normalized_path, method):
             await local_embedding_runtime.ensure_ready()
         content_type = request.headers.get("content-type")
+        if _is_streaming_lightrag_path(normalized_path, method):
+            return await _proxy_lightrag_stream_request(
+                path=normalized_path,
+                query=query,
+                method=method,
+                body=body,
+                content_type=content_type,
+            )
         upstream = await _proxy_lightrag_webui_request(
             base_path="",
-            path=path,
+            path=normalized_path,
             query=query,
             method=method,
             body=body,
