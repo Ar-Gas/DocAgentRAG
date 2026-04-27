@@ -188,6 +188,10 @@ async def run_startup_reconciliation(
             include_failed=False,
             build_block_index=False,
         )
+        await asyncio.to_thread(
+            document_service.reconcile_missing_lightrag_documents,
+            limit=lightrag_limit,
+        )
         payload["lightrag_recovery"] = await asyncio.to_thread(
             document_service.recover_stale_lightrag_queue,
         )

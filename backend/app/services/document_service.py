@@ -11,6 +11,7 @@ from app.core.logger import logger
 from app.infra.lightrag_client import LightRAGClient
 from app.infra.metadata_store import INGEST_FIELD_UNSET
 from app.infra.file_utils import enrich_document_file_state as _enrich_document_file_state
+from app.infra.file_utils import path_exists_safely as _path_exists_safely
 from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.infra.repositories.document_content_repository import DocumentContentRepository
 from app.infra.repositories.document_repository import DocumentRepository
@@ -42,6 +43,9 @@ LIGHTRAG_LOCAL_ONLY_FAILURE_MARKERS = (
 )
 LIGHTRAG_STALE_PENDING_THRESHOLD = timedelta(minutes=15)
 LIGHTRAG_STALE_PROCESSING_THRESHOLD = timedelta(minutes=30)
+LIGHTRAG_SHARD_CONTENT_THRESHOLD = 120000
+LIGHTRAG_SHARD_TARGET_SIZE = 90000
+LIGHTRAG_SHARD_HARD_LIMIT = 100000
 
 
 def _document_repository() -> DocumentRepository:
@@ -302,11 +306,418 @@ class DocumentService:
         }
 
     @staticmethod
+    def _normalize_lightrag_document_key(value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        return Path(raw.replace("\\", "/")).name or raw
+
+    def _list_lightrag_documents(self, *, page_size: int = 100) -> List[Dict]:
+        normalized_page_size = max(int(page_size or 100), 1)
+        documents: List[Dict] = []
+        page = 1
+
+        while True:
+            payload = self._run_coroutine(
+                self.lightrag_client.list_documents_paginated(page=page, page_size=normalized_page_size)
+            ) or {}
+            page_documents = [
+                item
+                for item in (payload.get("documents") or payload.get("items") or [])
+                if isinstance(item, dict)
+            ]
+            documents.extend(page_documents)
+
+            pagination = payload.get("pagination") or {}
+            has_next = bool(pagination.get("has_next"))
+            total_pages = int(pagination.get("total_pages") or 0)
+            if has_next or (total_pages and page < total_pages):
+                page += 1
+                continue
+            break
+
+        return documents
+
+    def reconcile_missing_lightrag_documents(self, *, limit: int = 100) -> Dict:
+        normalized_limit = max(int(limit or 0), 0)
+        candidates = [
+            item
+            for item in (self._document_repository().list_all() or [])
+            if (
+                isinstance(item, dict)
+                and (item.get("ingest_status") or "").lower() in {"ready", "queued", "processing"}
+                and self._supports_lightrag_ingest(item.get("file_type", ""))
+                and not self._is_aggregate_parent_document(item)
+            )
+        ]
+        if normalized_limit > 0:
+            candidates = candidates[:normalized_limit]
+        if not candidates:
+            return {
+                "status": "skipped",
+                "candidate_documents": 0,
+                "remote_documents": 0,
+                "requeued_documents": 0,
+                "document_ids": [],
+            }
+
+        try:
+            remote_documents = self._list_lightrag_documents(
+                page_size=max(normalized_limit, 100) if normalized_limit else 100
+            )
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "candidate_documents": len(candidates),
+                "remote_documents": 0,
+                "requeued_documents": 0,
+                "document_ids": [],
+                "reason": str(exc),
+            }
+
+        remote_keys = {
+            key
+            for item in remote_documents
+            for key in {
+                self._normalize_lightrag_document_key(item.get("file_path")),
+                self._normalize_lightrag_document_key(item.get("file_name")),
+                self._normalize_lightrag_document_key(item.get("id")),
+            }
+            if key
+        }
+
+        now = datetime.now().isoformat()
+        requeued_ids: List[str] = []
+        for item in candidates:
+            local_keys = {
+                self._normalize_lightrag_document_key(item.get("filepath")),
+                self._normalize_lightrag_document_key(item.get("filename")),
+                self._normalize_lightrag_document_key(item.get("lightrag_doc_id")),
+            }
+            local_keys.discard("")
+            if local_keys & remote_keys:
+                continue
+
+            self._update_ingest_status(
+                item["id"],
+                ingest_status="local_only",
+                ingest_error=None,
+                lightrag_track_id=None,
+                lightrag_doc_id=None,
+                last_status_sync_at=now,
+            )
+            requeued_ids.append(item["id"])
+
+        return {
+            "status": "completed",
+            "candidate_documents": len(candidates),
+            "remote_documents": len(remote_documents),
+            "requeued_documents": len(requeued_ids),
+            "document_ids": requeued_ids,
+        }
+
+    @staticmethod
     def _supports_lightrag_ingest(file_type: str) -> bool:
         return str(file_type or "").strip().lower() in LIGHTRAG_SUPPORTED_EXTENSIONS
 
     def _document_repository(self) -> DocumentRepository:
         return self.document_repository or _document_repository()
+
+    @staticmethod
+    def _is_shard_document(doc_info: Optional[Dict]) -> bool:
+        return bool((doc_info or {}).get("is_shard"))
+
+    def _list_document_shards(self, parent_document_id: str) -> List[Dict]:
+        if not parent_document_id:
+            return []
+        return list(self._document_repository().list_by_parent(parent_document_id) or [])
+
+    def _is_aggregate_parent_document(self, doc_info: Optional[Dict]) -> bool:
+        if self._is_shard_document(doc_info):
+            return False
+        if not isinstance(doc_info, dict) or not doc_info.get("id"):
+            return False
+        shard_count = int(doc_info.get("shard_count") or 0)
+        return shard_count > 0 or bool(self._list_document_shards(doc_info["id"]))
+
+    @staticmethod
+    def _build_shard_filename(filename: str, shard_index: int) -> str:
+        path = Path(filename or "")
+        if path.suffix:
+            return f"{path.stem}-{shard_index}{path.suffix}"
+        if path.name:
+            return f"{path.name}-{shard_index}"
+        return f"document-{shard_index}"
+
+    def _split_extracted_content(self, content: str) -> List[str]:
+        normalized = str(content or "")
+        if not normalized.strip():
+            return []
+
+        paragraphs = [
+            item.strip()
+            for item in re.split(r"\n\s*\n", normalized)
+            if item and item.strip()
+        ]
+        if not paragraphs:
+            return [normalized.strip()]
+
+        target_size = max(int(LIGHTRAG_SHARD_TARGET_SIZE or 0), 1)
+        hard_limit = max(int(LIGHTRAG_SHARD_HARD_LIMIT or 0), target_size)
+        shards: List[str] = []
+        current_parts: List[str] = []
+        current_length = 0
+
+        def flush_current() -> None:
+            nonlocal current_parts, current_length
+            if not current_parts:
+                return
+            shard_content = "\n\n".join(current_parts).strip()
+            if shard_content:
+                shards.append(shard_content)
+            current_parts = []
+            current_length = 0
+
+        for paragraph in paragraphs:
+            paragraph_length = len(paragraph)
+            if paragraph_length > hard_limit:
+                flush_current()
+                start = 0
+                while start < paragraph_length:
+                    part = paragraph[start:start + hard_limit].strip()
+                    if part:
+                        shards.append(part)
+                    start += hard_limit
+                continue
+
+            proposed_length = current_length + paragraph_length + (2 if current_parts else 0)
+            if current_parts and proposed_length > target_size:
+                flush_current()
+
+            current_parts.append(paragraph)
+            current_length += paragraph_length + (2 if len(current_parts) > 1 else 0)
+
+        flush_current()
+        return [item for item in shards if item.strip()]
+
+    def _clear_shard_documents(self, parent_document_id: str) -> None:
+        for shard in self._list_document_shards(parent_document_id):
+            delete_document(shard["id"])
+
+    def _create_shard_document(
+        self,
+        *,
+        parent_doc: Dict,
+        shard_content: str,
+        shard_index: int,
+        shard_count: int,
+        parser_name: Optional[str],
+    ) -> Dict:
+        now = datetime.now().isoformat()
+        document_id = str(_uuid.uuid4())
+        file_type = str(parent_doc.get("file_type") or "")
+        ingest_status = "queued" if self._supports_lightrag_ingest(file_type) else "local_only"
+        shard_doc = {
+            "id": document_id,
+            "filename": self._build_shard_filename(parent_doc.get("filename", ""), shard_index),
+            "filepath": parent_doc.get("filepath"),
+            "file_type": file_type,
+            "preview_content": shard_content[:1000],
+            "full_content_length": len(shard_content),
+            "parser_name": parser_name,
+            "extraction_status": "ready",
+            "created_at": parent_doc.get("created_at"),
+            "created_at_iso": parent_doc.get("created_at_iso"),
+            "updated_at": now,
+            "ingest_status": ingest_status,
+            "ingest_error": None,
+            "lightrag_track_id": None,
+            "lightrag_doc_id": None,
+            "last_status_sync_at": None,
+            "local_index_status": "ready",
+            "local_index_error": None,
+            "parent_document_id": parent_doc.get("id"),
+            "is_shard": True,
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "shard_content_length": len(shard_content),
+            "shard_group_id": parent_doc.get("id"),
+        }
+        self._document_repository().upsert(shard_doc)
+        self._content_repository().save(
+            document_id,
+            full_content=shard_content,
+            preview_content=shard_doc["preview_content"],
+            extraction_status="ready",
+            parser_name=parser_name,
+            extraction_error=None,
+        )
+        self._mark_stage(
+            document_id,
+            "content_extract",
+            status="ready",
+            payload={"content_length": len(shard_content), "parser_name": parser_name},
+        )
+        self._mark_stage(
+            document_id,
+            "local_preview_index",
+            status="ready",
+            payload={"content_length": len(shard_content), "parser_name": parser_name},
+        )
+        self._mark_stage(
+            document_id,
+            "rag_ingest",
+            status="queued" if ingest_status == "queued" else "deferred",
+            payload={},
+        )
+        return shard_doc
+
+    def _sync_shard_documents(
+        self,
+        *,
+        parent_doc: Dict,
+        content: str,
+        parser_name: Optional[str],
+    ) -> List[Dict]:
+        content_length = len(str(content or ""))
+        if content_length < int(LIGHTRAG_SHARD_CONTENT_THRESHOLD or 0):
+            self._clear_shard_documents(parent_doc["id"])
+            self._update_document_info(
+                parent_doc["id"],
+                {
+                    "parent_document_id": None,
+                    "is_shard": False,
+                    "shard_index": None,
+                    "shard_count": 0,
+                    "shard_content_length": None,
+                    "shard_group_id": None,
+                    "lightrag_track_id": None,
+                    "lightrag_doc_id": None,
+                    "ingest_error": None,
+                    "updated_at": datetime.now().isoformat(),
+                },
+            )
+            return []
+
+        shard_contents = self._split_extracted_content(content)
+        if len(shard_contents) <= 1:
+            self._clear_shard_documents(parent_doc["id"])
+            self._update_document_info(
+                parent_doc["id"],
+                {
+                    "parent_document_id": None,
+                    "is_shard": False,
+                    "shard_index": None,
+                    "shard_count": 0,
+                    "shard_content_length": None,
+                    "shard_group_id": None,
+                    "lightrag_track_id": None,
+                    "lightrag_doc_id": None,
+                    "ingest_error": None,
+                    "updated_at": datetime.now().isoformat(),
+                },
+            )
+            return []
+
+        self._clear_shard_documents(parent_doc["id"])
+        shard_count = len(shard_contents)
+        shards = [
+            self._create_shard_document(
+                parent_doc=parent_doc,
+                shard_content=shard_content,
+                shard_index=index,
+                shard_count=shard_count,
+                parser_name=parser_name,
+            )
+            for index, shard_content in enumerate(shard_contents, start=1)
+        ]
+        self._update_document_info(
+            parent_doc["id"],
+            {
+                "parent_document_id": None,
+                "is_shard": False,
+                "shard_index": None,
+                "shard_count": shard_count,
+                "shard_content_length": None,
+                "shard_group_id": parent_doc["id"],
+                "lightrag_track_id": None,
+                "lightrag_doc_id": None,
+                "ingest_error": None,
+                "updated_at": datetime.now().isoformat(),
+            },
+        )
+        return shards
+
+    def _aggregate_shard_runtime(self, parent_doc: Dict, shards: List[Dict]) -> Dict:
+        if not shards:
+            result = dict(parent_doc)
+            result["shards"] = []
+            return result
+
+        hydrated_shards = [
+            self._hydrate_document(self._sync_processing_ingest_status(dict(shard)))
+            for shard in shards
+        ]
+        statuses = [str(item.get("ingest_status") or "").lower() for item in hydrated_shards]
+        errors = [
+            str(item.get("ingest_error") or "").strip()
+            for item in hydrated_shards
+            if str(item.get("ingest_error") or "").strip()
+        ]
+
+        ingest_status = "queued"
+        if any(status == "failed" for status in statuses):
+            ingest_status = "failed"
+        elif all(status == "local_only" for status in statuses):
+            ingest_status = "local_only"
+        elif all(status in {"ready", "local_only"} for status in statuses):
+            ingest_status = "ready"
+        elif any(status == "processing" for status in statuses):
+            ingest_status = "processing"
+        elif any(status == "queued" for status in statuses):
+            ingest_status = "queued"
+
+        updates = {
+            "ingest_status": ingest_status,
+            "ingest_error": errors[0] if errors else None,
+            "shard_count": len(hydrated_shards),
+            "shard_group_id": parent_doc.get("id"),
+            "lightrag_track_id": None,
+            "lightrag_doc_id": None,
+        }
+        if any(parent_doc.get(key) != value for key, value in updates.items()):
+            updates["updated_at"] = datetime.now().isoformat()
+            self._update_document_info(parent_doc["id"], updates)
+
+        result = dict(parent_doc)
+        result.update(updates)
+        result["shards"] = [
+            {
+                "id": item.get("id"),
+                "filename": item.get("filename"),
+                "parent_document_id": item.get("parent_document_id"),
+                "is_shard": item.get("is_shard"),
+                "shard_index": item.get("shard_index"),
+                "shard_count": item.get("shard_count"),
+                "shard_content_length": item.get("shard_content_length") or item.get("full_content_length"),
+                "ingest_status": item.get("ingest_status"),
+                "ingest_error": item.get("ingest_error"),
+                "lightrag_track_id": item.get("lightrag_track_id"),
+                "lightrag_doc_id": item.get("lightrag_doc_id"),
+            }
+            for item in hydrated_shards
+        ]
+        return result
+
+    def _maybe_apply_shard_runtime(self, doc_info: Dict) -> Dict:
+        if self._is_shard_document(doc_info):
+            return doc_info
+        shards = self._list_document_shards(doc_info.get("id", ""))
+        if not shards:
+            result = dict(doc_info)
+            result["shards"] = []
+            return result
+        return self._aggregate_shard_runtime(doc_info, shards)
 
     def _mark_stage(self, document_id: str, stage_name: str, **kwargs) -> None:
         self._document_repository().upsert_stage(document_id, stage_name, **kwargs)
@@ -404,6 +815,17 @@ class DocumentService:
         normalized = self._normalize_document_status_fields(hydrated)
         if isinstance(normalized, dict) and normalized.get("id"):
             normalized["processing_stages"] = self._load_stage_map(normalized["id"])
+            normalized = self._maybe_apply_shard_runtime(normalized)
+        return normalized
+
+    def _hydrate_document_summary(self, doc_info: Dict) -> Dict:
+        summary = dict(doc_info or {})
+        current_path = str(summary.get("filepath") or "").strip()
+        summary["filepath"] = current_path
+        summary["file_available"] = _path_exists_safely(current_path)
+        normalized = self._normalize_document_status_fields(summary)
+        if isinstance(normalized, dict) and normalized.get("id") and "shards" not in normalized:
+            normalized["shards"] = []
         return normalized
 
     def _normalize_document_status_fields(self, doc_info: Dict) -> Dict:
@@ -1020,6 +1442,12 @@ class DocumentService:
             "last_status_sync_at": None,
             "local_index_status": "queued",
             "local_index_error": None,
+            "parent_document_id": None,
+            "is_shard": False,
+            "shard_index": None,
+            "shard_count": 0,
+            "shard_content_length": None,
+            "shard_group_id": None,
         }
         if not self._document_repository().upsert(doc_info):
             if file_path.exists():
@@ -1033,15 +1461,22 @@ class DocumentService:
         if self.enqueue_background:
             self._enqueue_document_pipeline(document_id)
 
-        return self._hydrate_document(doc_info)
+        return self.get_document(document_id)
 
     def _enqueue_document_pipeline(self, document_id: str) -> None:
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(asyncio.to_thread(self.process_local_index, document_id))
+            loop.create_task(
+                asyncio.to_thread(
+                    self.process_local_index,
+                    document_id,
+                    build_block_index=True,
+                )
+            )
             loop.create_task(self.process_pending_ingest(document_id))
         except RuntimeError:
             logger.warning("no_running_loop_for_document_pipeline document_id={}", document_id)
+            self.process_local_index(document_id, build_block_index=True)
 
     def _enqueue_ingest(self, document_id: str) -> None:
         try:
@@ -1054,7 +1489,7 @@ class DocumentService:
         self,
         document_id: str,
         force: bool = False,
-        build_block_index: bool = False,
+        build_block_index: bool = True,
     ) -> Dict:
         doc_info = self.get_document(document_id)
         current_status = str(doc_info.get("local_index_status") or "").lower()
@@ -1100,6 +1535,11 @@ class DocumentService:
                     "parser_name": extraction.parser_name,
                 },
             )
+            shards = self._sync_shard_documents(
+                parent_doc=processing_doc,
+                content=extraction.content,
+                parser_name=extraction.parser_name,
+            )
 
             local_index_error = None
             if build_block_index:
@@ -1117,6 +1557,8 @@ class DocumentService:
                     "preview_content": extraction.preview_content,
                     "full_content_length": extraction.full_content_length,
                     "updated_at": datetime.now().isoformat(),
+                    "shard_count": len(shards),
+                    "shard_group_id": document_id if shards else None,
                 },
             )
             self._mark_stage(
@@ -1168,10 +1610,20 @@ class DocumentService:
 
     async def process_pending_ingest(self, document_id: str) -> Dict:
         doc_info = self.get_document(document_id)
-        if (doc_info.get("ingest_status") or "") not in {"queued", "failed", "processing", "local_only"}:
+        current_status = str(doc_info.get("ingest_status") or "").lower()
+        if current_status not in {"queued", "failed", "processing", "local_only"}:
             return doc_info
+        if self._is_aggregate_parent_document(doc_info):
+            last_result = doc_info
+            for shard in self._list_document_shards(document_id):
+                last_result = await self.process_pending_ingest(shard["id"])
+                if str(last_result.get("ingest_status") or "").lower() == "failed":
+                    break
+            return self.get_document(document_id)
+        if current_status in {"queued", "processing"} and str(doc_info.get("lightrag_track_id") or "").strip():
+            return self.get_document(document_id)
         if not self._supports_lightrag_ingest(doc_info.get("file_type", "")):
-            if (doc_info.get("ingest_status") or "").lower() != "local_only":
+            if current_status != "local_only":
                 self._update_ingest_status(
                     document_id,
                     ingest_status="local_only",
@@ -1324,6 +1776,7 @@ class DocumentService:
                 isinstance(item, dict)
                 and (item.get("ingest_status") or "").lower() in statuses
                 and self._supports_lightrag_ingest(item.get("file_type", ""))
+                and not self._is_shard_document(item)
             )
         ]
         documents.sort(
@@ -1494,18 +1947,54 @@ class DocumentService:
             await self._batch_import_task
 
     def retry_ingest(self, document_id: str) -> Dict:
-        self.get_document(document_id)
-        self._update_document_info(
-            document_id,
-            {
-                "ingest_status": "queued",
-                "ingest_error": None,
-                "lightrag_track_id": None,
-                "lightrag_doc_id": None,
-                "last_status_sync_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
-            },
-        )
+        doc_info = self.get_document(document_id)
+        now = datetime.now().isoformat()
+        if self._is_aggregate_parent_document(doc_info):
+            for shard in self._list_document_shards(document_id):
+                self._update_document_info(
+                    shard["id"],
+                    {
+                        "ingest_status": "queued",
+                        "ingest_error": None,
+                        "lightrag_track_id": None,
+                        "lightrag_doc_id": None,
+                        "last_status_sync_at": now,
+                        "updated_at": now,
+                    },
+                )
+                stage_map = self._load_stage_map(shard["id"])
+                self._mark_stage(
+                    shard["id"],
+                    "rag_ingest",
+                    status="queued",
+                    error_code=None,
+                    error_message=None,
+                    retry_count=stage_map.get("rag_ingest", {}).get("retry_count", 0),
+                    payload=stage_map.get("rag_ingest", {}).get("payload", {}),
+                )
+            self._update_document_info(
+                document_id,
+                {
+                    "ingest_status": "queued",
+                    "ingest_error": None,
+                    "lightrag_track_id": None,
+                    "lightrag_doc_id": None,
+                    "last_status_sync_at": now,
+                    "updated_at": now,
+                },
+            )
+        else:
+            self._update_document_info(
+                document_id,
+                {
+                    "ingest_status": "queued",
+                    "ingest_error": None,
+                    "lightrag_track_id": None,
+                    "lightrag_doc_id": None,
+                    "last_status_sync_at": now,
+                    "updated_at": now,
+                },
+            )
         if self.enqueue_background:
             self._enqueue_ingest(document_id)
         return self.get_document(document_id)
@@ -1543,6 +2032,12 @@ class DocumentService:
             }
 
         total = len(all_docs)
+        all_docs = [
+            item
+            for item in all_docs
+            if isinstance(item, dict) and not self._is_shard_document(item)
+        ]
+        total = len(all_docs)
         start = (page - 1) * page_size
         end = start + page_size
         items: List[Dict] = []
@@ -1551,8 +2046,7 @@ class DocumentService:
                 logger.warning("skip_invalid_document_row row_type={}", type(item).__name__)
                 continue
             try:
-                synced_item = self._sync_processing_ingest_status(item)
-                items.append(self._hydrate_document(synced_item))
+                items.append(self._hydrate_document_summary(item))
             except Exception as exc:
                 logger.opt(exception=exc).error(
                     "hydrate_document_failed document_id={} filename={}",
@@ -1576,6 +2070,7 @@ class DocumentService:
             return {"total": 0, "categorized": 0, "uncategorized": 0}
 
         valid_docs = [item for item in all_docs if isinstance(item, dict)]
+        valid_docs = [item for item in valid_docs if not self._is_shard_document(item)]
         total = len(valid_docs)
         categorized = sum(
             1
@@ -1682,15 +2177,19 @@ class DocumentService:
 
     def delete_document(self, document_id: str) -> Dict:
         doc_info = self.get_document(document_id)
+        if not self._is_shard_document(doc_info):
+            for shard in self._list_document_shards(document_id):
+                delete_document(shard["id"])
         file_path = Path(doc_info.get("filepath", ""))
         file_deleted = False
 
-        try:
-            if file_path.exists():
-                os.remove(file_path)
-            file_deleted = True
-        except Exception:
-            file_deleted = True
+        if not self._is_shard_document(doc_info):
+            try:
+                if file_path.exists():
+                    os.remove(file_path)
+                file_deleted = True
+            except Exception:
+                file_deleted = True
 
         if not delete_document(document_id):
             raise AppServiceError(1004, f"文档ID: {document_id}")
@@ -1741,6 +2240,8 @@ class DocumentService:
         for item in documents:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
+            if self._is_shard_document(item):
+                continue
             status = str(item.get("local_index_status") or "").lower()
             has_content = bool(str(item.get("preview_content") or "").strip())
             if status in {"queued", "processing", ""} or not has_content:
@@ -1756,7 +2257,7 @@ class DocumentService:
         *,
         limit: int = 100,
         include_failed: bool = False,
-        build_block_index: bool = False,
+        build_block_index: bool = True,
     ) -> Dict:
         candidate_ids = self.list_local_index_candidates(limit=limit, include_failed=include_failed)
         results = []

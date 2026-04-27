@@ -3,6 +3,7 @@ import json
 import threading
 from typing import Dict, List
 
+from app.core.logger import logger
 from app.domain.classification_contract import (
     SPECIAL_ERROR_LABEL,
     normalize_classification_label,
@@ -224,6 +225,7 @@ class ClassificationService:
                 )
             )
             self._save_taxonomy_result(document_id, result)
+            self._sync_classified_storage_best_effort(document_id)
             if schedule_topic_tree_update and result.get("classification_label"):
                 self._schedule_topic_tree_update(document_id)
         except Exception as exc:
@@ -279,6 +281,7 @@ class ClassificationService:
                 )
             )
             self._save_taxonomy_result(document_id, result)
+            self._sync_classified_storage_best_effort(document_id)
             if schedule_topic_tree_update and result.get("classification_label"):
                 self._schedule_topic_tree_update(document_id)
         except Exception as exc:
@@ -736,6 +739,79 @@ class ClassificationService:
                 "taxonomy_version": result.get("taxonomy_version", "taxonomy_v1"),
             },
         )
+
+    def sync_classified_storage(self, document_id: str) -> Dict:
+        doc_info = get_document_info(document_id)
+        if not doc_info:
+            raise AppServiceError(1001, f"文档ID: {document_id}")
+
+        filepath = str(doc_info.get("filepath") or "").strip()
+        if "/classified_docs/" not in filepath.replace("\\", "/"):
+            return {
+                "document_id": document_id,
+                "synced": False,
+                "moved": False,
+                "reason": "not_in_classified_docs",
+                "filepath": filepath,
+            }
+
+        classification_path = self._parse_classification_path(doc_info.get("classification_path"))
+        if not classification_path:
+            return {
+                "document_id": document_id,
+                "synced": False,
+                "moved": False,
+                "reason": "missing_classification_path",
+                "filepath": filepath,
+            }
+
+        success, target_path = create_classification_directory(doc_info, classification_path)
+        if not success or not target_path:
+            return {
+                "document_id": document_id,
+                "synced": False,
+                "moved": False,
+                "reason": "move_failed",
+                "filepath": filepath,
+            }
+
+        moved = str(target_path) != filepath
+        if moved:
+            update_document_info(document_id, {"filepath": target_path})
+
+        return {
+            "document_id": document_id,
+            "synced": True,
+            "moved": moved,
+            "filepath": target_path,
+            "classification_path": classification_path,
+        }
+
+    def _sync_classified_storage_best_effort(self, document_id: str) -> None:
+        try:
+            self.sync_classified_storage(document_id)
+        except Exception as exc:
+            logger.opt(exception=exc).warning(
+                "sync_classified_storage_failed document_id={}",
+                document_id,
+            )
+
+    @staticmethod
+    def _parse_classification_path(raw_path: object) -> List[str]:
+        if isinstance(raw_path, list):
+            return [str(item).strip() for item in raw_path if str(item or "").strip()]
+        if isinstance(raw_path, str):
+            text = raw_path.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item or "").strip()]
+            return [segment.strip() for segment in text.split("/") if segment.strip()]
+        return []
 
     def _schedule_topic_tree_update(self, document_id: str) -> None:
         _topic_tree_refresh_scheduler.request_refresh(document_id)

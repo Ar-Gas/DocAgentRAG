@@ -8,24 +8,39 @@ import api.topics as topics_api  # noqa: E402
 
 
 class _FakeSemanticService:
+    def __init__(self):
+        self.graph_calls = []
+
     async def list_graph_labels(self):
         return ["财务管理"]
 
     async def get_graph(self, label: str, max_depth: int = 3, max_nodes: int = 1000):
-        assert label == "财务管理"
+        self.graph_calls.append((label, max_depth, max_nodes))
         assert max_depth == 3
         assert max_nodes == 1000
-        return {
-            "label": label,
-            "nodes": [
-                {"id": "预算审批", "label": "预算审批", "degree": 1},
-                {"id": "财务制度", "label": "财务制度", "degree": 1},
-            ],
-            "edges": [
-                {"from": "预算审批", "to": "财务制度", "label": "属于", "doc_id": "/tmp/预算制度.docx"}
-            ],
-            "stats": {"total_nodes": 2, "total_edges": 1, "total_docs": 1},
-        }
+
+        if label == "金融":
+            return {
+                "label": label,
+                "nodes": [],
+                "edges": [],
+                "stats": {"total_nodes": 0, "total_edges": 0, "total_docs": 0},
+            }
+
+        if label in {"财务管理", "*"}:
+            return {
+                "label": label,
+                "nodes": [
+                    {"id": "预算审批", "label": "预算审批", "degree": 1},
+                    {"id": "财务制度", "label": "财务制度", "degree": 1},
+                ],
+                "edges": [
+                    {"from": "预算审批", "to": "财务制度", "label": "属于", "doc_id": "/tmp/预算制度.docx"}
+                ],
+                "stats": {"total_nodes": 2, "total_edges": 1, "total_docs": 1},
+            }
+
+        raise AssertionError(f"unexpected graph label: {label}")
 
 
 def test_get_graph_labels_uses_lightrag_semantic_service(monkeypatch):
@@ -39,14 +54,41 @@ def test_get_graph_labels_uses_lightrag_semantic_service(monkeypatch):
 
 
 def test_get_knowledge_graph_uses_lightrag_graph(monkeypatch):
-    monkeypatch.setattr(topics_api, "semantic_service", _FakeSemanticService())
+    fake_service = _FakeSemanticService()
+    monkeypatch.setattr(topics_api, "semantic_service", fake_service)
 
-    payload = asyncio.run(topics_api.get_knowledge_graph(label=None, doc_ids=None, max_depth=3, max_nodes=1000))
+    payload = asyncio.run(topics_api.get_knowledge_graph(label="财务管理", doc_ids=None, max_depth=3, max_nodes=1000))
 
     assert payload["code"] == 200
     assert payload["data"]["label"] == "财务管理"
     assert payload["data"]["stats"]["total_nodes"] == 2
     assert payload["data"]["edges"][0]["label"] == "属于"
+    assert fake_service.graph_calls == [("财务管理", 3, 1000)]
+
+
+def test_get_knowledge_graph_defaults_to_global_graph(monkeypatch):
+    fake_service = _FakeSemanticService()
+    monkeypatch.setattr(topics_api, "semantic_service", fake_service)
+
+    payload = asyncio.run(topics_api.get_knowledge_graph(label=None, doc_ids=None, max_depth=3, max_nodes=1000))
+
+    assert payload["code"] == 200
+    assert payload["data"]["label"] == "*"
+    assert payload["data"]["stats"]["total_nodes"] == 2
+    assert payload["data"]["edges"][0]["label"] == "属于"
+    assert fake_service.graph_calls == [("*", 3, 1000)]
+
+
+def test_get_knowledge_graph_falls_back_to_global_graph_when_label_is_empty(monkeypatch):
+    fake_service = _FakeSemanticService()
+    monkeypatch.setattr(topics_api, "semantic_service", fake_service)
+
+    payload = asyncio.run(topics_api.get_knowledge_graph(label="金融", doc_ids=None, max_depth=3, max_nodes=1000))
+
+    assert payload["code"] == 200
+    assert payload["data"]["label"] == "*"
+    assert payload["data"]["stats"]["total_nodes"] == 2
+    assert fake_service.graph_calls == [("金融", 3, 1000), ("*", 3, 1000)]
 
 
 def test_related_documents_uses_lightrag_graph_edges(monkeypatch):

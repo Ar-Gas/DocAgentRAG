@@ -1,0 +1,153 @@
+[32m2026-04-27 16:23:48.638[0m | [1mINFO    [0m | [36mrid=-[0m | [36m__main__:<module>:402[0m - [1m启动模式：生产 host=0.0.0.0 port=6008 workers=1[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:231[0m - [1m==================================================[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:232[0m - [1m办公文档智能分类与检索系统启动中...[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:233[0m - [1m==================================================[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:237[0m - [1m确保目录存在：/home/zyq/DocAgentRAG/backend/doc[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:237[0m - [1m确保目录存在：/home/zyq/DocAgentRAG/backend/data[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:242[0m - [1m创建文件类型目录：/home/zyq/DocAgentRAG/backend/doc/pdf[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:242[0m - [1m创建文件类型目录：/home/zyq/DocAgentRAG/backend/doc/word[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:242[0m - [1m创建文件类型目录：/home/zyq/DocAgentRAG/backend/doc/excel[0m
+
+[32m2026-04-27 16:23:48.692[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:242[0m - [1m创建文件类型目录：/home/zyq/DocAgentRAG/backend/doc/ppt[0m
+
+[32m2026-04-27 16:23:48.693[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:242[0m - [1m创建文件类型目录：/home/zyq/DocAgentRAG/backend/doc/eml[0m
+
+[32m2026-04-27 16:23:48.693[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:242[0m - [1m创建文件类型目录：/home/zyq/DocAgentRAG/backend/doc/txt[0m
+
+[32m2026-04-27 16:23:48.693[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:242[0m - [1m创建文件类型目录：/home/zyq/DocAgentRAG/backend/doc/image[0m
+
+[32m2026-04-27 16:23:48.693[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:sync_doubao_llm_availability:61[0m - [1mLLM provider: Doubao, model: doubao-seed-2-0-mini-260215[0m
+
+[32m2026-04-27 16:23:48.729[0m | [1mINFO    [0m | [36mrid=-[0m | [36mlogging:callHandlers:1762[0m - [1mHTTP Request: GET http://127.0.0.1:8011/health "HTTP/1.1 200 OK"[0m
+
+[32m2026-04-27 16:23:48.829[0m | [1mINFO    [0m | [36mrid=-[0m | [36mlogging:callHandlers:1762[0m - [1mHTTP Request: POST http://127.0.0.1:8011/v1/embeddings "HTTP/1.1 200 OK"[0m
+
+[32m2026-04-27 16:23:48.853[0m | [1mINFO    [0m | [36mrid=-[0m | [36mlogging:callHandlers:1762[0m - [1mHTTP Request: GET http://127.0.0.1:9621/health "HTTP/1.1 200 OK"[0m
+
+[32m2026-04-27 16:23:48.853[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:254[0m - [1mruntime state: local_embedding=healthy lightrag=healthy[0m
+
+[32m2026-04-27 16:23:49.104[0m | [1mINFO    [0m | [36mrid=-[0m | [36mlogging:callHandlers:1762[0m - [1mHTTP Request: GET http://127.0.0.1:9621/health "HTTP/1.1 200 OK"[0m
+
+[32m2026-04-27 16:23:49.121[0m | [1mINFO    [0m | [36mrid=-[0m | [36mlogging:callHandlers:1762[0m - [1mHTTP Request: GET http://127.0.0.1:8011/health "HTTP/1.1 200 OK"[0m
+
+[32m2026-04-27 16:23:49.122[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:262[0m - [1mdocument audit: sqlite=34 local_files=27 legacy_json=32 untracked=0 pending=30 lightrag=healthy registered_local_only=0[0m
+
+[32m2026-04-27 16:23:49.122[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:284[0m - [1m==================================================[0m
+
+[32m2026-04-27 16:23:49.122[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:285[0m - [1m系统启动完成！[0m
+
+[32m2026-04-27 16:23:49.122[0m | [1mINFO    [0m | [36mrid=-[0m | [36mmain:lifespan:286[0m - [1m==================================================[0m
+
+[32m2026-04-27 16:23:59.400[0m | [1mINFO    [0m | [36mrid=c9abfb80-d7e8-46a3-968c-9c5cb06622fd[0m | [36mapp.core.logger:dispatch:169[0m - [1mrequest_started method=GET path=/health client_ip=127.0.0.1[0m
+
+[32m2026-04-27 16:23:59.516[0m | [1mINFO    [0m | [36mrid=c9abfb80-d7e8-46a3-968c-9c5cb06622fd[0m | [36mlogging:callHandlers:1762[0m - [1mHTTP Request: GET http://127.0.0.1:9621/health "HTTP/1.1 200 OK"[0m
+
+[32m2026-04-27 16:23:59.547[0m | [1mINFO    [0m | [36mrid=c9abfb80-d7e8-46a3-968c-9c5cb06622fd[0m | [36mlogging:callHandlers:1762[0m - [1mHTTP Request: GET http://127.0.0.1:8011/health "HTTP/1.1 200 OK"[0m
+
+[32m2026-04-27 16:23:59.548[0m | [1mINFO    [0m | [36mrid=c9abfb80-d7e8-46a3-968c-9c5cb06622fd[0m | [36mapp.core.logger:dispatch:191[0m - [1mrequest_completed method=GET path=/health status_code=200 duration_ms=147.19[0m
+
+INFO:     127.0.0.1:38920 - "GET /health HTTP/1.1" 200 OK
+[32m2026-04-27 16:24:41.495[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.core.logger:dispatch:169[0m - [1mrequest_started method=POST path=/api/v1/qa/stream client_ip=127.0.0.1[0m
+
+[32m2026-04-27 16:24:41.496[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.services.qa_service:answer_stream:347[0m - [1mQA Stream: 什么是金融[0m
+
+[32m2026-04-27 16:24:41.497[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.services.qa_service:answer_stream:351[0m - [1m检索相关块...[0m
+
+[32m2026-04-27 16:24:41.498[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.core.logger:dispatch:191[0m - [1mrequest_completed method=POST path=/api/v1/qa/stream status_code=200 duration_ms=3.17[0m
+
+INFO:     127.0.0.1:38072 - "POST /api/v1/qa/stream HTTP/1.1" 200 OK
+[32m2026-04-27 16:24:41.544[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mlogging:callHandlers:1762[0m - [1mAnonymized telemetry enabled. See                     https://docs.trychroma.com/telemetry for more information.[0m
+
+[32m2026-04-27 16:24:41.622[0m | [31m[1mERROR   [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mlogging:callHandlers:1762[0m - [31m[1mFailed to send telemetry event ClientStartEvent: capture() takes 1 positional argument but 3 were given[0m
+
+[32m2026-04-27 16:24:41.622[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.infra.vector_store:resolve_embedding_function:43[0m - [1m加载本地嵌入模型: /home/zyq/DocAgentRAG/backend/models/BAAI/bge-m3[0m
+
+[32m2026-04-27 16:24:44.577[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mlogging:callHandlers:1762[0m - [1mLoad pretrained SentenceTransformer: /home/zyq/DocAgentRAG/backend/models/BAAI/bge-m3[0m
+
+[32m2026-04-27 16:24:45.486[0m | [31m[1mERROR   [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mlogging:callHandlers:1762[0m - [31m[1mFailed to send telemetry event ClientCreateCollectionEvent: capture() takes 1 positional argument but 3 were given[0m
+
+[32m2026-04-27 16:24:45.486[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.infra.vector_store:init_chroma_client:131[0m - [1mChroma block 客户端初始化成功（使用本地嵌入模型: bge-m3）[0m
+
+[32m2026-04-27 16:24:45.530[0m | [31m[1mERROR   [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mlogging:callHandlers:1762[0m - [31m[1mFailed to send telemetry event CollectionGetEvent: capture() takes 1 positional argument but 3 were given[0m
+
+Building prefix dict from the default dictionary ...
+Loading model from cache /tmp/jieba.cache
+Loading model cost 0.506 seconds.
+Prefix dict has been built successfully.
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.16it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.15it/s]
+[32m2026-04-27 16:24:52.449[0m | [31m[1mERROR   [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mlogging:callHandlers:1762[0m - [31m[1mFailed to send telemetry event CollectionQueryEvent: capture() takes 1 positional argument but 3 were given[0m
+
+[32m2026-04-27 16:24:52.459[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "什么是金融", "latency_ms": 10960.65, "result_count": 3}[0m
+
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:01<00:00,  1.58s/it]Batches: 100%|██████████| 1/1 [00:01<00:00,  1.58s/it]
+[32m2026-04-27 16:24:55.147[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "金融", "latency_ms": 2685.67, "result_count": 6}[0m
+
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  1.71it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  1.71it/s]
+[32m2026-04-27 16:24:57.419[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "金融", "latency_ms": 2269.71, "result_count": 6}[0m
+
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  5.20it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  5.19it/s]
+[32m2026-04-27 16:24:58.957[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "金融", "latency_ms": 1536.44, "result_count": 6}[0m
+
+[32m2026-04-27 16:24:58.965[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.services.qa_service:answer_stream:375[0m - [1m调用 LLM 生成答案...[0m
+
+[32m2026-04-27 16:24:58.966[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.domain.llm.gateway:call:298[0m - [1m调用 LLM: task=qa, model=doubao-seed-2-0-mini-260215, timeout=30.0s[0m
+
+[32m2026-04-27 16:25:07.574[0m | [1mINFO    [0m | [36mrid=06006d29-6c65-4f83-bfa9-513f2ac2dc57[0m | [36mapp.domain.llm.gateway:call:320[0m - [1mLLM 调用成功: task=qa, tokens=1951[0m
+
+[32m2026-04-27 16:27:33.911[0m | [1mINFO    [0m | [36mrid=3c1f1b82-d191-410f-a477-40b58909b231[0m | [36mapp.core.logger:dispatch:169[0m - [1mrequest_started method=POST path=/api/v1/qa/stream client_ip=127.0.0.1[0m
+
+[32m2026-04-27 16:27:33.912[0m | [1mINFO    [0m | [36mrid=3c1f1b82-d191-410f-a477-40b58909b231[0m | [36mapp.services.qa_service:answer_stream:347[0m - [1mQA Stream: 什么是金融[0m
+
+[32m2026-04-27 16:27:33.912[0m | [1mINFO    [0m | [36mrid=3c1f1b82-d191-410f-a477-40b58909b231[0m | [36mapp.services.qa_service:answer_stream:351[0m - [1m检索相关块...[0m
+
+[32m2026-04-27 16:27:33.913[0m | [1mINFO    [0m | [36mrid=3c1f1b82-d191-410f-a477-40b58909b231[0m | [36mapp.core.logger:dispatch:191[0m - [1mrequest_completed method=POST path=/api/v1/qa/stream status_code=200 duration_ms=1.56[0m
+
+INFO:     127.0.0.1:36086 - "POST /api/v1/qa/stream HTTP/1.1" 200 OK
+[32m2026-04-27 16:27:33.939[0m | [1mINFO    [0m | [36mrid=3c1f1b82-d191-410f-a477-40b58909b231[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "什么是金融", "latency_ms": 26.56, "result_count": 0}[0m
+
+[32m2026-04-27 16:27:33.963[0m | [1mINFO    [0m | [36mrid=3c1f1b82-d191-410f-a477-40b58909b231[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "金融", "latency_ms": 23.52, "result_count": 0}[0m
+
+[32m2026-04-27 16:27:37.894[0m | [1mINFO    [0m | [36mrid=65a7b5ff-9d5d-4cf8-8800-f54d78de4523[0m | [36mapp.core.logger:dispatch:169[0m - [1mrequest_started method=GET path=/api/v1/documents/ client_ip=127.0.0.1[0m
+
+[32m2026-04-27 16:27:37.896[0m | [1mINFO    [0m | [36mrid=65a7b5ff-9d5d-4cf8-8800-f54d78de4523[0m | [36mapi.document:get_document_list:96[0m - [1mquery_documents_api page=1 page_size=100[0m
+
+[32m2026-04-27 16:27:37.896[0m | [1mINFO    [0m | [36mrid=65a7b5ff-9d5d-4cf8-8800-f54d78de4523[0m | [36mapp.services.document_service:list_documents:2021[0m - [1mquery_documents page=1 page_size=100[0m
+
+[32m2026-04-27 16:27:37.935[0m | [1mINFO    [0m | [36mrid=65a7b5ff-9d5d-4cf8-8800-f54d78de4523[0m | [36mapp.core.logger:dispatch:191[0m - [1mrequest_completed method=GET path=/api/v1/documents/ status_code=200 duration_ms=41.20[0m
+
+INFO:     127.0.0.1:56354 - "GET /api/v1/documents/?page=1&page_size=100 HTTP/1.1" 200 OK
+[32m2026-04-27 16:27:46.028[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.core.logger:dispatch:169[0m - [1mrequest_started method=POST path=/api/v1/qa/stream client_ip=127.0.0.1[0m
+
+[32m2026-04-27 16:27:46.028[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.services.qa_service:answer_stream:347[0m - [1mQA Stream: 金融史[0m
+
+[32m2026-04-27 16:27:46.029[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.services.qa_service:answer_stream:351[0m - [1m检索相关块...[0m
+
+[32m2026-04-27 16:27:46.029[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.core.logger:dispatch:191[0m - [1mrequest_completed method=POST path=/api/v1/qa/stream status_code=200 duration_ms=1.47[0m
+
+INFO:     127.0.0.1:50498 - "POST /api/v1/qa/stream HTTP/1.1" 200 OK
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 14.73it/s]
+[32m2026-04-27 16:27:51.849[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "金融史", "latency_ms": 5819.57, "result_count": 8}[0m
+
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 19.53it/s]
+[32m2026-04-27 16:27:52.805[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "金融史", "latency_ms": 954.81, "result_count": 8}[0m
+
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 17.95it/s]
+[32m2026-04-27 16:27:54.323[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "金融史", "latency_ms": 1517.84, "result_count": 8}[0m
+
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 15.76it/s]
+[32m2026-04-27 16:27:55.422[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.core.logger:wrapper:224[0m - [1m{"event": "retrieval", "func": "RetrievalService.workspace_search", "query": "金融史", "latency_ms": 1097.75, "result_count": 8}[0m
+
+[32m2026-04-27 16:27:55.425[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.services.qa_service:answer_stream:375[0m - [1m调用 LLM 生成答案...[0m
+
+[32m2026-04-27 16:27:55.425[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.domain.llm.gateway:call:298[0m - [1m调用 LLM: task=qa, model=doubao-seed-2-0-mini-260215, timeout=30.0s[0m
+
+[32m2026-04-27 16:28:16.449[0m | [1mINFO    [0m | [36mrid=aba0126a-a361-4a65-8a88-f2fe6d7dfc8d[0m | [36mapp.domain.llm.gateway:call:320[0m - [1mLLM 调用成功: task=qa, tokens=4781[0m
+

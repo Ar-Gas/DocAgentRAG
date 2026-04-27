@@ -15,6 +15,7 @@ def test_document_list_exposes_taxonomy_fields_for_frontend():
                 {
                     "id": "doc-1",
                     "filename": "offer.docx",
+                    "filepath": "/repo/backend/classified_docs/人力资源/招聘管理/Offer审批/offer.docx",
                     "file_type": ".docx",
                     "created_at_iso": "2026-04-18T18:00:00",
                     "classification_result": "Offer审批",
@@ -41,6 +42,9 @@ def test_document_list_exposes_taxonomy_fields_for_frontend():
     assert item["classification_path"] == ["人力资源", "招聘管理", "Offer审批"]
     assert item["classification_score"] == 0.91
     assert item["classification_source"] == "llm"
+    assert item["filepath"] == "/repo/backend/classified_docs/人力资源/招聘管理/Offer审批/offer.docx"
+    assert item["path"] == "/repo/backend/classified_docs/人力资源/招聘管理/Offer审批/offer.docx"
+    assert item["storage_path"] == "/repo/backend/classified_docs/人力资源/招聘管理/Offer审批/offer.docx"
 
 
 def test_document_list_exposes_taxonomy_v3_metadata_for_frontend():

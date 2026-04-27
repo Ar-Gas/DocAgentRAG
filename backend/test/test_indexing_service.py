@@ -6,7 +6,6 @@ from unittest.mock import Mock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import app.services.classification_service as classification_service_module  # noqa: E402
 import app.services.document_service as document_service_module  # noqa: E402
 import app.services.indexing_service as indexing_service_module  # noqa: E402
 from app.services.document_service import DocumentService  # noqa: E402
@@ -407,64 +406,86 @@ def test_rechunk_triggers_block_reindex_without_breaking_chunk_response(monkeypa
     assert result["has_chunks"] is True
 
 
-def test_upload_indexes_blocks_directly_without_legacy_chunk_write(monkeypatch, tmp_path):
-    target_doc_dir = tmp_path / "doc"
-    target_doc_dir.mkdir(parents=True)
-    monkeypatch.setattr(document_service_module, "DOC_DIR", target_doc_dir)
-
-    extracted = SimpleNamespace(success=True, content="第一段\n第二段", parser_name="text", error=None)
-    service = DocumentService()
-    service.extraction_service = Mock(extract=Mock(return_value=extracted))
-    service.indexing_service = Mock(index_document=Mock(return_value={"document_id": "doc-1", "block_index_status": "ready"}))
-
+def test_enqueue_document_pipeline_schedules_block_index_build(monkeypatch):
     captured = {}
+    created_tasks = []
+    pending_calls = []
 
-    def fake_save_summary(filepath, full_content=None, parser_name=None, display_filename=None):
-        captured["filepath"] = filepath
-        captured["full_content"] = full_content
-        captured["parser_name"] = parser_name
-        captured["display_filename"] = display_filename
-        return (
-            "doc-1",
+    class DummyAwaitable:
+        def __await__(self):
+            if False:
+                yield None
+            return None
+
+    class FakeLoop:
+        def create_task(self, task):
+            created_tasks.append(task)
+            return task
+
+    def fake_to_thread(func, *args, **kwargs):
+        captured["func"] = func
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return DummyAwaitable()
+
+    service = DocumentService()
+    monkeypatch.setattr(document_service_module.asyncio, "get_running_loop", lambda: FakeLoop())
+    monkeypatch.setattr(document_service_module.asyncio, "to_thread", fake_to_thread)
+    service.process_pending_ingest = lambda document_id: pending_calls.append(document_id) or DummyAwaitable()
+
+    service._enqueue_document_pipeline("doc-1")
+
+    assert captured["func"] == service.process_local_index
+    assert captured["args"] == ("doc-1",)
+    assert captured["kwargs"] == {"build_block_index": True}
+    assert pending_calls == ["doc-1"]
+    assert len(created_tasks) == 2
+
+
+def test_upload_falls_back_to_sync_local_index_and_builds_blocks(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    doc_dir = tmp_path / "doc"
+    doc_dir.mkdir(parents=True)
+
+    content = "第一段\n第二段"
+    extracted = SimpleNamespace(
+        success=True,
+        content=content,
+        preview_content=content,
+        full_content_length=len(content),
+        parser_name="text",
+        error=None,
+    )
+    service = DocumentService(data_dir=data_dir, doc_dir=doc_dir)
+    service.extraction_service = Mock(extract=Mock(return_value=extracted))
+
+    def fake_index_document(document_id, force=False):
+        service._update_document_info(
+            document_id,
             {
-                "id": "doc-1",
-                "filename": display_filename,
-                "filepath": filepath,
-                "file_type": ".txt",
-                "created_at_iso": "2026-04-16T12:00:00",
+                "block_index_status": "ready",
+                "block_count": 2,
+                "index_version": "block-v1",
+                "last_indexed_at": "2026-04-16T12:00:00",
             },
         )
+        return {"document_id": document_id, "block_index_status": "ready"}
 
-    monkeypatch.setattr(document_service_module, "save_document_summary_for_classification", fake_save_summary)
+    service.indexing_service = Mock(index_document=Mock(side_effect=fake_index_document))
+    service.process_pending_ingest = Mock()
     monkeypatch.setattr(
-        document_service_module,
-        "save_document_to_chroma",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy chunk write should not run")),
-        raising=False,
+        document_service_module.asyncio,
+        "get_running_loop",
+        Mock(side_effect=RuntimeError()),
     )
-    monkeypatch.setattr(
-        document_service_module,
-        "get_document_info",
-        lambda document_id: {
-            "id": document_id,
-            "filename": "notes.txt",
-            "filepath": captured.get("filepath", ""),
-            "file_type": ".txt",
-            "created_at_iso": "2026-04-16T12:00:00",
-            "block_index_status": "ready",
-            "block_count": 2,
-            "classification_result": "年度审计",
-        },
-    )
-    cache = Mock()
-    monkeypatch.setattr(document_service_module, "get_search_cache", lambda: cache)
-    monkeypatch.setattr(classification_service_module, "ClassificationService", lambda: Mock(classify=Mock(return_value={})))
 
-    result = service.upload("notes.txt", BytesIO("第一段\n第二段".encode("utf-8")))
+    result = service.upload("notes.txt", BytesIO(content.encode("utf-8")))
+    content_record = service._content_repository().get(result["id"])
 
-    service.indexing_service.index_document.assert_called_once_with("doc-1", force=True)
-    cache.invalidate_all.assert_called_once_with()
-    assert captured["display_filename"] == "notes.txt"
-    assert captured["full_content"] == "第一段\n第二段"
-    assert result["id"] == "doc-1"
+    service.indexing_service.index_document.assert_called_once_with(result["id"], force=True)
+    service.process_pending_ingest.assert_not_called()
+    assert result["filename"] == "notes.txt"
     assert result["block_index_status"] == "ready"
+    assert result["block_count"] == 2
+    assert content_record["full_content"] == content
+    assert content_record["parser_name"] == "text"

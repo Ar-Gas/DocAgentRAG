@@ -38,7 +38,7 @@ def _infer_embedding_dim(model_path: str, default: int = 384) -> int:
         return default
 
 
-BGE_MODEL = _get_secret_or_env("BGE_MODEL", str(MODEL_DIR / "all-MiniLM-L6-v2"))
+BGE_MODEL = _get_secret_or_env("BGE_MODEL", str(MODEL_DIR / "BAAI" / "bge-m3"))
 LOCAL_EMBEDDING_MODEL_NAME = Path(BGE_MODEL).name or "bge-m3"
 LOCAL_EMBEDDING_DIM = int(_get_secret_or_env("LOCAL_EMBEDDING_DIM", str(_infer_embedding_dim(BGE_MODEL))))
 LOCAL_EMBEDDING_HOST = _get_secret_or_env("LOCAL_EMBEDDING_HOST", "127.0.0.1")
@@ -68,6 +68,7 @@ DOUBAO_LLM_API_URL = _get_secret_or_env(
     "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
 )
 DOUBAO_MINI_LLM_MODEL = _get_secret_or_env("DOUBAO_MINI_LLM_MODEL", "doubao-seed-2-0-mini-260215")
+DOUBAO_QA_LLM_MODEL = _get_secret_or_env("DOUBAO_QA_LLM_MODEL", DOUBAO_MINI_LLM_MODEL)
 DOUBAO_LLM_MODEL = _get_secret_or_env("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115")
 
 DOUBAO_DEFAULT_LLM_MODEL = DOUBAO_MINI_LLM_MODEL

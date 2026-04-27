@@ -2,6 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+_SEMANTIC_ARTIFACTS = (
+    "vdb_entities.json",
+    "vdb_relationships.json",
+    "vdb_chunks.json",
+    "kv_store_entity_chunks.json",
+    "kv_store_relation_chunks.json",
+    "kv_store_text_chunks.json",
+)
+
 
 def build_lightrag_env(
     *,
@@ -14,7 +23,7 @@ def build_lightrag_env(
     embedding_dim: int = 1024,
 ) -> dict[str, str]:
     backend_dir = Path(root_dir) / "backend"
-    working_dir = backend_dir / "data" / "lightrag" / _embedding_workspace_name(embedding_model, embedding_dim)
+    working_dir = _resolve_working_dir(backend_dir, embedding_model, embedding_dim)
     return {
         "HOST": "127.0.0.1",
         "PORT": "9621",
@@ -63,3 +72,32 @@ def _embedding_workspace_name(model_name: str, embedding_dim: int) -> str:
     safe_model = Path(str(model_name)).name or "embedding"
     safe_model = "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in safe_model)
     return f"{safe_model}-{embedding_dim}d"
+
+
+def _resolve_working_dir(backend_dir: Path, embedding_model: str, embedding_dim: int) -> Path:
+    legacy_dir = backend_dir / "data" / "lightrag"
+    model_dir = legacy_dir / _embedding_workspace_name(embedding_model, embedding_dim)
+    if _should_use_legacy_workspace(legacy_dir, model_dir, embedding_model, embedding_dim):
+        return legacy_dir
+    return model_dir
+
+
+def _should_use_legacy_workspace(
+    legacy_dir: Path,
+    model_dir: Path,
+    embedding_model: str,
+    embedding_dim: int,
+) -> bool:
+    normalized_model = Path(str(embedding_model)).name or str(embedding_model)
+    if normalized_model != "bge-m3" or int(embedding_dim) != 1024:
+        return False
+    if _workspace_has_semantic_artifacts(model_dir):
+        return False
+    return _workspace_has_semantic_artifacts(legacy_dir)
+
+
+def _workspace_has_semantic_artifacts(workspace_dir: Path) -> bool:
+    return any(
+        (workspace_dir / filename).is_file() and (workspace_dir / filename).stat().st_size > 0
+        for filename in _SEMANTIC_ARTIFACTS
+    )

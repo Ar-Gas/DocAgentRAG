@@ -15,6 +15,17 @@ graph_store = GraphStore()
 semantic_service = LightRAGSemanticService()
 
 
+def _is_empty_graph(graph_data):
+    stats = graph_data.get("stats") or {}
+    if int(stats.get("total_nodes") or 0) > 0:
+        return False
+    if int(stats.get("total_edges") or 0) > 0:
+        return False
+    if graph_data.get("nodes") or graph_data.get("edges"):
+        return False
+    return True
+
+
 @router.get("/labels", summary="获取 LightRAG 图谱标签列表")
 async def get_graph_labels():
     try:
@@ -41,18 +52,11 @@ async def get_knowledge_graph(
     """
     try:
         del doc_ids
-        selected_label = str(label or "").strip()
-        if not selected_label:
-            labels = await semantic_service.list_graph_labels()
-            selected_label = labels[0] if labels else ""
-
-        if not selected_label:
-            return success(
-                data={"nodes": [], "edges": [], "stats": {"total_nodes": 0, "total_edges": 0, "total_docs": 0}, "label": ""},
-                message="获取知识图谱成功",
-            )
+        selected_label = str(label or "").strip() or "*"
 
         graph_data = await semantic_service.get_graph(selected_label, max_depth=max_depth, max_nodes=max_nodes)
+        if selected_label != "*" and _is_empty_graph(graph_data):
+            graph_data = await semantic_service.get_graph("*", max_depth=max_depth, max_nodes=max_nodes)
         return success(data=graph_data, message="获取知识图谱成功")
     except AppServiceError as exc:
         raise BusinessException(exc.code, detail=exc.detail)

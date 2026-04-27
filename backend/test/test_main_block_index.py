@@ -425,6 +425,10 @@ def test_startup_reconciliation_runs_local_index_lightrag_and_classification(mon
             calls.append(("backfill_local_index", kwargs))
             return {"total": 2, "success_count": 2}
 
+        def reconcile_missing_lightrag_documents(self, **kwargs):
+            calls.append(("reconcile_missing_lightrag_documents", kwargs))
+            return {"status": "completed", "requeued_documents": 2}
+
         def recover_stale_lightrag_queue(self):
             calls.append(("recover_stale_lightrag_queue", {}))
             return {"status": "triggered", "triggered": True, "pending_documents": 2}
@@ -462,6 +466,7 @@ def test_startup_reconciliation_runs_local_index_lightrag_and_classification(mon
             "backfill_local_index",
             {"limit": 7, "include_failed": False, "build_block_index": False},
         ),
+        ("reconcile_missing_lightrag_documents", {"limit": 5}),
         ("recover_stale_lightrag_queue", {}),
         (
             "start_local_only_batch_import",

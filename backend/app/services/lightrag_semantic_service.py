@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional
 
 from app.infra.lightrag_client import LightRAGClient
@@ -27,6 +28,32 @@ class LightRAGSemanticService:
             return ""
         path = Path(raw)
         return path.name or raw
+
+    @staticmethod
+    def _normalize_graph_label(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        normalized = raw.strip("\"'`“”‘’")
+        return " ".join(normalized.split()).strip()
+
+    @staticmethod
+    def _is_noise_graph_label(label: str) -> bool:
+        if not label:
+            return True
+        if label.startswith("#"):
+            return True
+        if label.startswith("<") and label.endswith(">"):
+            return True
+        if label.startswith(("/", "./", "../")):
+            return True
+        if re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", label):
+            return True
+        if re.fullmatch(r"[\d\s()+-]{7,}", label):
+            return True
+        if re.fullmatch(r"[\d\s\-:./年月日]+", label):
+            return True
+        return False
 
     def _matches_document(self, candidate: Dict[str, Any], doc_info: Dict[str, Any]) -> bool:
         candidate_path = self._normalize_file_path(candidate.get("file_path"))
@@ -110,7 +137,17 @@ class LightRAGSemanticService:
             items = payload.get("data") or payload.get("labels") or payload.get("items") or []
         else:
             items = payload
-        return [str(item).strip() for item in items if str(item).strip()]
+
+        labels: List[str] = []
+        seen = set()
+        for item in items:
+            label = self._normalize_graph_label(item)
+            if not label or self._is_noise_graph_label(label) or label in seen:
+                continue
+            seen.add(label)
+            labels.append(label)
+
+        return labels
 
     async def get_graph(self, label: str, max_depth: int = 3, max_nodes: int = 1000) -> Dict[str, Any]:
         payload = await self.lightrag_client.get_graph(label, max_depth=max_depth, max_nodes=max_nodes)

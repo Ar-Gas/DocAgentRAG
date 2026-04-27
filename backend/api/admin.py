@@ -56,7 +56,7 @@ class LocalOnlyBatchImportRequest(BaseModel):
 class LocalIndexBackfillRequest(BaseModel):
     limit: int = 100
     include_failed: bool = False
-    build_block_index: bool = False
+    build_block_index: bool = True
 
 
 class BatchClassificationRequest(BaseModel):

@@ -40,6 +40,10 @@ def candidate_document_names(doc_info: dict) -> List[str]:
     return names
 
 
+def normalize_category_segments(categories: List[str]) -> List[str]:
+    return [str(item).strip() for item in (categories or []) if str(item or "").strip()]
+
+
 def path_exists_safely(path_value: str) -> bool:
     if not path_value:
         return False
@@ -116,19 +120,25 @@ def create_classification_directory(
     base_dir: Optional[Path] = None,
 ) -> tuple[bool, str]:
     try:
-        if not categories or not doc_info.get("filepath"):
+        normalized_categories = normalize_category_segments(categories)
+        if not normalized_categories or not doc_info.get("filepath"):
             return False, ""
 
         target_root = Path(base_dir) if base_dir else Path(__file__).resolve().parents[2] / "classified_docs"
         target_root.mkdir(parents=True, exist_ok=True)
 
-        category_dir = target_root / categories[0]
+        category_dir = target_root.joinpath(*normalized_categories)
         category_dir.mkdir(parents=True, exist_ok=True)
 
         original_path = Path(doc_info["filepath"])
         if not original_path.exists():
             logger.warning("原文件不存在，跳过移动：{}", original_path)
             return False, ""
+
+        original_resolved = original_path.resolve()
+        category_dir_resolved = category_dir.resolve()
+        if original_resolved.parent == category_dir_resolved:
+            return True, str(original_resolved)
 
         target_path = category_dir / original_path.name
         counter = 1

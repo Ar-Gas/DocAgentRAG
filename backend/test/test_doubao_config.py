@@ -64,6 +64,7 @@ def _make_fake_retrieval_dependencies(llm_available: bool):
 
     file_utils_module = types.ModuleType("app.infra.file_utils")
     file_utils_module.enrich_document_file_state = lambda doc_info, **kwargs: doc_info or {}
+    file_utils_module.path_exists_safely = lambda path_value: bool(path_value)
 
     class _FakeDocumentRepository:
         def __init__(self, data_dir=None):
@@ -296,15 +297,15 @@ class DoubaoConfigTests(unittest.TestCase):
         module = self._load_config("llm_true", fake_secrets_module=fake_secrets)
         self.assertTrue(module.LLM_AVAILABLE)
 
-    def test_config_defaults_embedding_model_to_small_local_model_for_low_memory_runtime(self):
+    def test_config_defaults_embedding_model_to_bge_m3(self):
         os.environ.pop("BGE_MODEL", None)
 
         module = self._load_config("default_bge_model")
 
-        expected = module.BASE_DIR / "models" / "all-MiniLM-L6-v2"
+        expected = module.BASE_DIR / "models" / "BAAI" / "bge-m3"
         self.assertEqual(module.BGE_MODEL, str(expected))
-        self.assertEqual(module.LOCAL_EMBEDDING_MODEL_NAME, "all-MiniLM-L6-v2")
-        self.assertEqual(module.LOCAL_EMBEDDING_DIM, 384)
+        self.assertEqual(module.LOCAL_EMBEDDING_MODEL_NAME, "bge-m3")
+        self.assertEqual(module.LOCAL_EMBEDDING_DIM, 1024)
 
     def test_config_respects_bge_model_env_override(self):
         os.environ["BGE_MODEL"] = "/opt/models/BAAI/bge-m3"
@@ -317,6 +318,7 @@ class DoubaoConfigTests(unittest.TestCase):
         os.environ.pop("DOUBAO_API_KEY", None)
         os.environ["DOUBAO_LLM_API_URL"] = ""
         os.environ["DOUBAO_MINI_LLM_MODEL"] = ""
+        os.environ["DOUBAO_QA_LLM_MODEL"] = ""
         os.environ.pop("DOUBAO_LLM_MODEL", None)
 
         config_module = types.ModuleType("config")
@@ -331,12 +333,13 @@ class DoubaoConfigTests(unittest.TestCase):
         self.assertEqual(llm_config.api_key, "config-doubao-key")
         self.assertEqual(llm_config.api_url, "https://config.example/chat")
         self.assertEqual(llm_config.get_model("extract"), "config-mini-model")
-        self.assertEqual(llm_config.get_model("qa"), "config-pro-model")
+        self.assertEqual(llm_config.get_model("qa"), "config-mini-model")
 
     def test_llm_gateway_config_prefers_env_over_config_module(self):
         os.environ["DOUBAO_API_KEY"] = "env-doubao-key"
         os.environ["DOUBAO_LLM_API_URL"] = "https://env.example/chat"
         os.environ["DOUBAO_MINI_LLM_MODEL"] = "env-mini-model"
+        os.environ["DOUBAO_QA_LLM_MODEL"] = ""
         os.environ["DOUBAO_LLM_MODEL"] = "env-pro-model"
 
         config_module = types.ModuleType("config")
@@ -351,7 +354,26 @@ class DoubaoConfigTests(unittest.TestCase):
         self.assertEqual(llm_config.api_key, "env-doubao-key")
         self.assertEqual(llm_config.api_url, "https://env.example/chat")
         self.assertEqual(llm_config.get_model("extract"), "env-mini-model")
-        self.assertEqual(llm_config.get_model("qa"), "env-pro-model")
+        self.assertEqual(llm_config.get_model("qa"), "env-mini-model")
+
+    def test_llm_gateway_config_allows_dedicated_qa_model_override(self):
+        os.environ["DOUBAO_API_KEY"] = "env-doubao-key"
+        os.environ["DOUBAO_LLM_API_URL"] = "https://env.example/chat"
+        os.environ["DOUBAO_MINI_LLM_MODEL"] = "env-mini-model"
+        os.environ["DOUBAO_QA_LLM_MODEL"] = "env-qa-model"
+        os.environ["DOUBAO_LLM_MODEL"] = "env-pro-model"
+
+        config_module = types.ModuleType("config")
+        config_module.DOUBAO_API_KEY = "config-doubao-key"
+        config_module.DOUBAO_LLM_API_URL = "https://config.example/chat"
+        config_module.DOUBAO_MINI_LLM_MODEL = "config-mini-model"
+        config_module.DOUBAO_QA_LLM_MODEL = "config-qa-model"
+        config_module.DOUBAO_LLM_MODEL = "config-pro-model"
+
+        module = self._load_llm_gateway_config("qa_override", config_module=config_module)
+        llm_config = module.LLMConfig()
+
+        self.assertEqual(llm_config.get_model("qa"), "env-qa-model")
 
     def test_main_sync_helper_updates_llm_availability_and_logs(self):
         config_module = types.ModuleType("config")

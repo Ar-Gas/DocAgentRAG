@@ -58,6 +58,28 @@ def test_build_lightrag_env_uses_model_dimension_for_small_local_model():
     assert env["WORKING_DIR"].endswith("backend/data/lightrag/all-MiniLM-L6-v2-384d")
 
 
+def test_build_lightrag_env_prefers_legacy_bge_m3_workspace_with_semantic_artifacts(tmp_path):
+    repo_root = tmp_path / "DocAgentRAG"
+    legacy_dir = repo_root / "backend" / "data" / "lightrag"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "graph_chunk_entity_relation.graphml").write_text("<graphml/>", encoding="utf-8")
+    (legacy_dir / "vdb_entities.json").write_text('{"embedding_dim":1024,"data":[]}', encoding="utf-8")
+    (legacy_dir / "vdb_relationships.json").write_text('{"embedding_dim":1024,"data":[]}', encoding="utf-8")
+    (legacy_dir / "vdb_chunks.json").write_text('{"embedding_dim":1024,"data":[]}', encoding="utf-8")
+
+    env = build_lightrag_env(
+        root_dir=repo_root,
+        doubao_api_key="secret-key",
+        doubao_llm_api_url="https://ark.example.com/api/v3/chat/completions",
+        doubao_llm_model="doubao-seed-2-0-mini-260215",
+        embedding_host="http://127.0.0.1:8011/v1",
+        embedding_model="bge-m3",
+        embedding_dim=1024,
+    )
+
+    assert env["WORKING_DIR"] == str(legacy_dir)
+
+
 def test_render_lightrag_env_writes_shell_friendly_lines():
     content = render_lightrag_env(
         {

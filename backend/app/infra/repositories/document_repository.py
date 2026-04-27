@@ -21,6 +21,9 @@ class DocumentRepository:
     def list_all(self) -> List[Dict[str, Any]]:
         return self._store.list_documents()
 
+    def list_by_parent(self, parent_document_id: str) -> List[Dict[str, Any]]:
+        return self._store.list_documents_by_parent(parent_document_id)
+
     def delete(self, document_id: str) -> bool:
         return self._store.delete_document(document_id)
 

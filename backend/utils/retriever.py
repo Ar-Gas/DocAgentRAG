@@ -3,6 +3,7 @@ import re
 import math
 import base64
 import json
+import unicodedata
 from collections import Counter
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any
@@ -10,13 +11,28 @@ from dataclasses import dataclass
 
 from app.core.logger import logger
 from app.infra.embedding_provider import doubao_multimodal_embed, get_local_embedding_model_name
+from app.infra.file_utils import path_exists_safely
+from app.infra.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.infra.repositories.document_repository import DocumentRepository
+from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
 from app.infra.vector_store import get_block_collection
 from config import DATA_DIR
 
 
 def get_all_documents():
     return DocumentRepository(data_dir=DATA_DIR).list_all()
+
+
+def _artifact_repository() -> DocumentArtifactRepository:
+    return DocumentArtifactRepository(data_dir=DATA_DIR)
+
+
+def _segment_repository() -> DocumentSegmentRepository:
+    return DocumentSegmentRepository(data_dir=DATA_DIR)
+
+
+def _normalize_search_text(text: Any) -> str:
+    return unicodedata.normalize("NFKC", str(text or "")).lower()
 
 
 # ===================== 查询解析器 =====================
@@ -459,7 +475,7 @@ class BM25:
     
     def _tokenize(self, text):
         """简单分词：支持中英文"""
-        text = text.lower()
+        text = _normalize_search_text(text)
         tokens = re.findall(r'[\u4e00-\u9fa5]+|[a-z0-9]+', text)
         try:
             import jieba
@@ -966,8 +982,13 @@ def get_ready_block_document_ids(
         document_id = document.get("id")
         if not document_id:
             continue
-        if (document.get("block_index_status") or "").strip().lower() != "ready":
-            continue
+        block_status = (document.get("block_index_status") or "").strip().lower()
+        local_index_status = (document.get("local_index_status") or "").strip().lower()
+        if block_status != "ready":
+            if local_index_status != "ready":
+                continue
+            if not _document_has_local_block_fallback(document_id):
+                continue
         if not _matches_block_document_filters(
             document,
             file_types=file_types,
@@ -979,6 +1000,22 @@ def get_ready_block_document_ids(
             continue
         ready_ids.add(document_id)
     return ready_ids
+
+
+def _document_has_local_block_fallback(document_id: str) -> bool:
+    try:
+        if _load_local_block_fallback_rows(document_id):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _document_file_available(document_info: Dict[str, Any]) -> bool:
+    if document_info.get("file_available") is True:
+        return True
+    path = str(document_info.get("filepath") or document_info.get("path") or "").strip()
+    return path_exists_safely(path)
 
 
 def _parse_heading_path(value: Any) -> List[str]:
@@ -1016,30 +1053,83 @@ def _build_block_search_text(row: Dict[str, Any]) -> str:
 
 def _load_block_rows_for_documents(collection, ready_document_ids: set[str]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    for document_id in ready_document_ids:
-        try:
-            response = collection.get(where={"document_id": document_id}, include=["documents", "metadatas"])
-        except Exception:
-            continue
+    loaded_document_ids: set[str] = set()
 
-        ids = list(response.get("ids") or [])
-        documents = list(response.get("documents") or [])
-        metadatas = list(response.get("metadatas") or [])
+    if collection is not None:
+        for document_id in ready_document_ids:
+            try:
+                response = collection.get(where={"document_id": document_id}, include=["documents", "metadatas"])
+            except Exception:
+                response = {}
 
-        if len(documents) < len(ids):
-            documents.extend([""] * (len(ids) - len(documents)))
-        if len(metadatas) < len(ids):
-            metadatas.extend([{}] * (len(ids) - len(metadatas)))
+            ids = list(response.get("ids") or [])
+            documents = list(response.get("documents") or [])
+            metadatas = list(response.get("metadatas") or [])
 
-        for index, row_id in enumerate(ids):
-            rows.append(
-                {
-                    "id": row_id,
-                    "document": documents[index] or "",
-                    "metadata": metadatas[index] or {},
-                }
-            )
+            if len(documents) < len(ids):
+                documents.extend([""] * (len(ids) - len(documents)))
+            if len(metadatas) < len(ids):
+                metadatas.extend([{}] * (len(ids) - len(metadatas)))
+
+            if ids:
+                loaded_document_ids.add(document_id)
+
+            for index, row_id in enumerate(ids):
+                rows.append(
+                    {
+                        "id": row_id,
+                        "document": documents[index] or "",
+                        "metadata": metadatas[index] or {},
+                    }
+                )
+
+    for document_id in ready_document_ids - loaded_document_ids:
+        rows.extend(_load_local_block_fallback_rows(document_id))
     return rows
+
+
+def _load_local_block_fallback_rows(document_id: str) -> List[Dict[str, Any]]:
+    artifact = _artifact_repository().get(document_id, "reader_blocks") or {}
+    artifact_blocks = (artifact.get("payload") or {}).get("blocks") or []
+    if artifact_blocks:
+        sorted_blocks = sorted(
+            enumerate(artifact_blocks),
+            key=lambda item: int((item[1] or {}).get("block_index", item[0]) or item[0]),
+        )
+        return [
+            {
+                "id": block.get("block_id") or f"{document_id}:reader:{index}",
+                "document": block.get("text", "") or "",
+                "metadata": {
+                    "document_id": document_id,
+                    "block_id": block.get("block_id") or f"{document_id}:reader:{index}",
+                    "block_index": int(block.get("block_index", index) or index),
+                    "block_type": block.get("block_type", "paragraph") or "paragraph",
+                    "heading_path": block.get("heading_path") or [],
+                    "page_number": block.get("page_number"),
+                },
+            }
+            for index, block in sorted_blocks
+            if (block.get("text") or "").strip()
+        ]
+
+    segments = _segment_repository().list(document_id)
+    return [
+        {
+            "id": segment.get("segment_id") or f"{document_id}:segment:{index}",
+            "document": segment.get("content", "") or "",
+            "metadata": {
+                "document_id": document_id,
+                "block_id": segment.get("segment_id") or f"{document_id}:segment:{index}",
+                "block_index": int(segment.get("segment_index", index) or index),
+                "block_type": "paragraph",
+                "heading_path": [segment.get("title")] if segment.get("title") else [],
+                "page_number": segment.get("page_number"),
+            },
+        }
+        for index, segment in enumerate(segments)
+        if (segment.get("content") or "").strip()
+    ]
 
 
 def _upsert_block_candidate(
@@ -1070,7 +1160,7 @@ def _upsert_block_candidate(
             "path": document_info.get("filepath") or metadata.get("filepath", ""),
             "file_type": metadata.get("file_type") or document_info.get("file_type", ""),
             "classification_result": document_info.get("classification_result"),
-            "file_available": document_info.get("file_available", False),
+            "file_available": _document_file_available(document_info),
             "created_at_iso": document_info.get("created_at_iso"),
             "parser_name": document_info.get("parser_name"),
             "extraction_status": document_info.get("extraction_status"),
@@ -1096,10 +1186,11 @@ def _build_block_match_reason(
     search_terms: List[str],
     mode: str,
 ) -> str:
-    heading_text = " ".join(heading_path or []).lower()
-    body_text = (snippet or "").lower()
-    heading_match = any(term in heading_text for term in search_terms if term)
-    body_match = any(term in body_text for term in search_terms if term)
+    heading_text = _normalize_search_text(" ".join(heading_path or []))
+    body_text = _normalize_search_text(snippet or "")
+    normalized_terms = [_normalize_search_text(term) for term in search_terms if term]
+    heading_match = any(term in heading_text for term in normalized_terms if term)
+    body_match = any(term in body_text for term in normalized_terms if term)
     if heading_match and body_match:
         return "heading + body match"
     if heading_match:
@@ -1107,6 +1198,43 @@ def _build_block_match_reason(
     if body_match:
         return "body match"
     return "vector match" if mode == "vector" else "keyword match"
+
+
+def _prioritize_block_search_terms(search_terms: List[str]) -> List[str]:
+    question_stopwords = {
+        "什么",
+        "为何",
+        "为什么",
+        "怎么",
+        "如何",
+        "哪",
+        "哪些",
+        "谁",
+        "吗",
+        "呢",
+        "吧",
+        "啊",
+        "呀",
+        "么",
+        "是",
+    }
+    preferred_terms: List[str] = []
+    fallback_terms: List[str] = []
+
+    for term in search_terms:
+        normalized = unicodedata.normalize("NFKC", str(term or "")).strip()
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        is_cjk_term = any("\u4e00" <= ch <= "\u9fff" for ch in normalized)
+        is_preferred = (
+            (is_cjk_term and len(normalized) > 1 and lowered not in question_stopwords)
+            or (not is_cjk_term and len(normalized) > 2)
+        )
+        target = preferred_terms if is_preferred else fallback_terms
+        if normalized not in target:
+            target.append(normalized)
+    return preferred_terms or fallback_terms
 
 
 def _flatten_query_results(results: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1153,7 +1281,7 @@ def search_block_documents(
     expansion_method: str = "llm",
 ) -> Dict[str, Any]:
     collection = get_block_collection()
-    if collection is None or not ready_document_ids:
+    if not ready_document_ids:
         return {"documents": [], "results": [], "meta": {"fallback_used": False}}
 
     document_lookup = {
@@ -1173,12 +1301,13 @@ def search_block_documents(
         normalized = (item or "").strip().lower()
         if normalized and normalized not in search_terms:
             search_terms.append(normalized)
+    keyword_terms = _prioritize_block_search_terms(search_terms) or list(search_terms)
     normalized_query = (query or "").strip().lower()
     if normalized_query and normalized_query not in search_terms:
         search_terms.append(normalized_query)
 
     expanded_queries = [query] if query else []
-    keyword_query = query
+    keyword_queries = list(keyword_terms) if keyword_terms else ([query] if query else [])
     if normalized_mode == "smart" and query and use_query_expansion:
         try:
             from .smart_retrieval import expand_query_keywords, expand_query_with_llm, is_llm_available
@@ -1191,10 +1320,12 @@ def search_block_documents(
                 normalized = (item or "").strip()
                 if normalized and normalized not in expanded_queries:
                     expanded_queries.append(normalized)
-            keyword_query = " ".join(expanded_queries)
+                if normalized and normalized not in keyword_queries:
+                    keyword_queries.append(normalized)
         except Exception:
             expanded_queries = [query]
-            keyword_query = query
+            keyword_queries = list(keyword_terms) if keyword_terms else [query]
+    keyword_query = " ".join(keyword_queries)
 
     candidates: Dict[str, Dict[str, Any]] = {}
     candidate_limit = min(max(limit * 8, 40), 200)
@@ -1212,7 +1343,7 @@ def search_block_documents(
                 continue
             candidate["bm25_score"] = max(candidate["bm25_score"], score / max_bm25)
 
-    if query and normalized_mode in {"vector", "hybrid", "smart"}:
+    if query and collection is not None and normalized_mode in {"vector", "hybrid", "smart"}:
         for search_query in expanded_queries or [query]:
             try:
                 query_results = collection.query(

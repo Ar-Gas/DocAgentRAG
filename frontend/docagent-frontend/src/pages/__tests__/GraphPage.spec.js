@@ -36,7 +36,8 @@ describe('GraphPage', () => {
 
     expect(api.getGraphLabels).toHaveBeenCalled()
     expect(api.getGraph).toHaveBeenCalled()
-    expect(api.getGraph).toHaveBeenCalledWith({ label: '联邦学习' })
+    expect(api.getGraph).toHaveBeenCalledWith({})
+    expect(wrapper.find('select').element.value).toBe('')
     expect(wrapper.text()).toContain('联邦学习')
     expect(wrapper.text()).toContain('隐私保护')
     expect(wrapper.text()).toContain('提升')

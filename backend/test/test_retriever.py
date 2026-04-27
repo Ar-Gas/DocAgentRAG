@@ -148,6 +148,30 @@ class TestRetriever(unittest.TestCase):
 
         self.assertEqual(ready_ids, {"doc-1"})
 
+    @mock.patch("utils.retriever._document_has_local_block_fallback")
+    @mock.patch("utils.retriever.get_all_documents")
+    def test_get_ready_block_document_ids_includes_local_ready_reader_artifact_docs(
+        self,
+        mock_get_all_documents,
+        mock_has_local_block_fallback,
+    ):
+        mock_get_all_documents.return_value = [
+            {
+                "id": "doc-1",
+                "filename": "finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "书籍",
+                "block_index_status": "failed",
+                "local_index_status": "ready",
+                "created_at_iso": "2026-03-20T10:00:00",
+            }
+        ]
+        mock_has_local_block_fallback.return_value = True
+
+        ready_ids = get_ready_block_document_ids()
+
+        self.assertEqual(ready_ids, {"doc-1"})
+
     @mock.patch("utils.retriever.search_block_documents")
     @mock.patch("utils.retriever.get_ready_block_document_ids")
     def test_search_documents_uses_block_vector_mode_and_normalizes_results(
@@ -390,6 +414,79 @@ class TestRetriever(unittest.TestCase):
         self.assertEqual(payload["documents"][0]["best_block_id"], "doc-1:block-v1:0")
         self.assertEqual(payload["documents"][0]["evidence_blocks"][0]["heading_path"], ["预算管理"])
         self.assertEqual(payload["results"][0]["block_id"], "doc-1:block-v1:0")
+
+    @mock.patch("utils.retriever._segment_repository")
+    @mock.patch("utils.retriever._artifact_repository")
+    @mock.patch("utils.retriever.get_all_documents")
+    @mock.patch("utils.retriever.get_block_collection")
+    def test_search_block_documents_uses_reader_artifact_fallback_when_vector_rows_missing(
+        self,
+        mock_get_block_collection,
+        mock_get_all_documents,
+        mock_artifact_repository,
+        mock_segment_repository,
+    ):
+        fake_collection = mock.MagicMock()
+        fake_collection.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+        fake_collection.query.return_value = {}
+        mock_get_block_collection.return_value = fake_collection
+        mock_get_all_documents.return_value = [
+            {
+                "id": "doc-1",
+                "filename": "finance-history.pdf",
+                "filepath": "/docs/finance-history.pdf",
+                "file_type": ".pdf",
+                "classification_result": "书籍",
+                "created_at_iso": "2026-03-20T10:00:00",
+                "preview_content": "目录摘要",
+                "file_available": True,
+                "block_index_status": "failed",
+                "local_index_status": "ready",
+            }
+        ]
+        mock_artifact_repository.return_value.get.return_value = {
+            "payload": {
+                "blocks": [
+                    {
+                        "block_id": "doc-1:block-v1:0",
+                        "block_index": 0,
+                        "block_type": "paragraph",
+                        "heading_path": [],
+                        "page_number": 2,
+                        "text": "目录：国家精神。",
+                    },
+                    {
+                        "block_id": "doc-1:block-v1:1",
+                        "block_index": 1,
+                        "block_type": "paragraph",
+                        "heading_path": ["导论"],
+                        "page_number": 6,
+                        "text": "当代⾦融学教学科研强调：⾦融是货币、信用与资⾦融通活动的总称。",
+                    },
+                ]
+            }
+        }
+        mock_segment_repository.return_value.list.return_value = []
+
+        payload = search_block_documents(
+            query="金融",
+            mode="hybrid",
+            limit=10,
+            alpha=0.5,
+            use_rerank=False,
+            use_llm_rerank=False,
+            file_types=None,
+            classification=None,
+            date_from=None,
+            date_to=None,
+            ready_document_ids={"doc-1"},
+            group_by_document=True,
+        )
+
+        self.assertEqual(payload["documents"][0]["document_id"], "doc-1")
+        self.assertEqual(payload["documents"][0]["best_block_id"], "doc-1:block-v1:1")
+        self.assertIn("资⾦融通活动的总称", payload["documents"][0]["best_excerpt"])
+        self.assertEqual(payload["results"][0]["block_id"], "doc-1:block-v1:1")
 
     def test_get_document_by_id_invalid_params(self):
         self.assertIsNone(get_document_by_id(""))

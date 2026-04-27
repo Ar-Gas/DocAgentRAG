@@ -39,6 +39,7 @@ def get_all_documents():
 class IndexingService:
     READER_ARTIFACT_TYPE = "reader_blocks"
     SUPPORTED_BLOCK_FILE_TYPES = {".pdf", ".docx"}
+    BLOCK_ADD_BATCH_SIZE = 64
 
     def audit_block_index(self, document_id: str = "") -> Dict[str, Any]:
         documents = self._load_documents(document_id)
@@ -178,12 +179,37 @@ class IndexingService:
 
             vector_write_started_at = perf_counter()
             if ids:
-                block_collection.add(documents=documents, metadatas=metadatas, ids=ids)
-                new_ids = list(ids)
+                total_batches = (len(ids) + self.BLOCK_ADD_BATCH_SIZE - 1) // self.BLOCK_ADD_BATCH_SIZE
+                for batch_index, start in enumerate(range(0, len(ids), self.BLOCK_ADD_BATCH_SIZE), start=1):
+                    end = start + self.BLOCK_ADD_BATCH_SIZE
+                    batch_ids = ids[start:end]
+                    batch_documents = documents[start:end]
+                    batch_metadatas = metadatas[start:end]
+                    logger.info(
+                        "block_vector_write_batch_started document_id={} batch={}/{} batch_size={} indexed_so_far={}",
+                        document_id,
+                        batch_index,
+                        total_batches,
+                        len(batch_ids),
+                        len(new_ids),
+                    )
+                    block_collection.add(
+                        documents=batch_documents,
+                        metadatas=batch_metadatas,
+                        ids=batch_ids,
+                    )
+                    new_ids.extend(batch_ids)
+                    logger.info(
+                        "block_vector_write_batch_completed document_id={} batch={}/{} indexed_total={}",
+                        document_id,
+                        batch_index,
+                        total_batches,
+                        len(new_ids),
+                    )
             logger.info(
                 "block_vector_write_completed document_id={} block_count={} duration_ms={:.2f}",
                 document_id,
-                len(ids),
+                len(new_ids),
                 (perf_counter() - vector_write_started_at) * 1000,
             )
 

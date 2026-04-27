@@ -40,7 +40,10 @@ class LLMConfig:
             "extract": _get_setting("DOUBAO_MINI_LLM_MODEL", "doubao-seed-2-0-mini-260215"),
             "classify": _get_setting("DOUBAO_MINI_LLM_MODEL", "doubao-seed-2-0-mini-260215"),
             "rerank": _get_setting("DOUBAO_MINI_LLM_MODEL", "doubao-seed-2-0-mini-260215"),
-            "qa": _get_setting("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115"),
+            "qa": _get_setting(
+                "DOUBAO_QA_LLM_MODEL",
+                _get_setting("DOUBAO_MINI_LLM_MODEL", "doubao-seed-2-0-mini-260215"),
+            ),
             "analyze": _get_setting("DOUBAO_MINI_LLM_MODEL", "doubao-seed-2-0-mini-260215"),
             "summarize": _get_setting("DOUBAO_LLM_MODEL", "doubao-pro-32k-241115"),
         }

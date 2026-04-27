@@ -1,7 +1,10 @@
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import unicodedata
 
 from app.core.logger import get_logger, log_retrieval
+from app.infra.file_utils import path_exists_safely
 from app.infra.repositories.document_repository import DocumentRepository
 from app.infra.repositories.document_segment_repository import DocumentSegmentRepository
 from app.infra.repositories.entity_repository import EntityRepository
@@ -393,6 +396,7 @@ class RetrievalService:
         query: str = "",
         mode: str = "hybrid",
         retrieval_version: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,
         limit: int = 10,
         alpha: float = 0.5,
         use_rerank: bool = False,
@@ -411,7 +415,10 @@ class RetrievalService:
         requested_retrieval_version = self._resolve_requested_retrieval_version(retrieval_version)
         normalized_limit = max(1, min(limit, 100))
         normalized_file_types = self._normalize_file_types(file_types)
+        normalized_document_ids = self._normalize_document_ids(document_ids)
+        document_scope = set(normalized_document_ids)
         applied_filters = {
+            "document_ids": normalized_document_ids or None,
             "file_types": normalized_file_types,
             "filename": filename or None,
             "classification": classification or None,
@@ -424,6 +431,7 @@ class RetrievalService:
         _cache = get_search_cache()
         _filter_key = {
             "retrieval_version": requested_retrieval_version,
+            "document_ids": tuple(sorted(document_scope)),
             "file_types": sorted(normalized_file_types or []),
             "filename": filename or "",
             "classification": classification or "",
@@ -447,6 +455,12 @@ class RetrievalService:
             date_from=date_from,
             date_to=date_to,
         )
+        if document_scope:
+            ready_document_ids = {
+                document_id
+                for document_id in ready_document_ids
+                if document_id in document_scope
+            }
         block_payload = search_block_documents(
             query=normalized_query,
             mode=normalized_mode,
@@ -478,6 +492,7 @@ class RetrievalService:
                 mode=normalized_mode,
                 requested_retrieval_version=requested_retrieval_version,
                 limit=normalized_limit,
+                document_ids=document_scope,
                 file_types=normalized_file_types,
                 filename=filename,
                 classification=classification,
@@ -494,6 +509,7 @@ class RetrievalService:
         if group_by_document and normalized_query and results:
             metadata_results = self._search_workspace_documents_by_metadata(
                 documents=self._filter_workspace_documents(
+                    document_ids=document_scope,
                     file_types=normalized_file_types,
                     filename=filename,
                     classification=classification,
@@ -562,6 +578,17 @@ class RetrievalService:
         return normalized
 
     @staticmethod
+    def _normalize_document_ids(document_ids: Optional[List[str]]) -> List[str]:
+        if not document_ids:
+            return []
+        normalized = []
+        for item in document_ids:
+            value = str(item or "").strip()
+            if value and value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    @staticmethod
     def _resolve_requested_retrieval_version(retrieval_version: Optional[str]) -> str:
         _ = retrieval_version
         return "block"
@@ -583,7 +610,15 @@ class RetrievalService:
                 "preview_content": document.get("preview_content", ""),
                 "file_available": document.get("file_available", False),
             }
-            for evidence in document.get("evidence_blocks") or []:
+            evidence_blocks = list(document.get("evidence_blocks") or [])
+            meaningful_evidence_blocks = [
+                evidence
+                for evidence in evidence_blocks
+                if not RetrievalService._is_low_value_workspace_snippet(evidence.get("snippet", ""))
+            ]
+            surfaced_evidence_blocks = meaningful_evidence_blocks or evidence_blocks
+
+            for evidence in surfaced_evidence_blocks:
                 snippet = evidence.get("snippet", "")
                 score = evidence.get("score", 0.0)
                 flattened.append(
@@ -602,13 +637,6 @@ class RetrievalService:
                         "match_reason": evidence.get("match_reason", ""),
                     }
                 )
-        flattened.sort(
-            key=lambda item: (
-                item.get("score", 0.0),
-                -item.get("block_index", 0),
-            ),
-            reverse=True,
-        )
         return flattened
 
     @staticmethod
@@ -689,25 +717,19 @@ class RetrievalService:
                 best_index_by_document[document_id] = len(merged_results) - 1
                 best_score_by_document[document_id] = item_score
                 continue
-            existing_best_score = best_score_by_document.get(document_id, 0.0)
-            if existing_best_score >= 0.75 or item_score < existing_best_score:
-                continue
+
             existing = dict(merged_results[best_index])
+            existing_score = existing.get("similarity", existing.get("score", 0.0)) or 0.0
+            merged_score = max(existing_score, item_score)
             merged_results[best_index] = {
+                **item,
                 **existing,
-                "block_id": item.get("block_id", existing.get("block_id")),
-                "block_index": item.get("block_index", existing.get("block_index", 0)),
-                "chunk_index": item.get("chunk_index", existing.get("chunk_index", existing.get("block_index", 0))),
-                "block_type": item.get("block_type", existing.get("block_type", "paragraph")),
-                "snippet": item.get("snippet", existing.get("snippet", "")),
-                "content_snippet": item.get("content_snippet", existing.get("content_snippet", "")),
-                "heading_path": item.get("heading_path", existing.get("heading_path", [])),
-                "page_number": item.get("page_number", existing.get("page_number")),
-                "score": item_score,
-                "similarity": item_score,
-                "match_reason": item.get("match_reason", existing.get("match_reason", "")),
+                "score": merged_score,
+                "similarity": merged_score,
+                "match_reason": existing.get("match_reason") or item.get("match_reason", ""),
+                "file_available": existing.get("file_available", False) or item.get("file_available", False),
             }
-            best_score_by_document[document_id] = item_score
+            best_score_by_document[document_id] = merged_score
 
         merged_results.sort(
             key=lambda item: (
@@ -739,6 +761,7 @@ class RetrievalService:
         mode: str,
         requested_retrieval_version: str,
         limit: int,
+        document_ids: Optional[set[str]],
         file_types: Optional[List[str]],
         filename: Optional[str],
         classification: Optional[str],
@@ -750,6 +773,7 @@ class RetrievalService:
         reason: str,
     ) -> Optional[Dict[str, Any]]:
         candidate_documents = self._filter_workspace_documents(
+            document_ids=document_ids,
             file_types=file_types,
             filename=filename,
             classification=classification,
@@ -810,6 +834,7 @@ class RetrievalService:
     def _filter_workspace_documents(
         self,
         *,
+        document_ids: Optional[set[str]],
         file_types: Optional[List[str]],
         filename: Optional[str],
         classification: Optional[str],
@@ -822,6 +847,7 @@ class RetrievalService:
                 continue
             if not self._workspace_document_matches_filters(
                 document,
+                document_ids=document_ids,
                 file_types=file_types,
                 filename=filename,
                 classification=classification,
@@ -829,7 +855,9 @@ class RetrievalService:
                 date_to=date_to,
             ):
                 continue
-            matched.append(document)
+            hydrated = dict(document)
+            hydrated["file_available"] = self._workspace_file_available(hydrated)
+            matched.append(hydrated)
         return matched
 
     def _search_workspace_documents_by_metadata(
@@ -841,7 +869,8 @@ class RetrievalService:
     ) -> List[Dict[str, Any]]:
         parser = get_query_parser()
         parsed = parser.parse(query) if query else None
-        search_terms = self._collect_workspace_search_terms(parsed, query) if parsed else []
+        raw_search_terms = self._collect_workspace_search_terms(parsed, query) if parsed else []
+        search_terms = self._prioritize_workspace_search_terms(raw_search_terms) or raw_search_terms
         scored_results: List[Dict[str, Any]] = []
 
         for document in documents:
@@ -886,13 +915,54 @@ class RetrievalService:
             total_hits = filename_hits + classification_hits + preview_hits
             if total_hits <= 0:
                 return None
+            normalized_terms = [
+                self._normalize_workspace_search_text(term).strip()
+                for term in search_terms
+                if self._normalize_workspace_search_text(term).strip()
+            ]
+            unique_terms = list(dict.fromkeys(normalized_terms))
+            term_count = max(len(unique_terms), 1)
+            filename_matches = self._matched_workspace_terms(filename, unique_terms)
+            classification_matches = self._matched_workspace_terms(classification, unique_terms)
+            preview_matches = self._matched_workspace_terms(preview_content, unique_terms)
+            matched_terms = set(filename_matches) | set(classification_matches) | set(preview_matches)
+
+            filename_coverage = len(filename_matches) / term_count
+            classification_coverage = len(classification_matches) / term_count
+            preview_coverage = len(preview_matches) / term_count
+            overall_coverage = len(matched_terms) / term_count
+
+            normalized_query = self._normalize_workspace_search_text(raw_query).strip()
+            filename_exact = bool(normalized_query and normalized_query in self._normalize_workspace_search_text(filename))
+            classification_exact = bool(
+                normalized_query and normalized_query in self._normalize_workspace_search_text(classification)
+            )
+            preview_exact = bool(normalized_query and normalized_query in self._normalize_workspace_search_text(preview_content))
+            filename_sequence = (
+                bool(normalized_query)
+                and not filename_exact
+                and self._workspace_subsequence_match(normalized_query, filename)
+            )
+
+            bonus = 0.0
+            if filename_exact:
+                bonus += 0.2
+            elif filename_sequence:
+                bonus += 0.18
+            elif filename_coverage >= 0.999 and term_count > 1:
+                bonus += 0.12
+            if classification_exact:
+                bonus += 0.05
+            if preview_exact:
+                bonus += 0.05
             similarity = min(
                 0.99,
                 round(
-                    filename_hits * 0.45
-                    + classification_hits * 0.2
-                    + preview_hits * 0.3
-                    + min(total_hits, 6) * 0.03,
+                    overall_coverage * 0.45
+                    + filename_coverage * 0.35
+                    + classification_coverage * 0.1
+                    + preview_coverage * 0.1
+                    + bonus,
                     4,
                 ),
             )
@@ -906,10 +976,14 @@ class RetrievalService:
         )
         match_reason = "preview match"
         if raw_query:
-            lowered_terms = [term.lower() for term in search_terms if term]
-            lowered_filename = filename.lower()
-            lowered_classification = classification.lower()
-            if any(term in lowered_filename for term in lowered_terms):
+            lowered_terms = [self._normalize_workspace_search_text(term) for term in search_terms if term]
+            lowered_filename = self._normalize_workspace_search_text(filename)
+            lowered_classification = self._normalize_workspace_search_text(classification)
+            lowered_query = self._normalize_workspace_search_text(raw_query).strip()
+            if (
+                any(term in lowered_filename for term in lowered_terms)
+                or (lowered_query and self._workspace_subsequence_match(lowered_query, lowered_filename))
+            ):
                 match_reason = "filename match"
             elif any(term in lowered_classification for term in lowered_terms):
                 match_reason = "classification match"
@@ -924,7 +998,7 @@ class RetrievalService:
             "parser_name": document.get("parser_name"),
             "extraction_status": document.get("extraction_status"),
             "preview_content": preview_content,
-            "file_available": document.get("file_available", False),
+            "file_available": self._workspace_file_available(document),
             "block_id": f"{document_id}#preview",
             "block_index": 0,
             "chunk_index": 0,
@@ -940,14 +1014,79 @@ class RetrievalService:
 
     @staticmethod
     def _count_workspace_term_hits(text: str, search_terms: List[str]) -> int:
-        lowered_text = (text or "").lower()
+        lowered_text = RetrievalService._normalize_workspace_search_text(text)
         hits = 0
         for term in search_terms:
-            normalized = (term or "").strip().lower()
+            normalized = RetrievalService._normalize_workspace_search_text(term).strip()
             if not normalized:
                 continue
             hits += lowered_text.count(normalized)
         return hits
+
+    @staticmethod
+    def _matched_workspace_terms(text: str, search_terms: List[str]) -> List[str]:
+        lowered_text = RetrievalService._normalize_workspace_search_text(text)
+        matched: List[str] = []
+        for term in search_terms:
+            normalized = RetrievalService._normalize_workspace_search_text(term).strip()
+            if not normalized:
+                continue
+            if normalized in lowered_text and normalized not in matched:
+                matched.append(normalized)
+        return matched
+
+    @staticmethod
+    def _workspace_subsequence_match(query: str, text: str) -> bool:
+        normalized_query = re.sub(r"\s+", "", RetrievalService._normalize_workspace_search_text(query))
+        normalized_text = re.sub(r"\s+", "", RetrievalService._normalize_workspace_search_text(text))
+        if not normalized_query or not normalized_text:
+            return False
+
+        cursor = 0
+        for char in normalized_query:
+            cursor = normalized_text.find(char, cursor)
+            if cursor < 0:
+                return False
+            cursor += 1
+        return True
+
+    @staticmethod
+    def _prioritize_workspace_search_terms(search_terms: List[str]) -> List[str]:
+        question_stopwords = {
+            "什么",
+            "为何",
+            "为什么",
+            "怎么",
+            "如何",
+            "哪",
+            "哪些",
+            "谁",
+            "吗",
+            "呢",
+            "吧",
+            "啊",
+            "呀",
+            "么",
+            "是",
+        }
+        preferred_terms: List[str] = []
+        fallback_terms: List[str] = []
+
+        for term in search_terms:
+            normalized = (term or "").strip()
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            is_cjk_term = any("\u4e00" <= ch <= "\u9fff" for ch in normalized)
+            is_preferred = (
+                (is_cjk_term and len(normalized) > 1 and lowered not in question_stopwords)
+                or (not is_cjk_term and len(normalized) > 2)
+            )
+            target = preferred_terms if is_preferred else fallback_terms
+            if normalized not in target:
+                target.append(normalized)
+
+        return preferred_terms or fallback_terms
 
     @staticmethod
     def _extract_workspace_preview_snippet(
@@ -961,10 +1100,11 @@ class RetrievalService:
         if not text:
             return (fallback_text or "").strip()[:240]
 
-        lowered_text = text.lower()
+        effective_terms = RetrievalService._prioritize_workspace_search_terms(search_terms) or list(search_terms)
+        lowered_text = RetrievalService._normalize_workspace_search_text(text)
         positions = []
-        for term in search_terms:
-            normalized = (term or "").strip().lower()
+        for term in effective_terms:
+            normalized = RetrievalService._normalize_workspace_search_text(term).strip()
             if not normalized:
                 continue
             position = lowered_text.find(normalized)
@@ -981,12 +1121,16 @@ class RetrievalService:
         self,
         document: Dict[str, Any],
         *,
+        document_ids: Optional[set[str]],
         file_types: Optional[List[str]],
         filename: Optional[str],
         classification: Optional[str],
         date_from: Optional[str],
         date_to: Optional[str],
     ) -> bool:
+        if document_ids and str(document.get("id") or "").strip() not in document_ids:
+            return False
+
         normalized_file_types = self._normalize_file_types(file_types)
         if normalized_file_types:
             document_file_type = (document.get("file_type") or "").strip().lower().lstrip(".")
@@ -1018,6 +1162,34 @@ class RetrievalService:
         if date_to and not self._workspace_datetime_is_on_or_before(created_at_iso, date_to):
             return False
         return True
+
+    @staticmethod
+    def _workspace_file_available(document: Dict[str, Any]) -> bool:
+        if document.get("file_available") is True:
+            return True
+        path = str(document.get("filepath") or document.get("path") or "").strip()
+        return path_exists_safely(path)
+
+    @classmethod
+    def _is_low_value_workspace_snippet(cls, text: str) -> bool:
+        raw_text = str(text or "")
+        normalized = re.sub(r"\s+", "", cls._normalize_workspace_search_text(raw_text)).lower()
+        if not normalized:
+            return True
+        if any(marker in normalized for marker in ("图书在版编目", "isbn")):
+            return True
+        if "cip" in normalized:
+            return True
+
+        chapter_markers = sum(
+            raw_text.count(marker)
+            for marker in ("第一章", "第二章", "第三章", "第四章", "第五章", "第六章", "第七章", "第八章", "第九章", "第十章")
+        )
+        return "目录" in raw_text and chapter_markers >= 2
+
+    @staticmethod
+    def _normalize_workspace_search_text(text: Any) -> str:
+        return unicodedata.normalize("NFKC", str(text or "")).lower()
 
     @staticmethod
     def _workspace_file_type_family(file_type: str) -> str:
@@ -1192,13 +1364,21 @@ class RetrievalService:
                 ),
                 reverse=True,
             )
-            if not item["best_block_id"] and item["evidence_blocks"]:
-                item["best_block_id"] = item["evidence_blocks"][0]["block_id"]
+            preferred_evidence = next(
+                (
+                    evidence
+                    for evidence in item["evidence_blocks"]
+                    if not self._is_low_value_workspace_snippet(evidence.get("snippet", ""))
+                ),
+                item["evidence_blocks"][0] if item["evidence_blocks"] else None,
+            )
+            if preferred_evidence:
+                item["best_block_id"] = preferred_evidence.get("block_id")
+                item["best_excerpt"] = preferred_evidence.get("snippet") or item["preview_content"]
+            elif not item["best_block_id"]:
+                item["best_block_id"] = None
             if not item["best_excerpt"]:
-                item["best_excerpt"] = (
-                    (item["evidence_blocks"][0].get("snippet") if item["evidence_blocks"] else "")
-                    or item["preview_content"]
-                )
+                item["best_excerpt"] = item["preview_content"]
             item["top_segments"] = sorted(
                 item["top_segments"],
                 key=lambda segment: segment.get("segment_index", 0),

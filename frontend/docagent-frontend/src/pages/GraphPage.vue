@@ -128,9 +128,6 @@ const describeEdge = (edge) => (
 const loadGraphLabels = async () => {
   const response = await api.getGraphLabels()
   graphLabels.value = response.data?.items || []
-  if (!selectedLabel.value && graphLabels.value.length) {
-    selectedLabel.value = graphLabels.value[0]
-  }
 }
 
 const loadGraph = async () => {

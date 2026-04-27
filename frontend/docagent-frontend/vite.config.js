@@ -20,9 +20,6 @@ export default defineConfig({
           if (id.includes('element-plus') || id.includes('@element-plus')) {
             return 'element-plus'
           }
-          if (id.includes('vue-router') || id.includes('/vue/')) {
-            return 'vue-vendor'
-          }
           if (id.includes('axios')) {
             return 'http-vendor'
           }

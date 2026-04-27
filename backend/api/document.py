@@ -11,6 +11,7 @@ from app.core.logger import logger
 from app.services.document_service import DocumentService
 from app.services.errors import AppServiceError
 from api import success, paginated, BusinessException
+from config import BASE_DIR
 
 _CONTENT_TYPES = {
     ".pdf":  "application/pdf",
@@ -28,12 +29,30 @@ router = APIRouter()
 document_service = DocumentService()
 
 
+def _build_storage_path(filepath: object) -> str:
+    text = str(filepath or "").strip()
+    if not text:
+        return ""
+    try:
+        path = Path(text)
+        try:
+            return str(path.resolve().relative_to(BASE_DIR.resolve()))
+        except ValueError:
+            return str(path)
+    except Exception:
+        return text
+
+
 def _build_document_response(doc_info: dict) -> dict:
     payload = doc_info if isinstance(doc_info, dict) else {}
+    filepath = payload.get("filepath") or payload.get("path") or ""
     return {
         "id": payload.get("id"),
         "filename": payload.get("filename"),
         "file_type": payload.get("file_type"),
+        "filepath": filepath,
+        "path": filepath,
+        "storage_path": _build_storage_path(filepath),
         "preview_content": str(payload.get("preview_content", "") or "")[:500],
         "full_content_length": payload.get("full_content_length", 0),
         "created_at_iso": payload.get("created_at_iso"),

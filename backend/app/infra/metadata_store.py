@@ -412,6 +412,25 @@ class DocumentMetadataStore:
             ).fetchall()
         return [json.loads(row["payload"]) for row in rows]
 
+    def list_documents_by_parent(self, parent_document_id: str) -> List[Dict[str, Any]]:
+        if not parent_document_id:
+            return []
+
+        documents = self.list_documents()
+        children = [
+            item
+            for item in documents
+            if isinstance(item, dict) and item.get("parent_document_id") == parent_document_id
+        ]
+        return sorted(
+            children,
+            key=lambda item: (
+                int(item.get("shard_index") or 0),
+                str(item.get("updated_at") or item.get("created_at_iso") or ""),
+                str(item.get("id") or ""),
+            ),
+        )
+
     def delete_document(self, document_id: str) -> bool:
         with self._connect() as connection:
             connection.execute("DELETE FROM document_contents WHERE document_id = ?", (document_id,))

@@ -123,6 +123,26 @@ class LLMGateway:
             "temperature": temperature,
         }
 
+    def _chat_completions_url(self) -> str:
+        api_url = str(self.config.api_url or "")
+        if "/responses" in api_url:
+            return api_url.replace("/responses", "/chat/completions")
+        return api_url
+
+    def _build_chat_payload(
+        self,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        return {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
     @staticmethod
     def _extract_responses_content(result: Dict[str, Any]) -> str:
         output_text = result.get("output_text")
@@ -154,7 +174,9 @@ class LLMGateway:
         prompt: str,
         model: str,
         max_tokens: int = 500,
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        prefer_chat_completions: bool = False,
+        request_timeout_seconds: float = 30,
     ) -> LLMResponse:
         """调用豆包 LLM API"""
         if not self.config.api_key:
@@ -165,24 +187,65 @@ class LLMGateway:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}"
         }
-        payload = self._build_payload(
-            prompt=prompt,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
+        use_chat_completions = prefer_chat_completions and self._is_responses_api()
+        request_url = self._chat_completions_url() if use_chat_completions else self.config.api_url
+        payload = (
+            self._build_chat_payload(
+                prompt=prompt,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            if use_chat_completions
+            else self._build_payload(
+                prompt=prompt,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
         )
 
         try:
             response = requests.post(
-                self.config.api_url,
+                request_url,
                 headers=headers,
                 json=payload,
-                timeout=30  # 外层总超时
+                timeout=request_timeout_seconds,
             )
 
             if response.status_code == 200:
                 result = response.json()
-                content, tokens_used = self._parse_response_payload(result)
+                if use_chat_completions:
+                    content = result["choices"][0]["message"]["content"]
+                    tokens_used = result.get("usage", {}).get("total_tokens", 0)
+                else:
+                    content, tokens_used = self._parse_response_payload(result)
+                if self._is_responses_api() and not str(content or "").strip():
+                    fallback_url = self._chat_completions_url()
+                    if fallback_url and fallback_url != self.config.api_url:
+                        logger.warning("responses_api_empty_output_fallback_to_chat_completions model={}", model)
+                        fallback_payload = self._build_chat_payload(
+                            prompt=prompt,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                        )
+                        fallback_response = requests.post(
+                            fallback_url,
+                            headers=headers,
+                            json=fallback_payload,
+                            timeout=request_timeout_seconds,
+                        )
+                        if fallback_response.status_code == 200:
+                            result = fallback_response.json()
+                            content = result["choices"][0]["message"]["content"]
+                            tokens_used = result.get("usage", {}).get("total_tokens", 0)
+                        else:
+                            logger.error(
+                                "豆包 chat fallback 返回 {}: {}",
+                                fallback_response.status_code,
+                                fallback_response.text,
+                            )
                 return LLMResponse(
                     content=content,
                     tokens_used=tokens_used,
@@ -241,7 +304,9 @@ class LLMGateway:
                 prompt=prompt,
                 model=model,
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                prefer_chat_completions=(task == "qa"),
+                request_timeout_seconds=timeout,
             )
 
             # 存入缓存

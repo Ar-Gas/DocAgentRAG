@@ -1,6 +1,7 @@
 import shutil
 import threading
 import os
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -10,7 +11,7 @@ from chromadb.utils import embedding_functions
 
 from app.core.logger import logger
 from app.infra.embedding_provider import get_local_embedding_model_name
-from config import BGE_MODEL, CHROMA_DB_PATH
+from config import BGE_MODEL, CHROMA_DB_PATH, LOCAL_EMBEDDING_DIM
 
 _chroma_client = None
 _chroma_block_collection = None
@@ -48,6 +49,52 @@ def resolve_embedding_function():
         return embedding_functions.DefaultEmbeddingFunction()
 
 
+def _read_collection_dimension(
+    chroma_db_path: Path,
+    collection_name: str = "document_blocks",
+) -> Optional[int]:
+    sqlite_path = chroma_db_path / "chroma.sqlite3"
+    if not sqlite_path.exists():
+        return None
+
+    try:
+        connection = sqlite3.connect(str(sqlite_path))
+    except Exception:
+        return None
+
+    try:
+        row = connection.execute(
+            "SELECT dimension FROM collections WHERE name = ? LIMIT 1",
+            (collection_name,),
+        ).fetchone()
+    except Exception:
+        return None
+    finally:
+        connection.close()
+
+    if not row:
+        return None
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_collection_dimension_compatible(
+    chroma_db_path: Path,
+    collection_name: str = "document_blocks",
+) -> Optional[Path]:
+    persisted_dimension = _read_collection_dimension(chroma_db_path, collection_name=collection_name)
+    expected_dimension = int(LOCAL_EMBEDDING_DIM or 0)
+    if not persisted_dimension or not expected_dimension or persisted_dimension == expected_dimension:
+        return None
+
+    reason = RuntimeError(
+        f"Embedding dimension {expected_dimension} does not match collection dimensionality {persisted_dimension}"
+    )
+    return backup_legacy_chroma_store(reason, chroma_db_path=chroma_db_path)
+
+
 def init_ephemeral_chroma_client() -> Tuple[object, object]:
     logger.warning("持久化 Chroma 不可用，回退到内存模式")
     client = EphemeralClient()
@@ -76,6 +123,7 @@ def init_chroma_client(
         if _chroma_client is not None and _chroma_block_collection is not None:
             return _chroma_client, _chroma_block_collection
 
+        _ensure_collection_dimension_compatible(chroma_db_path)
         client = PersistentClient(path=str(chroma_db_path))
         try:
             ef = resolve_embedding_function()

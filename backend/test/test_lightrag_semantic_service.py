@@ -36,7 +36,18 @@ class _FakeLightRAGClient:
         }
 
     async def list_graph_labels(self):
-        return {"labels": ["财务管理", "人力资源"]}
+        return {
+            "labels": [
+                "  “财务管理”  ",
+                "人力资源",
+                "#include",
+                "2024-07-25",
+                "1021782727@qq.com",
+                "/Library/Developer/CommandLineTools/usr/bin",
+                "人力资源",
+                "",
+            ]
+        }
 
     async def get_graph(self, label: str, max_depth: int = 3, max_nodes: int = 1000):
         return {
@@ -80,3 +91,11 @@ def test_get_graph_normalizes_nodes_edges_and_stats():
     assert payload["edges"][0]["from"] == "预算审批"
     assert payload["edges"][0]["to"] == "财务制度"
     assert payload["edges"][0]["label"] == "属于"
+
+
+def test_list_graph_labels_filters_noise_and_normalizes_quotes():
+    service = LightRAGSemanticService(lightrag_client=_FakeLightRAGClient())
+
+    payload = asyncio.run(service.list_graph_labels())
+
+    assert payload == ["财务管理", "人力资源"]

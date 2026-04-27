@@ -17,7 +17,10 @@
             @click="emit('open-viewer', row)"
           >
             <el-icon><Document /></el-icon>
-            <span>{{ row.filename }}</span>
+            <div class="file-name-texts">
+              <span class="file-name-primary">{{ row.filename }}</span>
+              <span v-if="getStoragePathText(row)" class="file-path-text">{{ getStoragePathText(row) }}</span>
+            </div>
             <el-tag v-if="row.file_available === false" size="small" type="danger">文本预览</el-tag>
           </div>
         </template>
@@ -151,6 +154,12 @@ const getClassificationText = (row) => {
     return '未分类'
   }
   return row.classification_result || '未分类'
+}
+
+const getStoragePathText = (row) => {
+  const storagePath = String(row.storage_path || '').trim()
+  if (storagePath) return storagePath
+  return String(row.filepath || row.path || '').trim()
 }
 
 const getClassificationSourceMeta = (source) => {
@@ -291,23 +300,38 @@ const handleDelete = async (row) => {
   gap: 8px;
   overflow: hidden;
 
-  span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 13px;
-    color: var(--ink-strong);
-  }
-
   &.clickable {
     cursor: pointer;
-    span { color: var(--blue-600); }
-    &:hover span { text-decoration: underline; }
+    .file-name-primary { color: var(--blue-600); }
+    &:hover .file-name-primary { text-decoration: underline; }
   }
 
   &.unavailable {
     opacity: 0.72;
   }
+}
+
+.file-name-texts {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-name-primary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--ink-strong);
+}
+
+.file-path-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--ink-muted);
 }
 
 .classification-cell {

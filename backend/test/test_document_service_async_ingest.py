@@ -7,6 +7,8 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.infra.repositories.document_repository import DocumentRepository  # noqa: E402
+from app.services.extraction_service import ExtractionResult  # noqa: E402
+import app.services.document_service as document_service_module  # noqa: E402
 from app.services.document_service import DocumentService  # noqa: E402
 
 
@@ -20,6 +22,11 @@ class FakeLightRAGClient:
         self.health_payload = {"status": "healthy", "pipeline_busy": False}
         self.track_status_payload = {"track_id": "track-1", "documents": [], "total_count": 0, "status_summary": {}}
         self.track_status_by_id = {}
+        self.track_status_calls = []
+        self.paginated_payload = {
+            "documents": [],
+            "pagination": {"page": 1, "page_size": 100, "total_count": 0, "total_pages": 1, "has_next": False},
+        }
 
     async def upload_file(self, file_path: str, filename: str):
         self.uploads.append({"file_path": file_path, "filename": filename})
@@ -28,6 +35,7 @@ class FakeLightRAGClient:
         return self.payload
 
     async def get_track_status(self, track_id: str):
+        self.track_status_calls.append(track_id)
         return self.track_status_by_id.get(track_id, self.track_status_payload)
 
     async def reprocess_failed_documents(self):
@@ -37,6 +45,9 @@ class FakeLightRAGClient:
     async def health(self):
         self.health_calls += 1
         return self.health_payload
+
+    async def list_documents_paginated(self, page: int = 1, page_size: int = 100):
+        return self.paginated_payload
 
 
 class FakeLocalEmbeddingRuntime:
@@ -62,6 +73,37 @@ def _service(tmp_path: Path, *, client=None, local_embedding_runtime=None) -> Do
         local_embedding_runtime=local_embedding_runtime or FakeLocalEmbeddingRuntime(),
         enqueue_background=False,
     )
+
+
+class StubExtractionService:
+    def __init__(self, content: str, parser_name: str = "pdf"):
+        self.content = content
+        self.parser_name = parser_name
+
+    def extract(self, filepath):
+        return ExtractionResult(
+            success=True,
+            content=self.content,
+            parser_name=self.parser_name,
+            preview_content=self.content[:1000],
+            full_content_length=len(self.content),
+            metadata={"filepath": filepath},
+        )
+
+
+def _configure_shard_thresholds(monkeypatch, *, threshold: int = 70, target: int = 60, hard: int = 60) -> None:
+    monkeypatch.setattr(document_service_module, "LIGHTRAG_SHARD_CONTENT_THRESHOLD", threshold, raising=False)
+    monkeypatch.setattr(document_service_module, "LIGHTRAG_SHARD_TARGET_SIZE", target, raising=False)
+    monkeypatch.setattr(document_service_module, "LIGHTRAG_SHARD_HARD_LIMIT", hard, raising=False)
+
+
+def _list_child_shards(service: DocumentService, parent_document_id: str):
+    children = [
+        item
+        for item in (service._document_repository().list_all() or [])
+        if item.get("parent_document_id") == parent_document_id
+    ]
+    return sorted(children, key=lambda item: int(item.get("shard_index") or 0))
 
 
 def test_upload_persists_queued_document_without_running_parser(monkeypatch, tmp_path):
@@ -128,6 +170,114 @@ def test_process_local_index_persists_content_and_reader_blocks(tmp_path):
     assert reader_payload["total_matches"] == 1
 
 
+def test_process_local_index_creates_shards_from_extracted_large_content(monkeypatch, tmp_path):
+    _configure_shard_thresholds(monkeypatch)
+    service = _service(tmp_path)
+    service.extraction_service = StubExtractionService(
+        "第一部分内容" * 6 + "\n\n" + "第二部分内容" * 6
+    )
+    doc = service.upload("manual.pdf", BytesIO(b"%PDF-1.4"))
+
+    result = service.process_local_index(doc["id"])
+    shards = _list_child_shards(service, doc["id"])
+
+    assert result["shard_count"] == 2
+    assert [item["filename"] for item in shards] == ["manual-1.pdf", "manual-2.pdf"]
+    assert [item["shard_index"] for item in shards] == [1, 2]
+    assert all(item["is_shard"] for item in shards)
+
+
+def test_process_pending_ingest_uses_ordered_shards_instead_of_parent_upload(monkeypatch, tmp_path):
+    _configure_shard_thresholds(monkeypatch)
+    client = FakeLightRAGClient({"status": "success", "track_id": "track-42", "message": "accepted"})
+    service = _service(tmp_path, client=client)
+    service.extraction_service = StubExtractionService(
+        "第一部分内容" * 6 + "\n\n" + "第二部分内容" * 6
+    )
+    doc = service.upload("manual.pdf", BytesIO(b"%PDF-1.4"))
+
+    service.process_local_index(doc["id"])
+    result = asyncio.run(service.process_pending_ingest(doc["id"]))
+
+    assert result["filename"] == "manual.pdf"
+    assert client.uploads == [
+        {"file_path": doc["filepath"], "filename": "manual-1.pdf"},
+        {"file_path": doc["filepath"], "filename": "manual-2.pdf"},
+    ]
+
+
+def test_get_document_aggregates_parent_status_from_shards(monkeypatch, tmp_path):
+    _configure_shard_thresholds(monkeypatch)
+    service = _service(tmp_path)
+    service.extraction_service = StubExtractionService(
+        "第一部分内容" * 6 + "\n\n" + "第二部分内容" * 6
+    )
+    doc = service.upload("manual.pdf", BytesIO(b"%PDF-1.4"))
+
+    service.process_local_index(doc["id"])
+    shards = _list_child_shards(service, doc["id"])
+    service._update_ingest_status(shards[0]["id"], ingest_status="ready", ingest_error=None)
+    service._update_ingest_status(shards[1]["id"], ingest_status="failed", ingest_error="second shard failed")
+
+    parent = service.get_document(doc["id"])
+
+    assert parent["ingest_status"] == "failed"
+    assert parent["ingest_error"] == "second shard failed"
+
+
+def test_retry_ingest_requeues_all_shards_for_sharded_parent(monkeypatch, tmp_path):
+    _configure_shard_thresholds(monkeypatch)
+    service = _service(tmp_path)
+    service.extraction_service = StubExtractionService(
+        "第一部分内容" * 6 + "\n\n" + "第二部分内容" * 6
+    )
+    doc = service.upload("manual.pdf", BytesIO(b"%PDF-1.4"))
+
+    service.process_local_index(doc["id"])
+    shards = _list_child_shards(service, doc["id"])
+    service._update_document_info(
+        shards[0]["id"],
+        {
+            "ingest_status": "failed",
+            "ingest_error": "first shard failed",
+            "lightrag_track_id": "track-1",
+            "lightrag_doc_id": "doc-1",
+        },
+    )
+    service._update_document_info(
+        shards[1]["id"],
+        {
+            "ingest_status": "processing",
+            "ingest_error": None,
+            "lightrag_track_id": "track-2",
+            "lightrag_doc_id": "doc-2",
+        },
+    )
+
+    parent = service.retry_ingest(doc["id"])
+    refreshed_shards = _list_child_shards(service, doc["id"])
+
+    assert parent["ingest_status"] == "queued"
+    assert parent["ingest_error"] is None
+    assert [item["ingest_status"] for item in refreshed_shards] == ["queued", "queued"]
+    assert [item["lightrag_track_id"] for item in refreshed_shards] == [None, None]
+    assert [item["lightrag_doc_id"] for item in refreshed_shards] == [None, None]
+
+
+def test_list_documents_hides_shard_children(monkeypatch, tmp_path):
+    _configure_shard_thresholds(monkeypatch)
+    service = _service(tmp_path)
+    service.extraction_service = StubExtractionService(
+        "第一部分内容" * 6 + "\n\n" + "第二部分内容" * 6
+    )
+    doc = service.upload("manual.pdf", BytesIO(b"%PDF-1.4"))
+
+    service.process_local_index(doc["id"])
+    page = service.list_documents(page=1, page_size=10)
+
+    assert [item["filename"] for item in page["items"]] == ["manual.pdf"]
+
+
 def test_list_documents_normalizes_legacy_status_fields_from_persisted_content(tmp_path):
     service = _service(tmp_path)
     repo = service._document_repository()
@@ -159,6 +309,52 @@ def test_list_documents_normalizes_legacy_status_fields_from_persisted_content(t
     assert item["ingest_status"] == "local_only"
     assert item["local_index_status"] == "ready"
     assert item["preview_content"] == "可浏览正文"
+
+
+def test_list_documents_does_not_sync_remote_ingest_status(tmp_path):
+    client = FakeLightRAGClient()
+    service = _service(tmp_path, client=client)
+    doc = service.upload("budget.pdf", BytesIO(b"%PDF-1.4"))
+    service._update_ingest_status(
+        doc["id"],
+        ingest_status="processing",
+        ingest_error=None,
+        lightrag_track_id="track-processing",
+        lightrag_doc_id="remote-doc-1",
+        last_status_sync_at="2026-04-20T00:00:00",
+    )
+
+    page = service.list_documents(page=1, page_size=10)
+
+    assert page["items"][0]["ingest_status"] == "processing"
+    assert client.track_status_calls == []
+
+
+def test_list_documents_skips_expensive_file_repair_for_missing_paths(monkeypatch, tmp_path):
+    service = _service(tmp_path)
+    repo = service._document_repository()
+    missing_path = tmp_path / "missing" / "ghost.pdf"
+    repo.upsert(
+        {
+            "id": "ghost-1",
+            "filename": "ghost.pdf",
+            "filepath": str(missing_path),
+            "file_type": ".pdf",
+            "ingest_status": "local_only",
+            "local_index_status": "ready",
+            "preview_content": "ghost",
+        }
+    )
+
+    def explode(*args, **kwargs):
+        raise AssertionError("list_documents must not trigger repository-wide file repair")
+
+    monkeypatch.setattr(document_service_module, "_enrich_document_file_state", explode)
+
+    page = service.list_documents(page=1, page_size=10)
+
+    assert page["items"][0]["id"] == "ghost-1"
+    assert page["items"][0]["file_available"] is False
 
 
 def test_sync_pending_remote_status_preserves_original_sync_time_for_stale_detection(tmp_path):
@@ -936,3 +1132,55 @@ def test_recover_stale_lightrag_queue_skips_when_pipeline_busy(tmp_path):
     assert payload["pending_documents"] == 1
     assert payload["pipeline_busy"] is True
     assert client.reprocess_failed_calls == 0
+
+
+def test_reconcile_missing_lightrag_documents_marks_orphaned_docs_local_only(tmp_path):
+    client = FakeLightRAGClient()
+    client.paginated_payload = {
+        "documents": [
+            {"id": "remote-1", "file_path": "present.pdf", "status": "processed"},
+            {"id": "remote-2", "file_path": "queued.pdf", "status": "pending"},
+        ],
+        "pagination": {"page": 1, "page_size": 100, "total_count": 2, "total_pages": 1, "has_next": False},
+    }
+    service = _service(tmp_path, client=client)
+    repo = service._document_repository()
+    doc_dir = tmp_path / "doc" / "pdf"
+    doc_dir.mkdir(parents=True, exist_ok=True)
+
+    def create_doc(doc_id: str, filename: str, ingest_status: str, track_id: str | None = None) -> None:
+        file_path = doc_dir / filename
+        file_path.write_bytes(b"%PDF-1.4")
+        repo.upsert(
+            {
+                "id": doc_id,
+                "filename": filename,
+                "filepath": str(file_path),
+                "file_type": ".pdf",
+                "ingest_status": ingest_status,
+                "lightrag_track_id": track_id,
+                "lightrag_doc_id": f"remote-{doc_id}" if track_id else None,
+            }
+        )
+
+    create_doc("ready-present", "present.pdf", "ready", "track-present")
+    create_doc("ready-missing", "missing.pdf", "ready", "track-missing")
+    create_doc("processing-missing", "orphan.pdf", "processing")
+    create_doc("queued-remote", "queued.pdf", "queued", "track-queued")
+
+    payload = service.reconcile_missing_lightrag_documents(limit=10)
+    refreshed = {item["id"]: item for item in repo.list_all()}
+
+    assert payload["status"] == "completed"
+    assert payload["remote_documents"] == 2
+    assert payload["requeued_documents"] == 2
+    assert payload["document_ids"] == ["ready-missing", "processing-missing"]
+    assert refreshed["ready-present"]["ingest_status"] == "ready"
+    assert refreshed["ready-present"]["lightrag_track_id"] == "track-present"
+    assert refreshed["ready-missing"]["ingest_status"] == "local_only"
+    assert refreshed["ready-missing"]["lightrag_track_id"] is None
+    assert refreshed["ready-missing"]["lightrag_doc_id"] is None
+    assert refreshed["processing-missing"]["ingest_status"] == "local_only"
+    assert refreshed["processing-missing"]["lightrag_track_id"] is None
+    assert refreshed["queued-remote"]["ingest_status"] == "queued"
+    assert refreshed["queued-remote"]["lightrag_track_id"] == "track-queued"

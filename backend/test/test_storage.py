@@ -1,5 +1,7 @@
 import os
+import json
 import sys
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -14,6 +16,8 @@ from app.infra import vector_store as vector_store_module  # noqa: E402
 from app.infra.repositories.document_content_repository import DocumentContentRepository  # noqa: E402
 from app.infra.repositories.document_repository import DocumentRepository  # noqa: E402
 from app.infra.repositories.document_segment_repository import DocumentSegmentRepository  # noqa: E402
+import app.services.classification_service as classification_service_module  # noqa: E402
+from app.services.classification_service import ClassificationService  # noqa: E402
 from app.services.document_vector_index_service import DocumentVectorIndexService  # noqa: E402
 
 
@@ -105,6 +109,66 @@ def test_init_chroma_client_returns_client_and_block_collection(monkeypatch, iso
     assert initialized_client is client
     assert initialized_collection is block_collection
     client.get_or_create_collection.assert_called_once()
+
+
+def test_init_chroma_client_rebuilds_store_when_collection_dimension_mismatches_embedding(
+    monkeypatch,
+    isolated_components,
+):
+    sqlite_path = isolated_components.chroma_dir / "chroma.sqlite3"
+    connection = sqlite3.connect(sqlite_path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE collections (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                dimension INTEGER,
+                database_id TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO collections (id, name, topic, dimension, database_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("col-1", "document_blocks", "persistent://default/default/document_blocks", 384, "db-1"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    client = Mock()
+    block_collection = Mock()
+    client.get_or_create_collection.return_value = block_collection
+    captured = {}
+
+    vector_store_module.reset_clients()
+    monkeypatch.setattr(vector_store_module, "resolve_embedding_function", lambda: object())
+    monkeypatch.setattr(vector_store_module, "PersistentClient", lambda path: client)
+    monkeypatch.setattr(
+        vector_store_module,
+        "backup_legacy_chroma_store",
+        lambda reason, chroma_db_path: captured.update(
+            {
+                "reason": str(reason),
+                "path": chroma_db_path,
+            }
+        ),
+    )
+
+    initialized_client, initialized_collection = vector_store_module.init_chroma_client(
+        chroma_db_path=isolated_components.chroma_dir,
+    )
+
+    assert initialized_client is client
+    assert initialized_collection is block_collection
+    assert "dimension" in captured["reason"].lower()
+    assert "384" in captured["reason"]
+    assert "1024" in captured["reason"]
+    assert captured["path"] == isolated_components.chroma_dir
 
 
 def test_resolve_embedding_function_uses_local_bge_model(monkeypatch):
@@ -205,3 +269,71 @@ def test_resolve_document_filepath_handles_inaccessible_original_path(monkeypatc
     )
 
     assert resolved == str(repaired_file.resolve())
+
+
+def test_create_classification_directory_uses_full_taxonomy_path(tmp_path: Path):
+    source_dir = tmp_path / "classified_docs" / "旧目录"
+    source_dir.mkdir(parents=True)
+    source_file = source_dir / "finance-history.pdf"
+    source_file.write_text("pdf placeholder", encoding="utf-8")
+
+    success, target_path = file_utils_module.create_classification_directory(
+        {"filepath": str(source_file)},
+        ["图书资料", "经济金融图书", "金融历史书籍"],
+        base_dir=tmp_path / "classified_docs",
+    )
+
+    assert success is True
+    assert target_path == str(
+        (tmp_path / "classified_docs" / "图书资料" / "经济金融图书" / "金融历史书籍" / "finance-history.pdf").resolve()
+    )
+    assert Path(target_path).exists()
+    assert not source_file.exists()
+
+
+def test_sync_classified_storage_moves_legacy_classified_doc_to_taxonomy_path(monkeypatch, tmp_path: Path):
+    legacy_dir = tmp_path / "classified_docs" / "书籍-经济管理"
+    legacy_dir.mkdir(parents=True)
+    legacy_file = legacy_dir / "finance-history.pdf"
+    legacy_file.write_text("pdf placeholder", encoding="utf-8")
+
+    doc_info = {
+        "id": "doc-1",
+        "filename": "finance-history.pdf",
+        "filepath": str(legacy_file),
+        "classification_path": json.dumps(["图书资料", "经济金融图书", "金融历史书籍"], ensure_ascii=False),
+    }
+
+    monkeypatch.setattr(classification_service_module, "TopicTreeService", lambda: object())
+    monkeypatch.setattr(classification_service_module, "LightRAGSemanticService", lambda: object())
+    monkeypatch.setattr(classification_service_module, "get_document_info", lambda document_id: doc_info if document_id == "doc-1" else None)
+    monkeypatch.setattr(
+        classification_service_module,
+        "create_classification_directory",
+        lambda payload, categories: file_utils_module.create_classification_directory(
+            payload,
+            categories,
+            base_dir=tmp_path / "classified_docs",
+        ),
+    )
+
+    updates = {}
+
+    def fake_update_document_info(document_id, updated_fields):
+        updates.update(updated_fields)
+        doc_info.update(updated_fields)
+        return True
+
+    monkeypatch.setattr(classification_service_module, "update_document_info", fake_update_document_info)
+
+    payload = ClassificationService().sync_classified_storage("doc-1")
+
+    expected_path = str(
+        (tmp_path / "classified_docs" / "图书资料" / "经济金融图书" / "金融历史书籍" / "finance-history.pdf").resolve()
+    )
+    assert payload["synced"] is True
+    assert payload["moved"] is True
+    assert payload["filepath"] == expected_path
+    assert updates["filepath"] == expected_path
+    assert Path(expected_path).exists()
+    assert not legacy_file.exists()

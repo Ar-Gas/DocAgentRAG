@@ -159,4 +159,21 @@ describe('FileList', () => {
     expect(wrapper.vm.getLocalIndexStatusMeta('')).toEqual({ label: '未知', tone: 'info' })
     expect(wrapper.vm.getLocalIndexStatusMeta('', { preview_content: '正文' })).toEqual({ label: '可浏览', tone: 'success' })
   })
+
+  it('prefers storage_path when rendering file storage location', () => {
+    const wrapper = mountFileList()
+
+    expect(
+      wrapper.vm.getStoragePathText({
+        storage_path: 'classified_docs/图书资料/经济金融图书/金融历史书籍/finance-history.pdf',
+        filepath: '/abs/path/finance-history.pdf'
+      })
+    ).toBe('classified_docs/图书资料/经济金融图书/金融历史书籍/finance-history.pdf')
+
+    expect(
+      wrapper.vm.getStoragePathText({
+        filepath: '/abs/path/finance-history.pdf'
+      })
+    ).toBe('/abs/path/finance-history.pdf')
+  })
 })

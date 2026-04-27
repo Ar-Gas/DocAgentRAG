@@ -22,9 +22,12 @@ def test_backend_target_starts_three_independent_services():
     assert services[1].env["EMBEDDING_FUNC_MAX_ASYNC"] == "1"
     assert services[1].env["MAX_PARALLEL_INSERT"] == "1"
     assert services[1].env["MAX_ASYNC"] == "1"
-    assert services[1].env["EMBEDDING_DIM"] == "384"
-    assert services[1].env["EMBEDDING_MODEL"] == "all-MiniLM-L6-v2"
-    assert services[1].env["WORKING_DIR"].endswith("backend/data/lightrag/all-MiniLM-L6-v2-384d")
+    assert services[1].env["EMBEDDING_DIM"] == "1024"
+    assert services[1].env["EMBEDDING_MODEL"] == "bge-m3"
+    working_dir = Path(services[1].env["WORKING_DIR"]).as_posix()
+    assert working_dir.endswith("backend/data/lightrag") or working_dir.endswith(
+        "backend/data/lightrag/bge-m3-1024d"
+    )
     assert {"LOCAL_EMBEDDING_AUTO_START": "false", "LIGHTRAG_AUTO_START": "false"}.items() <= services[2].env.items()
 
 
