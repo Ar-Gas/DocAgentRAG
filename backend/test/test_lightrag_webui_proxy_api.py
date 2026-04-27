@@ -129,6 +129,27 @@ def test_proxy_lightrag_webui_html_bootstrap_only_rewrites_global_defaults(monke
     assert "window.localStorage.setItem(" in body
 
 
+def test_proxy_lightrag_webui_html_bootstrap_seeds_defaults_without_existing_storage(monkeypatch):
+    async def fake_proxy(base_path="webui", path="", query="", method="GET", body=b"", content_type=None):
+        assert base_path == "webui"
+        assert path == ""
+        return _FakeResponse(
+            content=b"<html><head></head><body><div id=\"root\"></div></body></html>",
+        )
+
+    monkeypatch.setattr(admin_api, "_proxy_lightrag_webui_request", fake_proxy)
+
+    response = asyncio.run(admin_api.proxy_lightrag_webui_root(_request("/api/v1/admin/lightrag/webui/")))
+
+    assert response.status_code == 200
+    body = response.body.decode("utf-8")
+    assert "if (!raw) return;" not in body
+    assert "const payload = raw ? JSON.parse(raw) : {};" in body
+    assert "const state = {};" in body
+    assert "if (changed) {" in body
+    assert "window.localStorage.setItem(storageKey, JSON.stringify(" in body
+
+
 def test_proxy_lightrag_webui_nested_path_preserves_content_type(monkeypatch):
     async def fake_proxy(base_path="webui", path="", query="", method="GET", body=b"", content_type=None):
         assert base_path == "webui"

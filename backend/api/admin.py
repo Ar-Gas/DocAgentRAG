@@ -83,25 +83,49 @@ def _build_lightrag_lazy_graph_bootstrap_script() -> str:
     const defaultMaxNodes = {LIGHTRAG_LAZY_GRAPH_DEFAULT_MAX_NODES};
     try {{
       const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return;
-      const payload = JSON.parse(raw);
-      if (!payload || typeof payload !== "object") return;
-      const rawState = payload.state;
-      const state = typeof rawState === "string" ? JSON.parse(rawState) : rawState;
-      if (!state || typeof state !== "object") return;
+      const payload = raw ? JSON.parse(raw) : {{}};
+      const safePayload = payload && typeof payload === "object" ? payload : {{}};
+      const rawState = safePayload.state;
+      const state = {{}};
+      let changed = false;
+
+      if (rawState && typeof rawState === "object") {{
+        Object.assign(state, rawState);
+      }} else if (typeof rawState === "string") {{
+        try {{
+          const parsedState = JSON.parse(rawState);
+          if (parsedState && typeof parsedState === "object") {{
+            Object.assign(state, parsedState);
+          }} else {{
+            changed = true;
+          }}
+        }} catch (_parseStateError) {{
+          changed = true;
+        }}
+      }} else if (typeof rawState !== "undefined") {{
+        changed = true;
+      }}
 
       const currentQueryLabel = typeof state.queryLabel === "string" ? state.queryLabel : "";
       if (!currentQueryLabel || currentQueryLabel === "*") {{
-        state.queryLabel = defaultQueryLabel;
+        if (state.queryLabel !== defaultQueryLabel) {{
+          state.queryLabel = defaultQueryLabel;
+          changed = true;
+        }}
       }}
 
       const currentMaxNodes = Number(state.graphMaxNodes);
       if (!Number.isFinite(currentMaxNodes) || currentMaxNodes > defaultMaxNodes) {{
-        state.graphMaxNodes = defaultMaxNodes;
+        if (state.graphMaxNodes !== defaultMaxNodes) {{
+          state.graphMaxNodes = defaultMaxNodes;
+          changed = true;
+        }}
       }}
 
-      payload.state = typeof rawState === "string" ? JSON.stringify(state) : state;
-      window.localStorage.setItem(storageKey, JSON.stringify(payload));
+      if (changed) {{
+        safePayload.state = typeof rawState === "string" ? JSON.stringify(state) : state;
+        window.localStorage.setItem(storageKey, JSON.stringify(safePayload));
+      }}
     }} catch (_error) {{
       // Fail open to avoid breaking startup.
     }}
