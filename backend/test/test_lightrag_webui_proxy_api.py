@@ -2,9 +2,11 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
+import pytest
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
@@ -69,6 +71,18 @@ def _extract_lazy_bootstrap_javascript() -> str:
     return match.group(1).strip()
 
 
+def _resolve_node_binary() -> str:
+    env_override = os.getenv("DOCAGENT_NODE_BINARY", "").strip()
+    if env_override:
+        return env_override
+
+    discovered = shutil.which("node")
+    if discovered:
+        return discovered
+
+    pytest.skip("Node.js binary is unavailable; skipping bootstrap behavior tests")
+
+
 def _run_lazy_bootstrap(initial_settings_storage):
     bootstrap_js = _extract_lazy_bootstrap_javascript()
     node_program = f"""
@@ -102,12 +116,24 @@ process.stdout.write(JSON.stringify({{
 }}));
 """.strip()
     completed = subprocess.run(
-        ["/usr/local/bin/node", "-e", node_program],
+        [_resolve_node_binary(), "-e", node_program],
         check=True,
         capture_output=True,
         text=True,
     )
     return json.loads(completed.stdout)
+
+
+def test_resolve_node_binary_prefers_env_override(monkeypatch):
+    monkeypatch.setenv("DOCAGENT_NODE_BINARY", "/tmp/custom-node")
+    assert _resolve_node_binary() == "/tmp/custom-node"
+
+
+def test_resolve_node_binary_skips_when_unavailable(monkeypatch):
+    monkeypatch.delenv("DOCAGENT_NODE_BINARY", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    with pytest.raises(pytest.skip.Exception):
+        _resolve_node_binary()
 
 
 def test_proxy_lightrag_webui_rewrites_root_html_and_hides_branding(monkeypatch):
