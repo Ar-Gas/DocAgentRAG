@@ -1,5 +1,8 @@
 import asyncio
+import json
 import os
+import re
+import subprocess
 import sys
 
 from starlette.requests import Request
@@ -57,6 +60,54 @@ def _request_with_receive(path: str, method: str = "GET", body: bytes = b"", hea
         return {"type": "http.disconnect"}
 
     return Request(scope, receive)
+
+
+def _extract_lazy_bootstrap_javascript() -> str:
+    script_html = admin_api._build_lightrag_lazy_graph_bootstrap_script()
+    match = re.search(r"<script[^>]*>(.*)</script>", script_html, flags=re.DOTALL)
+    assert match, "lazy bootstrap script tag was not found"
+    return match.group(1).strip()
+
+
+def _run_lazy_bootstrap(initial_settings_storage):
+    bootstrap_js = _extract_lazy_bootstrap_javascript()
+    node_program = f"""
+const bootstrap = {json.dumps(bootstrap_js)};
+const initialStorageValue = {json.dumps(initial_settings_storage)};
+const store = {{}};
+const writes = [];
+if (initialStorageValue !== null) {{
+  store["settings-storage"] = initialStorageValue;
+}}
+
+global.window = {{
+  localStorage: {{
+    getItem(key) {{
+      return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
+    }},
+    setItem(key, value) {{
+      store[key] = value;
+      writes.push([key, value]);
+    }},
+  }},
+}};
+
+eval(bootstrap);
+
+process.stdout.write(JSON.stringify({{
+  settingsStorage: Object.prototype.hasOwnProperty.call(store, "settings-storage")
+    ? store["settings-storage"]
+    : null,
+  writes,
+}}));
+""".strip()
+    completed = subprocess.run(
+        ["/usr/local/bin/node", "-e", node_program],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
 
 
 def test_proxy_lightrag_webui_rewrites_root_html_and_hides_branding(monkeypatch):
@@ -148,6 +199,54 @@ def test_proxy_lightrag_webui_html_bootstrap_seeds_defaults_without_existing_sto
     assert "const state = {};" in body
     assert "if (changed) {" in body
     assert "window.localStorage.setItem(storageKey, JSON.stringify(" in body
+
+
+def test_lazy_bootstrap_seeds_first_visit_defaults_behavior():
+    outcome = _run_lazy_bootstrap(None)
+
+    assert len(outcome["writes"]) == 1
+    payload = json.loads(outcome["settingsStorage"])
+    assert payload["state"]["queryLabel"] == ""
+    assert payload["state"]["graphMaxNodes"] == 300
+
+
+def test_lazy_bootstrap_preserves_concrete_label_and_smaller_max_nodes_behavior():
+    existing = json.dumps({"state": {"queryLabel": "project-docs", "graphMaxNodes": 120}})
+    outcome = _run_lazy_bootstrap(existing)
+
+    assert outcome["writes"] == []
+    assert outcome["settingsStorage"] == existing
+
+
+def test_lazy_bootstrap_rewrites_global_label_and_oversized_max_nodes_behavior():
+    existing = json.dumps({"state": {"queryLabel": "*", "graphMaxNodes": 999}})
+    outcome = _run_lazy_bootstrap(existing)
+
+    assert len(outcome["writes"]) == 1
+    payload = json.loads(outcome["settingsStorage"])
+    assert payload["state"]["queryLabel"] == ""
+    assert payload["state"]["graphMaxNodes"] == 300
+
+
+def test_lazy_bootstrap_handles_string_state_and_blank_max_nodes_behavior():
+    existing_state = json.dumps({"queryLabel": "engineering", "graphMaxNodes": "   "})
+    existing = json.dumps({"state": existing_state})
+    outcome = _run_lazy_bootstrap(existing)
+
+    assert len(outcome["writes"]) == 1
+    payload = json.loads(outcome["settingsStorage"])
+    assert isinstance(payload["state"], str)
+    parsed_state = json.loads(payload["state"])
+    assert parsed_state["queryLabel"] == "engineering"
+    assert parsed_state["graphMaxNodes"] == 300
+
+
+def test_lazy_bootstrap_fail_open_on_invalid_storage_payload_behavior():
+    invalid_payload = "{invalid-json"
+    outcome = _run_lazy_bootstrap(invalid_payload)
+
+    assert outcome["writes"] == []
+    assert outcome["settingsStorage"] == invalid_payload
 
 
 def test_proxy_lightrag_webui_nested_path_preserves_content_type(monkeypatch):

@@ -114,8 +114,9 @@ def _build_lightrag_lazy_graph_bootstrap_script() -> str:
         }}
       }}
 
+      const isBlankMaxNodes = typeof state.graphMaxNodes === "string" && !state.graphMaxNodes.trim();
       const currentMaxNodes = Number(state.graphMaxNodes);
-      if (!Number.isFinite(currentMaxNodes) || currentMaxNodes > defaultMaxNodes) {{
+      if (isBlankMaxNodes || !Number.isFinite(currentMaxNodes) || currentMaxNodes > defaultMaxNodes) {{
         if (state.graphMaxNodes !== defaultMaxNodes) {{
           state.graphMaxNodes = defaultMaxNodes;
           changed = true;
@@ -345,7 +346,7 @@ def _normalize_lightrag_app_query(path: str, query: str) -> str:
         payload["max_nodes"] = str(LIGHTRAG_GRAPH_PROXY_MAX_MAX_NODES)
         return urlencode(payload)
 
-    return urlencode(payload)
+    return query
 
 
 @router.get("/stats", summary="获取系统统计")
